@@ -87,6 +87,7 @@ pub struct RequestContentDto {
     pub name: String,
     pub method: String,
     pub url: String,
+    pub body: String,
     pub query: Vec<OrderedFieldDto>,
     pub headers: Vec<OrderedFieldDto>,
 }
@@ -698,6 +699,7 @@ impl From<RequestContent> for RequestContentDto {
             name: content.name,
             method: content.method,
             url: content.url,
+            body: content.body,
             query: content
                 .query
                 .into_iter()
@@ -718,6 +720,7 @@ impl From<RequestContentDto> for RequestContent {
             name: content.name,
             method: content.method,
             url: content.url,
+            body: content.body,
             query: content.query.into_iter().map(OrderedField::from).collect(),
             headers: content
                 .headers

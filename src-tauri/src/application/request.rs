@@ -345,6 +345,7 @@ mod tests {
             name: name.to_owned(),
             method: "GET".to_owned(),
             url: "https://example.test".to_owned(),
+            body: String::new(),
             query: vec![OrderedField {
                 enabled: true,
                 order: 0,
