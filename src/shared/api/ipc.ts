@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   CloseRequestTabInput,
+  CancelRequestExecutionInput,
   CreateSavedRequestInput,
   CreateWorkspaceInput,
   IpcCommandContracts,
@@ -9,6 +10,7 @@ import type {
   OpenSavedRequestTabInput,
   RequestDraftIdInput,
   RenameWorkspaceInput,
+  StartRequestExecutionInput,
   UpdateRequestDraftInput,
   WorkspaceIdInput,
 } from "./generated/ipc";
@@ -72,6 +74,10 @@ export const requestIpc = {
     invokeCommand("save_request_draft", input),
   closeRequestTab: (input: CloseRequestTabInput) =>
     invokeCommand("close_request_tab", input),
+  startRequestExecution: (input: StartRequestExecutionInput) =>
+    invokeCommand("start_request_execution", input),
+  cancelRequestExecution: (input: CancelRequestExecutionInput) =>
+    invokeCommand("cancel_request_execution", input),
 };
 
 type IpcCommandName = keyof IpcCommandContracts;

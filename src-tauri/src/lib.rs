@@ -4,23 +4,32 @@ pub mod domain;
 pub mod infrastructure;
 pub mod ipc;
 
-use std::{fs, sync::Mutex, time::Instant};
+use std::{
+    fs,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
-use application::{request::RequestService, workspace::WorkspaceService};
+use application::{
+    execution::ExecutionCoordinator, request::RequestService, workspace::WorkspaceService,
+};
 use infrastructure::sqlite::SqliteWorkspaceRepository;
 use tauri::Manager;
 
 pub struct AppState {
+    pub executions: Arc<ExecutionCoordinator>,
     pub workspaces: Mutex<WorkspaceService<SqliteWorkspaceRepository>>,
     pub requests: Mutex<RequestService<SqliteWorkspaceRepository>>,
 }
 
 impl AppState {
     fn new(
+        executions: Arc<ExecutionCoordinator>,
         workspaces: WorkspaceService<SqliteWorkspaceRepository>,
         requests: RequestService<SqliteWorkspaceRepository>,
     ) -> Self {
         Self {
+            executions,
             workspaces: Mutex::new(workspaces),
             requests: Mutex::new(requests),
         }
@@ -46,6 +55,8 @@ pub fn run() {
             ipc::flush_request_drafts,
             ipc::save_request_draft,
             ipc::close_request_tab,
+            ipc::start_request_execution,
+            ipc::cancel_request_execution,
         ])
         .setup(move |app| {
             let app_data_dir = diagnostics::app_data_dir(app)?;
@@ -57,8 +68,9 @@ pub fn run() {
             let mut workspaces = WorkspaceService::new(workspace_repository);
             workspaces.initialize()?;
             let requests = RequestService::new(request_repository);
+            let executions = Arc::new(ExecutionCoordinator::new());
 
-            app.manage(AppState::new(workspaces, requests));
+            app.manage(AppState::new(executions, workspaces, requests));
             diagnostics::configure_perf(app, started_at.elapsed())?;
             Ok(())
         })
