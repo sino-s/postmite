@@ -14,6 +14,30 @@ Postmiteは、個人のAPI開発作業を端末内で完結させる、軽量な
 
 詳細設計はローカルの`docs/`に置き、RepositoryにはCommitしません。実装Issueは、設計文書がないCloneでも作業できるよう自己完結させます。
 
+### Quality and performance checks
+
+Pull request CI runs Rust format, Rust lint, Rust tests, TypeScript checks, frontend lint, frontend tests, and production builds. The same local command set is exposed through pnpm scripts:
+
+```bash
+pnpm ci:rust
+pnpm ci:frontend
+pnpm ci:build
+```
+
+Release performance budgets are measured from the Tauri release binary:
+
+```bash
+pnpm perf:release
+```
+
+The command reports budget failures without failing by default. Use `pnpm perf:release:strict` when a reference environment should reject a performance regression.
+
+On a headless Linux machine, run the performance command under Xvfb:
+
+```bash
+xvfb-run -a pnpm perf:release
+```
+
 ## Initial scope
 
 初版はUbuntu 24.04 LTS x86_64を対象に、REST APIのRequest作成・実行、Collection、Environment、履歴、認証、Postman v2.1およびcURLとの相互運用を提供します。アカウント、クラウド同期、チーム共有、GraphQL、WebSocket、スクリプト実行は対象外です。
