@@ -75,6 +75,7 @@ describe("request query API", () => {
         name: "Edited draft",
         method: "GET",
         url: "https://example.test",
+        body: "",
         query: [],
         headers: [],
       },

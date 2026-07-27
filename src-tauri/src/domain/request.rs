@@ -134,6 +134,7 @@ pub struct RequestContent {
     pub name: String,
     pub method: String,
     pub url: String,
+    pub body: String,
     pub query: Vec<OrderedField>,
     pub headers: Vec<OrderedField>,
 }
@@ -144,6 +145,7 @@ impl RequestContent {
             name: "Untitled Request".to_owned(),
             method: "GET".to_owned(),
             url: String::new(),
+            body: String::new(),
             query: Vec::new(),
             headers: Vec::new(),
         }

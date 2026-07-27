@@ -142,6 +142,14 @@ CREATE UNIQUE INDEX request_tabs_one_saved_request_per_workspace
     WHERE saved_request_id IS NOT NULL;
 "#,
     },
+    Migration {
+        version: 3,
+        name: "add_raw_request_body",
+        sql: r#"
+ALTER TABLE saved_requests ADD COLUMN body TEXT NOT NULL DEFAULT '';
+ALTER TABLE request_drafts ADD COLUMN body TEXT NOT NULL DEFAULT '';
+"#,
+    },
 ];
 
 struct Migration {
@@ -705,8 +713,8 @@ fn insert_saved_request(
 ) -> Result<(), RequestError> {
     validate_request_content(content)?;
     tx.execute(
-        "INSERT INTO saved_requests (id, workspace_id, collection_id, name, method, url)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO saved_requests (id, workspace_id, collection_id, name, method, url, body)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             saved_request_id.to_string(),
             workspace_id.to_string(),
@@ -714,6 +722,7 @@ fn insert_saved_request(
             content.name.as_str(),
             content.method.as_str(),
             content.url.as_str(),
+            content.body.as_str(),
         ],
     )
     .map_err(map_request_sqlite_error)?;
@@ -741,13 +750,14 @@ fn replace_saved_request_content(
     validate_request_content(content)?;
     tx.execute(
         "UPDATE saved_requests
-         SET name = ?1, method = ?2, url = ?3,
+         SET name = ?1, method = ?2, url = ?3, body = ?4,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?4",
+         WHERE id = ?5",
         params![
             content.name.as_str(),
             content.method.as_str(),
             content.url.as_str(),
+            content.body.as_str(),
             saved_request_id.to_string()
         ],
     )
@@ -779,8 +789,8 @@ fn insert_draft(
     validate_request_content(content)?;
     tx.execute(
         "INSERT INTO request_drafts
-            (id, workspace_id, saved_request_id, name, method, url, is_dirty)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (id, workspace_id, saved_request_id, name, method, url, body, is_dirty)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             draft_id.to_string(),
             workspace_id.to_string(),
@@ -788,6 +798,7 @@ fn insert_draft(
             content.name.as_str(),
             content.method.as_str(),
             content.url.as_str(),
+            content.body.as_str(),
             bool_to_i64(is_dirty),
         ],
     )
@@ -818,13 +829,14 @@ fn replace_draft_content(
     let changed = tx
         .execute(
             "UPDATE request_drafts
-             SET name = ?1, method = ?2, url = ?3, is_dirty = ?4,
+             SET name = ?1, method = ?2, url = ?3, body = ?4, is_dirty = ?5,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE id = ?5",
+             WHERE id = ?6",
             params![
                 content.name.as_str(),
                 content.method.as_str(),
                 content.url.as_str(),
+                content.body.as_str(),
                 bool_to_i64(is_dirty),
                 draft_id.to_string()
             ],
@@ -991,7 +1003,7 @@ fn load_saved_requests(
 ) -> Result<Vec<SavedRequest>, RequestError> {
     let mut statement = connection
         .prepare(
-            "SELECT id, workspace_id, collection_id, name, method, url
+            "SELECT id, workspace_id, collection_id, name, method, url, body
              FROM saved_requests
              WHERE workspace_id = ?1
              ORDER BY created_at, id",
@@ -1006,6 +1018,7 @@ fn load_saved_requests(
                 name: row.get(3)?,
                 method: row.get(4)?,
                 url: row.get(5)?,
+                body: row.get(6)?,
                 query: Vec::new(),
                 headers: Vec::new(),
             };
@@ -1056,7 +1069,7 @@ fn load_open_drafts(
 ) -> Result<Vec<RequestDraft>, RequestError> {
     let mut statement = connection
         .prepare(
-            "SELECT DISTINCT d.id, d.workspace_id, d.saved_request_id, d.name, d.method, d.url, d.is_dirty
+            "SELECT DISTINCT d.id, d.workspace_id, d.saved_request_id, d.name, d.method, d.url, d.body, d.is_dirty
              FROM request_drafts d
              INNER JOIN request_tabs t ON t.draft_id = d.id
              WHERE d.workspace_id = ?1
@@ -1095,7 +1108,7 @@ fn load_draft(
 ) -> Result<RequestDraft, RequestError> {
     let mut draft = connection
         .query_row(
-            "SELECT id, workspace_id, saved_request_id, name, method, url, is_dirty
+            "SELECT id, workspace_id, saved_request_id, name, method, url, body, is_dirty
              FROM request_drafts
              WHERE workspace_id = ?1 AND id = ?2",
             params![workspace_id.to_string(), draft_id.to_string()],
@@ -1197,10 +1210,11 @@ fn draft_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestDraft> {
             name: row.get(3)?,
             method: row.get(4)?,
             url: row.get(5)?,
+            body: row.get(6)?,
             query: Vec::new(),
             headers: Vec::new(),
         },
-        is_dirty: row.get::<_, i64>(6)? != 0,
+        is_dirty: row.get::<_, i64>(7)? != 0,
     })
 }
 
@@ -1473,8 +1487,8 @@ mod tests {
 
         let result = repository.connection().execute(
             "INSERT INTO request_drafts
-                (id, workspace_id, saved_request_id, name, method, url, is_dirty)
-             VALUES (?1, ?2, ?3, 'Cross workspace', 'GET', '', 1)",
+                (id, workspace_id, saved_request_id, name, method, url, body, is_dirty)
+             VALUES (?1, ?2, ?3, 'Cross workspace', 'GET', '', '', 1)",
             params![
                 RequestDraftId::new().to_string(),
                 second_workspace_id.to_string(),
@@ -1552,6 +1566,7 @@ mod tests {
             name: "Fields".to_owned(),
             method: "GET".to_owned(),
             url: "https://example.test".to_owned(),
+            body: "{\"ok\":true}".to_owned(),
             query: vec![
                 OrderedField {
                     enabled: true,
@@ -1588,6 +1603,7 @@ mod tests {
 
         assert_eq!(snapshot.saved_requests[0].content.query, content.query);
         assert_eq!(snapshot.saved_requests[0].content.headers, content.headers);
+        assert_eq!(snapshot.saved_requests[0].content.body, "{\"ok\":true}");
     }
 
     #[test]
@@ -1728,6 +1744,7 @@ mod tests {
             name: name.to_owned(),
             method: "GET".to_owned(),
             url: url.to_owned(),
+            body: String::new(),
             query: Vec::new(),
             headers: Vec::new(),
         }

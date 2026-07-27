@@ -51,6 +51,7 @@ describe("typed IPC adapter", () => {
         name: "Duplicate fields",
         method: "GET",
         url: "https://example.test",
+        body: "",
         query: [
           { enabled: true, order: 0, name: "tag", value: "first" },
           { enabled: false, order: 1, name: "tag", value: "" },
@@ -66,6 +67,7 @@ describe("typed IPC adapter", () => {
           name: "Duplicate fields",
           method: "GET",
           url: "https://example.test",
+          body: "",
           query: [
             { enabled: true, order: 0, name: "tag", value: "first" },
             { enabled: false, order: 1, name: "tag", value: "" },
