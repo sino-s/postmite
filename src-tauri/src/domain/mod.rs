@@ -1,0 +1,1 @@
+//! Pure Postmite domain model.
