@@ -16,7 +16,7 @@ import {
   saveRequestDraft,
   updateRequestDraft,
 } from "../../shared/api/requests";
-import { requestPlaceholderExecution } from "../../shared/api/execution";
+import { startRequestExecution } from "../../shared/api/execution";
 import {
   workspaceQuery,
   workspaceQueryKey,
@@ -39,13 +39,13 @@ import {
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
 type RequestEditorProps = {
-  onExecute?: typeof requestPlaceholderExecution;
+  onExecute?: typeof startRequestExecution;
 };
 
 type OverrideMap = Record<string, RequestContentDto>;
 
 export function RequestEditor({
-  onExecute = requestPlaceholderExecution,
+  onExecute = startRequestExecution,
 }: RequestEditorProps) {
   const queryClient = useQueryClient();
   const [activeTabId, setActiveTabId] = useState<string | null>(null);

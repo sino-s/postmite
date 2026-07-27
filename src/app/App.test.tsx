@@ -33,7 +33,7 @@ const requestApiMock = vi.hoisted(() => ({
 }));
 
 const executionApiMock = vi.hoisted(() => ({
-  requestPlaceholderExecution: vi.fn(),
+  startRequestExecution: vi.fn(),
 }));
 
 vi.mock("../shared/api/workspaces", () => workspaceApiMock);
@@ -67,9 +67,9 @@ describe("App request editor", () => {
         queryFn: vi.fn().mockResolvedValue(emptyRequestSnapshot()),
       }),
     );
-    executionApiMock.requestPlaceholderExecution.mockResolvedValue({
+    executionApiMock.startRequestExecution.mockResolvedValue({
       status: "queued",
-      executionId: "placeholder:workspace-1:draft-1",
+      executionId: "execution-1",
     });
   });
 
@@ -176,7 +176,7 @@ describe("App request editor", () => {
     );
   });
 
-  it("runs save and placeholder execution keyboard shortcuts", async () => {
+  it("runs save and request execution keyboard shortcuts", async () => {
     const user = userEvent.setup();
     const queryClient = renderApp(
       requestSnapshot({ content: requestContent(), isDirty: true }),
@@ -207,13 +207,13 @@ describe("App request editor", () => {
         },
       ),
     );
-    expect(executionApiMock.requestPlaceholderExecution).toHaveBeenCalledWith({
+    expect(executionApiMock.startRequestExecution).toHaveBeenCalledWith({
       workspaceId: "workspace-1",
       draftId: "draft-1",
       content: requestContent(),
     });
     expect(
-      await screen.findByText("Execution queued: placeholder:workspace-1:draft-1"),
+      await screen.findByText("Execution queued: execution-1"),
     ).toBeInTheDocument();
   });
 

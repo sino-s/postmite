@@ -2,14 +2,19 @@
 
 use std::{
     str::FromStr,
+    sync::Arc,
     sync::{MutexGuard, PoisonError},
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 use ts_rs::{Config, TS};
 
 use crate::{
+    application::execution::{
+        CancelExecutionResult, ExecutionError, ExecutionEvent, ExecutionEventKind, ExecutionHeader,
+        ExecutionId, ExecutionRequest, StartExecutionResult,
+    },
     application::request::{
         CloseTabDecision, RequestError, RequestRepository, RequestService, RequestWorkspaceSnapshot,
     },
@@ -37,6 +42,9 @@ pub const UPDATE_REQUEST_DRAFT_COMMAND: &str = "update_request_draft";
 pub const FLUSH_REQUEST_DRAFTS_COMMAND: &str = "flush_request_drafts";
 pub const SAVE_REQUEST_DRAFT_COMMAND: &str = "save_request_draft";
 pub const CLOSE_REQUEST_TAB_COMMAND: &str = "close_request_tab";
+pub const START_REQUEST_EXECUTION_COMMAND: &str = "start_request_execution";
+pub const CANCEL_REQUEST_EXECUTION_COMMAND: &str = "cancel_request_execution";
+pub const REQUEST_EXECUTION_EVENT: &str = "request_execution_event";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -177,6 +185,82 @@ pub struct CloseRequestTabInput {
     pub decision: CloseTabDecisionDto,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StartRequestExecutionInput {
+    pub workspace_id: String,
+    pub draft_id: String,
+    pub content: RequestContentDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StartRequestExecutionOutput {
+    pub execution_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelRequestExecutionInput {
+    pub execution_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelRequestExecutionOutput {
+    pub execution_id: String,
+    pub cancelled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionEventDto {
+    pub execution_id: String,
+    pub sequence: u64,
+    pub kind: ExecutionEventKindDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum ExecutionEventKindDto {
+    Started {
+        method: String,
+        url: String,
+    },
+    UploadProgress {
+        sent_bytes: u64,
+        total_bytes: u64,
+    },
+    ResponseHeaders {
+        status: u16,
+        headers: Vec<ExecutionHeaderDto>,
+    },
+    DownloadProgress {
+        received_bytes: u64,
+        total_bytes: Option<u64>,
+    },
+    Completed {
+        status: u16,
+        body_preview: String,
+        body_truncated: bool,
+    },
+    Failed {
+        message: String,
+    },
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionHeaderDto {
+    pub name: String,
+    pub value: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum IpcErrorCode {
@@ -207,6 +291,8 @@ pub enum BoundaryError {
     InvalidSavedRequestId,
     InvalidRequestDraftId,
     InvalidRequestTabId,
+    InvalidExecutionId,
+    Execution(ExecutionError),
     StateUnavailable,
 }
 
@@ -319,6 +405,23 @@ pub fn close_request_tab(
 ) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
     let service = state.requests.lock().map_err(map_poison_error)?;
     handle_close_request_tab(service, input)
+}
+
+#[tauri::command]
+pub fn start_request_execution(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    input: StartRequestExecutionInput,
+) -> Result<StartRequestExecutionOutput, IpcError> {
+    handle_start_request_execution(app, state, input)
+}
+
+#[tauri::command]
+pub fn cancel_request_execution(
+    state: State<'_, AppState>,
+    input: CancelRequestExecutionInput,
+) -> Result<CancelRequestExecutionOutput, IpcError> {
+    handle_cancel_request_execution(state, input)
 }
 
 pub fn handle_list_workspaces<R>(
@@ -499,6 +602,44 @@ where
         .map_err(|error| BoundaryError::Request(error).into())
 }
 
+pub fn handle_start_request_execution(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    input: StartRequestExecutionInput,
+) -> Result<StartRequestExecutionOutput, IpcError> {
+    let _workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let draft_id = parse_request_draft_id(&input.draft_id)?;
+    let request = ExecutionRequest {
+        draft_id,
+        content: RequestContent::from(input.content),
+    };
+    let sink = Arc::new(move |event: ExecutionEvent| {
+        let _ = app.emit(REQUEST_EXECUTION_EVENT, ExecutionEventDto::from(event));
+    });
+
+    state
+        .executions
+        .start(
+            request,
+            sink,
+            crate::infrastructure::http::run_http_execution,
+        )
+        .map(StartRequestExecutionOutput::from)
+        .map_err(|error| BoundaryError::Execution(error).into())
+}
+
+pub fn handle_cancel_request_execution(
+    state: State<'_, AppState>,
+    input: CancelRequestExecutionInput,
+) -> Result<CancelRequestExecutionOutput, IpcError> {
+    let execution_id = parse_execution_id(&input.execution_id)?;
+    state
+        .executions
+        .cancel(execution_id)
+        .map(CancelRequestExecutionOutput::from)
+        .map_err(|error| BoundaryError::Execution(error).into())
+}
+
 pub fn render_contract() -> Result<String, ts_rs::ExportError> {
     let cfg = Config::new();
     let mut contract = String::from(
@@ -525,6 +666,13 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         RequestDraftIdInput::export_to_string(&cfg)?,
         CloseTabDecisionDto::export_to_string(&cfg)?,
         CloseRequestTabInput::export_to_string(&cfg)?,
+        StartRequestExecutionInput::export_to_string(&cfg)?,
+        StartRequestExecutionOutput::export_to_string(&cfg)?,
+        CancelRequestExecutionInput::export_to_string(&cfg)?,
+        CancelRequestExecutionOutput::export_to_string(&cfg)?,
+        ExecutionEventDto::export_to_string(&cfg)?,
+        ExecutionEventKindDto::export_to_string(&cfg)?,
+        ExecutionHeaderDto::export_to_string(&cfg)?,
     ] {
         let generated_without_imports = generated
             .lines()
@@ -593,6 +741,14 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \t\tinput: CloseRequestTabInput;\n\
          \t\toutput: RequestWorkspaceSnapshotDto;\n\
          \t};\n\
+         \tstart_request_execution: {\n\
+         \t\tinput: StartRequestExecutionInput;\n\
+         \t\toutput: StartRequestExecutionOutput;\n\
+         \t};\n\
+         \tcancel_request_execution: {\n\
+         \t\tinput: CancelRequestExecutionInput;\n\
+         \t\toutput: CancelRequestExecutionOutput;\n\
+         \t};\n\
          };\n\n\
          export type IpcCommandContracts = WorkspaceCommandContracts & RequestCommandContracts;\n",
     );
@@ -614,6 +770,10 @@ fn parse_request_draft_id(value: &str) -> Result<RequestDraftId, IpcError> {
 
 fn parse_request_tab_id(value: &str) -> Result<RequestTabId, IpcError> {
     RequestTabId::from_str(value).map_err(|_| BoundaryError::InvalidRequestTabId.into())
+}
+
+fn parse_execution_id(value: &str) -> Result<ExecutionId, IpcError> {
+    ExecutionId::from_str(value).map_err(|_| BoundaryError::InvalidExecutionId.into())
 }
 
 fn map_poison_error<T>(_error: PoisonError<T>) -> IpcError {
@@ -763,11 +923,85 @@ impl From<CloseTabDecisionDto> for CloseTabDecision {
     }
 }
 
+impl From<StartExecutionResult> for StartRequestExecutionOutput {
+    fn from(result: StartExecutionResult) -> Self {
+        Self {
+            execution_id: result.execution_id.to_string(),
+        }
+    }
+}
+
+impl From<CancelExecutionResult> for CancelRequestExecutionOutput {
+    fn from(result: CancelExecutionResult) -> Self {
+        Self {
+            execution_id: result.execution_id.to_string(),
+            cancelled: result.cancelled,
+        }
+    }
+}
+
+impl From<ExecutionEvent> for ExecutionEventDto {
+    fn from(event: ExecutionEvent) -> Self {
+        Self {
+            execution_id: event.execution_id.to_string(),
+            sequence: event.sequence,
+            kind: ExecutionEventKindDto::from(event.kind),
+        }
+    }
+}
+
+impl From<ExecutionEventKind> for ExecutionEventKindDto {
+    fn from(kind: ExecutionEventKind) -> Self {
+        match kind {
+            ExecutionEventKind::Started { method, url } => Self::Started { method, url },
+            ExecutionEventKind::UploadProgress {
+                sent_bytes,
+                total_bytes,
+            } => Self::UploadProgress {
+                sent_bytes,
+                total_bytes,
+            },
+            ExecutionEventKind::ResponseHeaders { status, headers } => Self::ResponseHeaders {
+                status,
+                headers: headers.into_iter().map(ExecutionHeaderDto::from).collect(),
+            },
+            ExecutionEventKind::DownloadProgress {
+                received_bytes,
+                total_bytes,
+            } => Self::DownloadProgress {
+                received_bytes,
+                total_bytes,
+            },
+            ExecutionEventKind::Completed {
+                status,
+                body_preview,
+                body_truncated,
+            } => Self::Completed {
+                status,
+                body_preview,
+                body_truncated,
+            },
+            ExecutionEventKind::Failed { message } => Self::Failed { message },
+            ExecutionEventKind::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl From<ExecutionHeader> for ExecutionHeaderDto {
+    fn from(header: ExecutionHeader) -> Self {
+        Self {
+            name: header.name,
+            value: header.value,
+        }
+    }
+}
+
 impl From<BoundaryError> for IpcError {
     fn from(error: BoundaryError) -> Self {
         match error {
             BoundaryError::Workspace(error) => error.into(),
             BoundaryError::Request(error) => error.into(),
+            BoundaryError::Execution(error) => error.into(),
             BoundaryError::InvalidWorkspaceId => Self {
                 code: IpcErrorCode::InvalidInput,
                 message: "Workspace id is invalid.".to_owned(),
@@ -792,9 +1026,34 @@ impl From<BoundaryError> for IpcError {
                 details: Some("tabId".to_owned()),
                 retryable: false,
             },
+            BoundaryError::InvalidExecutionId => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "Execution id is invalid.".to_owned(),
+                details: Some("executionId".to_owned()),
+                retryable: false,
+            },
             BoundaryError::StateUnavailable => Self {
                 code: IpcErrorCode::StateUnavailable,
                 message: "Workspace state is temporarily unavailable.".to_owned(),
+                details: None,
+                retryable: true,
+            },
+        }
+    }
+}
+
+impl From<ExecutionError> for IpcError {
+    fn from(error: ExecutionError) -> Self {
+        match error {
+            ExecutionError::InvalidInput(detail) => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "Execution input is invalid.".to_owned(),
+                details: Some(detail),
+                retryable: false,
+            },
+            ExecutionError::StateUnavailable => Self {
+                code: IpcErrorCode::StateUnavailable,
+                message: "Execution state is temporarily unavailable.".to_owned(),
                 details: None,
                 retryable: true,
             },
