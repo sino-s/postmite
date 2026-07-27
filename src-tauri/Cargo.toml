@@ -1,0 +1,22 @@
+[package]
+name = "postmite"
+version = "0.1.0"
+description = "A lightweight, local-first desktop API client."
+authors = ["sino-s"]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/sino-s/postmite"
+
+[lib]
+name = "postmite_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "postmite"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Main Postmite window with no native permissions until explicit IPC is added.",
+  "windows": ["main"],
+  "permissions": []
+}

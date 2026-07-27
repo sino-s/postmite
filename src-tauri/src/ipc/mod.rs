@@ -1,0 +1,1 @@
+//! Typed Tauri IPC boundary.
