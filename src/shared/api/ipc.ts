@@ -1,10 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
+  CloseRequestTabInput,
+  CreateSavedRequestInput,
   CreateWorkspaceInput,
+  IpcCommandContracts,
   IpcError,
+  OpenSavedRequestTabInput,
+  RequestDraftIdInput,
   RenameWorkspaceInput,
-  WorkspaceCommandContracts,
+  UpdateRequestDraftInput,
   WorkspaceIdInput,
 } from "./generated/ipc";
 
@@ -22,16 +27,16 @@ export class IpcCommandError extends Error implements IpcError {
   }
 }
 
-export async function invokeCommand<Command extends WorkspaceCommandName>(
+export async function invokeCommand<Command extends IpcCommandName>(
   command: Command,
-  input: WorkspaceCommandContracts[Command]["input"],
-): Promise<WorkspaceCommandContracts[Command]["output"]> {
+  input: IpcCommandContracts[Command]["input"],
+): Promise<IpcCommandContracts[Command]["output"]> {
   try {
     if (input === undefined) {
-      return await invoke<WorkspaceCommandContracts[Command]["output"]>(command);
+      return await invoke<IpcCommandContracts[Command]["output"]>(command);
     }
 
-    return await invoke<WorkspaceCommandContracts[Command]["output"]>(command, {
+    return await invoke<IpcCommandContracts[Command]["output"]>(command, {
       input,
     });
   } catch (error) {
@@ -51,7 +56,25 @@ export const workspaceIpc = {
     invokeCommand("delete_workspace", input),
 };
 
-type WorkspaceCommandName = keyof WorkspaceCommandContracts;
+export const requestIpc = {
+  listRequestWorkspace: (input: WorkspaceIdInput) =>
+    invokeCommand("list_request_workspace", input),
+  openUnsavedRequestTab: (input: WorkspaceIdInput) =>
+    invokeCommand("open_unsaved_request_tab", input),
+  createSavedRequest: (input: CreateSavedRequestInput) =>
+    invokeCommand("create_saved_request", input),
+  openSavedRequestTab: (input: OpenSavedRequestTabInput) =>
+    invokeCommand("open_saved_request_tab", input),
+  updateRequestDraft: (input: UpdateRequestDraftInput) =>
+    invokeCommand("update_request_draft", input),
+  flushRequestDrafts: () => invokeCommand("flush_request_drafts", undefined),
+  saveRequestDraft: (input: RequestDraftIdInput) =>
+    invokeCommand("save_request_draft", input),
+  closeRequestTab: (input: CloseRequestTabInput) =>
+    invokeCommand("close_request_tab", input),
+};
+
+type IpcCommandName = keyof IpcCommandContracts;
 
 function normalizeIpcError(error: unknown) {
   if (isIpcError(error)) {

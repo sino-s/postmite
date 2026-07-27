@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
 }));
 
-import { invokeCommand, workspaceIpc } from "./ipc";
+import { invokeCommand, requestIpc, workspaceIpc } from "./ipc";
 
 describe("typed IPC adapter", () => {
   beforeEach(() => {
@@ -35,6 +35,45 @@ describe("typed IPC adapter", () => {
     await invokeCommand("list_workspaces", undefined);
 
     expect(invokeMock).toHaveBeenCalledWith("list_workspaces");
+  });
+
+  it("invokes request commands with ordered duplicate fields intact", async () => {
+    invokeMock.mockResolvedValue({
+      workspaceId: "workspace-1",
+      savedRequests: [],
+      drafts: [],
+      tabs: [],
+    });
+
+    await requestIpc.createSavedRequest({
+      workspaceId: "workspace-1",
+      content: {
+        name: "Duplicate fields",
+        method: "GET",
+        url: "https://example.test",
+        query: [
+          { enabled: true, order: 0, name: "tag", value: "first" },
+          { enabled: false, order: 1, name: "tag", value: "" },
+        ],
+        headers: [],
+      },
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("create_saved_request", {
+      input: {
+        workspaceId: "workspace-1",
+        content: {
+          name: "Duplicate fields",
+          method: "GET",
+          url: "https://example.test",
+          query: [
+            { enabled: true, order: 0, name: "tag", value: "first" },
+            { enabled: false, order: 1, name: "tag", value: "" },
+          ],
+          headers: [],
+        },
+      },
+    });
   });
 
   it("wraps safe Rust IPC errors without exposing unknown thrown values", async () => {
