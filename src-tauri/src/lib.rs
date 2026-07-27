@@ -25,6 +25,13 @@ impl AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            ipc::list_workspaces,
+            ipc::create_workspace,
+            ipc::rename_workspace,
+            ipc::switch_workspace,
+            ipc::delete_workspace,
+        ])
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data_dir)?;
