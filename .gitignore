@@ -1,0 +1,24 @@
+# Product design documents are intentionally local.
+docs/*
+
+# Build output
+dist/
+target/
+src-tauri/target/
+
+# Dependencies
+node_modules/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+
+# Logs and coverage
+*.log
+coverage/
