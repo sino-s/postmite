@@ -8,6 +8,7 @@ pub struct WorkspaceSummary {
     pub id: WorkspaceId,
     pub name: WorkspaceName,
     pub is_selected: bool,
+    pub base_directory: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -27,6 +28,11 @@ pub trait WorkspaceRepository {
         &mut self,
         id: WorkspaceId,
         name: WorkspaceName,
+    ) -> Result<WorkspaceSnapshot, WorkspaceError>;
+    fn set_workspace_base_directory(
+        &mut self,
+        id: WorkspaceId,
+        base_directory: Option<String>,
     ) -> Result<WorkspaceSnapshot, WorkspaceError>;
     fn switch_workspace(&mut self, id: WorkspaceId) -> Result<WorkspaceSnapshot, WorkspaceError>;
     fn delete_workspace(&mut self, id: WorkspaceId) -> Result<WorkspaceSnapshot, WorkspaceError>;
@@ -71,6 +77,15 @@ where
         )
     }
 
+    pub fn set_workspace_base_directory(
+        &mut self,
+        id: WorkspaceId,
+        base_directory: Option<String>,
+    ) -> Result<WorkspaceSnapshot, WorkspaceError> {
+        self.repository
+            .set_workspace_base_directory(id, base_directory)
+    }
+
     pub fn switch_workspace(
         &mut self,
         id: WorkspaceId,
@@ -112,6 +127,7 @@ impl From<Workspace> for WorkspaceSummary {
             id: workspace.id,
             name: workspace.name,
             is_selected: false,
+            base_directory: None,
         }
     }
 }

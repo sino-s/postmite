@@ -45,6 +45,7 @@ pub fn run() {
             ipc::list_workspaces,
             ipc::create_workspace,
             ipc::rename_workspace,
+            ipc::set_workspace_base_directory,
             ipc::switch_workspace,
             ipc::delete_workspace,
             ipc::list_request_workspace,
@@ -74,6 +75,8 @@ pub fn run() {
             ipc::delete_cookie,
             ipc::clear_cookies,
             ipc::reveal_cookie_value,
+            ipc::describe_body_file,
+            ipc::relink_body_files,
             ipc::start_request_execution,
             ipc::cancel_request_execution,
         ])

@@ -8,6 +8,7 @@ import type {
   CreateSavedRequestInput,
   CreateCollectionFolderInput,
   CreateWorkspaceInput,
+  DescribeBodyFileInput,
   ExecutionRecordIdInput,
   IpcCommandContracts,
   IpcError,
@@ -15,6 +16,7 @@ import type {
   MoveSavedRequestInput,
   OpenSavedRequestTabInput,
   RequestDraftIdInput,
+  RelinkBodyFilesInput,
   ResolveRequestContentInput,
   RenameWorkspaceInput,
   RenameCollectionFolderInput,
@@ -22,6 +24,7 @@ import type {
   SelectEnvironmentInput,
   SetExecutionHistoryDisabledInput,
   SetExecutionRecordPinnedInput,
+  SetWorkspaceBaseDirectoryInput,
   StartRequestExecutionInput,
   UpdateRequestDraftInput,
   UpsertCookieInput,
@@ -65,6 +68,8 @@ export const workspaceIpc = {
     invokeCommand("create_workspace", input),
   renameWorkspace: (input: RenameWorkspaceInput) =>
     invokeCommand("rename_workspace", input),
+  setWorkspaceBaseDirectory: (input: SetWorkspaceBaseDirectoryInput) =>
+    invokeCommand("set_workspace_base_directory", input),
   switchWorkspace: (input: WorkspaceIdInput) =>
     invokeCommand("switch_workspace", input),
   deleteWorkspace: (input: WorkspaceIdInput) =>
@@ -122,6 +127,10 @@ export const requestIpc = {
   clearCookies: (input: WorkspaceIdInput) => invokeCommand("clear_cookies", input),
   revealCookieValue: (input: CookieIdInput) =>
     invokeCommand("reveal_cookie_value", input),
+  describeBodyFile: (input: DescribeBodyFileInput) =>
+    invokeCommand("describe_body_file", input),
+  relinkBodyFiles: (input: RelinkBodyFilesInput) =>
+    invokeCommand("relink_body_files", input),
   startRequestExecution: (input: StartRequestExecutionInput) =>
     invokeCommand("start_request_execution", input),
   cancelRequestExecution: (input: CancelRequestExecutionInput) =>

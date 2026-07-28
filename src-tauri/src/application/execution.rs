@@ -11,7 +11,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::domain::request::{RequestContent, RequestDraftId};
+use crate::domain::request::{MultipartPart, RequestBody, RequestContent, RequestDraftId};
 
 pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_RESPONSE_PREVIEW_BYTES: usize = 1024 * 1024;
@@ -48,6 +48,7 @@ impl FromStr for ExecutionId {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ExecutionRequest {
     pub draft_id: RequestDraftId,
+    pub workspace_base_directory: Option<String>,
     pub content: RequestContent,
 }
 
@@ -266,10 +267,28 @@ fn validate_request(request: &ExecutionRequest) -> Result<(), ExecutionError> {
     if request.content.url.trim().is_empty() {
         return Err(ExecutionError::InvalidInput("url.required".to_owned()));
     }
-    if request.content.body.len() > MAX_REQUEST_BODY_BYTES {
+    if body_text_bytes(&request.content.body) > MAX_REQUEST_BODY_BYTES {
         return Err(ExecutionError::InvalidInput("body.tooLarge".to_owned()));
     }
     Ok(())
+}
+
+fn body_text_bytes(body: &RequestBody) -> usize {
+    match body {
+        RequestBody::None | RequestBody::Binary { .. } => 0,
+        RequestBody::Raw { content } => content.len(),
+        RequestBody::UrlEncoded { fields } => fields
+            .iter()
+            .map(|field| field.name.len() + field.value.len())
+            .sum(),
+        RequestBody::Multipart { parts } => parts
+            .iter()
+            .map(|part| match part {
+                MultipartPart::Field { name, value, .. } => name.len() + value.len(),
+                MultipartPart::File { name, .. } => name.len(),
+            })
+            .sum(),
+    }
 }
 
 #[cfg(test)]
@@ -323,8 +342,11 @@ mod tests {
         let coordinator = Arc::new(ExecutionCoordinator::new());
         let request = ExecutionRequest {
             draft_id: RequestDraftId::new(),
+            workspace_base_directory: None,
             content: RequestContent {
-                body: "x".repeat(MAX_REQUEST_BODY_BYTES + 1),
+                body: RequestBody::Raw {
+                    content: "x".repeat(MAX_REQUEST_BODY_BYTES + 1),
+                },
                 ..RequestContent::blank()
             },
         };

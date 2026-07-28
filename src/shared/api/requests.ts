@@ -7,12 +7,14 @@ import type {
   CreateSavedRequestInput,
   CookieIdInput,
   CookieJarSnapshotDto,
+  DescribeBodyFileInput,
   ExecutionRecordIdInput,
   ExecutionHistorySnapshotDto,
   MoveCollectionFolderInput,
   MoveSavedRequestInput,
   OpenSavedRequestTabInput,
   RequestDraftIdInput,
+  RelinkBodyFilesInput,
   ResolveRequestContentInput,
   RequestWorkspaceSnapshotDto,
   RenameCollectionFolderInput,
@@ -96,6 +98,21 @@ export async function selectEnvironment(
 
 export async function resolveRequestContent(input: ResolveRequestContentInput) {
   return requestIpc.resolveRequestContent(input);
+}
+
+export async function describeBodyFile(input: DescribeBodyFileInput) {
+  return requestIpc.describeBodyFile(input);
+}
+
+export async function relinkBodyFiles(
+  queryClient: QueryClient,
+  input: RelinkBodyFilesInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.relinkBodyFiles(input),
+  );
 }
 
 export async function renameCollectionFolder(

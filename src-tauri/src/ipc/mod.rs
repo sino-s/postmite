@@ -1,6 +1,9 @@
 //! Typed Tauri IPC boundary.
 
 use std::{
+    fs::File,
+    io::Read,
+    path::{Component, Path, PathBuf},
     str::FromStr,
     sync::Arc,
     sync::{MutexGuard, PoisonError},
@@ -8,6 +11,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager, State};
 use ts_rs::{Config, TS};
 
@@ -25,11 +29,11 @@ use crate::{
     application::workspace::{WorkspaceError, WorkspaceService, WorkspaceSnapshot},
     domain::{
         request::{
-            CollectionFolder, CollectionId, CollectionVariable, CookieDraft, CookieId,
-            CookieSameSite, Environment, EnvironmentId, EnvironmentVariable, ExecutionRecord,
-            ExecutionRecordId, ExecutionRecordResponse, OrderedField, RequestContent, RequestDraft,
-            RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId, Variable,
-            VariableValue, WorkspaceCookie,
+            BodyFilePath, BodyFileReference, CollectionFolder, CollectionId, CollectionVariable,
+            CookieDraft, CookieId, CookieSameSite, Environment, EnvironmentId, EnvironmentVariable,
+            ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse, MultipartPart,
+            OrderedField, RequestBody, RequestContent, RequestDraft, RequestDraftId, RequestTab,
+            RequestTabId, SavedRequest, SavedRequestId, Variable, VariableValue, WorkspaceCookie,
         },
         workspace::{WorkspaceId, WorkspaceNameError},
     },
@@ -39,6 +43,7 @@ use crate::{
 pub const LIST_WORKSPACES_COMMAND: &str = "list_workspaces";
 pub const CREATE_WORKSPACE_COMMAND: &str = "create_workspace";
 pub const RENAME_WORKSPACE_COMMAND: &str = "rename_workspace";
+pub const SET_WORKSPACE_BASE_DIRECTORY_COMMAND: &str = "set_workspace_base_directory";
 pub const SWITCH_WORKSPACE_COMMAND: &str = "switch_workspace";
 pub const DELETE_WORKSPACE_COMMAND: &str = "delete_workspace";
 pub const LIST_REQUEST_WORKSPACE_COMMAND: &str = "list_request_workspace";
@@ -68,6 +73,8 @@ pub const UPSERT_COOKIE_COMMAND: &str = "upsert_cookie";
 pub const DELETE_COOKIE_COMMAND: &str = "delete_cookie";
 pub const CLEAR_COOKIES_COMMAND: &str = "clear_cookies";
 pub const REVEAL_COOKIE_VALUE_COMMAND: &str = "reveal_cookie_value";
+pub const DESCRIBE_BODY_FILE_COMMAND: &str = "describe_body_file";
+pub const RELINK_BODY_FILES_COMMAND: &str = "relink_body_files";
 pub const START_REQUEST_EXECUTION_COMMAND: &str = "start_request_execution";
 pub const CANCEL_REQUEST_EXECUTION_COMMAND: &str = "cancel_request_execution";
 pub const REQUEST_EXECUTION_EVENT: &str = "request_execution_event";
@@ -78,6 +85,7 @@ pub struct WorkspaceSummaryDto {
     pub id: String,
     pub name: String,
     pub is_selected: bool,
+    pub base_directory: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -102,6 +110,13 @@ pub struct RenameWorkspaceInput {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct SetWorkspaceBaseDirectoryInput {
+    pub workspace_id: String,
+    pub base_directory: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceIdInput {
     pub workspace_id: String,
 }
@@ -121,9 +136,80 @@ pub struct RequestContentDto {
     pub name: String,
     pub method: String,
     pub url: String,
-    pub body: String,
+    pub body: RequestBodyDto,
     pub query: Vec<OrderedFieldDto>,
     pub headers: Vec<OrderedFieldDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum RequestBodyDto {
+    None,
+    Raw { content: String },
+    UrlEncoded { fields: Vec<OrderedFieldDto> },
+    Multipart { parts: Vec<MultipartPartDto> },
+    Binary { file: BodyFileReferenceDto },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum MultipartPartDto {
+    Field {
+        enabled: bool,
+        order: u32,
+        name: String,
+        value: String,
+    },
+    File {
+        enabled: bool,
+        order: u32,
+        name: String,
+        file: BodyFileReferenceDto,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BodyFileReferenceDto {
+    pub path: BodyFilePathDto,
+    pub file_name: String,
+    pub size: u64,
+    pub modified_at_epoch_seconds: Option<i64>,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum BodyFilePathDto {
+    Relative { path: String },
+    Absolute { path: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DescribeBodyFileInput {
+    pub workspace_id: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkBodyFilesInput {
+    pub workspace_id: String,
+    pub from_path: String,
+    pub replacement_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -645,6 +731,15 @@ pub fn rename_workspace(
 }
 
 #[tauri::command]
+pub fn set_workspace_base_directory(
+    state: State<'_, AppState>,
+    input: SetWorkspaceBaseDirectoryInput,
+) -> Result<WorkspaceSnapshotDto, IpcError> {
+    let service = state.workspaces.lock().map_err(map_poison_error)?;
+    handle_set_workspace_base_directory(service, input)
+}
+
+#[tauri::command]
 pub fn switch_workspace(
     state: State<'_, AppState>,
     input: WorkspaceIdInput,
@@ -903,6 +998,22 @@ pub fn reveal_cookie_value(
 }
 
 #[tauri::command]
+pub fn describe_body_file(
+    state: State<'_, AppState>,
+    input: DescribeBodyFileInput,
+) -> Result<BodyFileReferenceDto, IpcError> {
+    handle_describe_body_file(state, input)
+}
+
+#[tauri::command]
+pub fn relink_body_files(
+    state: State<'_, AppState>,
+    input: RelinkBodyFilesInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    handle_relink_body_files(state, input)
+}
+
+#[tauri::command]
 pub fn start_request_execution(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -954,6 +1065,20 @@ where
     let id = parse_workspace_id(&input.workspace_id)?;
     service
         .rename_workspace(id, input.name)
+        .map(WorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Workspace(error).into())
+}
+
+pub fn handle_set_workspace_base_directory<R>(
+    mut service: MutexGuard<'_, WorkspaceService<R>>,
+    input: SetWorkspaceBaseDirectoryInput,
+) -> Result<WorkspaceSnapshotDto, IpcError>
+where
+    R: crate::application::workspace::WorkspaceRepository,
+{
+    let id = parse_workspace_id(&input.workspace_id)?;
+    service
+        .set_workspace_base_directory(id, input.base_directory)
         .map(WorkspaceSnapshotDto::from)
         .map_err(|error| BoundaryError::Workspace(error).into())
 }
@@ -1384,6 +1509,63 @@ where
         .map_err(|error| BoundaryError::Request(error).into())
 }
 
+pub fn handle_describe_body_file(
+    state: State<'_, AppState>,
+    input: DescribeBodyFileInput,
+) -> Result<BodyFileReferenceDto, IpcError> {
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let path = PathBuf::from(&input.path);
+    if !path.is_absolute() {
+        return Err(IpcError::from(BoundaryError::Request(
+            RequestError::InvalidInput("body.file.path.absoluteRequired".to_owned()),
+        )));
+    }
+    let workspace_base_directory = {
+        let workspaces = state.workspaces.lock().map_err(map_poison_error)?;
+        workspaces
+            .list_workspaces()
+            .map_err(|error| IpcError::from(BoundaryError::Workspace(error)))?
+            .workspaces
+            .into_iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| workspace.base_directory)
+    };
+    describe_body_file_reference(&path, workspace_base_directory.as_deref())
+        .map(BodyFileReferenceDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_relink_body_files(
+    state: State<'_, AppState>,
+    input: RelinkBodyFilesInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let replacement_path = PathBuf::from(&input.replacement_path);
+    if !replacement_path.is_absolute() {
+        return Err(IpcError::from(BoundaryError::Request(
+            RequestError::InvalidInput("body.file.path.absoluteRequired".to_owned()),
+        )));
+    }
+    let workspace_base_directory = {
+        let workspaces = state.workspaces.lock().map_err(map_poison_error)?;
+        workspaces
+            .list_workspaces()
+            .map_err(|error| IpcError::from(BoundaryError::Workspace(error)))?
+            .workspaces
+            .into_iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| workspace.base_directory)
+    };
+    let replacement =
+        describe_body_file_reference(&replacement_path, workspace_base_directory.as_deref())
+            .map_err(|error| IpcError::from(BoundaryError::Request(error)))?;
+    let mut requests = state.requests.lock().map_err(map_poison_error)?;
+    requests
+        .relink_body_files(workspace_id, input.from_path, replacement)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
 pub fn handle_start_request_execution(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -1391,6 +1573,16 @@ pub fn handle_start_request_execution(
 ) -> Result<StartRequestExecutionOutput, IpcError> {
     let workspace_id = parse_workspace_id(&input.workspace_id)?;
     let draft_id = parse_request_draft_id(&input.draft_id)?;
+    let workspace_base_directory = {
+        let workspaces = state.workspaces.lock().map_err(map_poison_error)?;
+        workspaces
+            .list_workspaces()
+            .map_err(|error| IpcError::from(BoundaryError::Workspace(error)))?
+            .workspaces
+            .into_iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| workspace.base_directory)
+    };
     let content = {
         let mut requests = state.requests.lock().map_err(map_poison_error)?;
         requests
@@ -1399,6 +1591,7 @@ pub fn handle_start_request_execution(
     };
     let request = ExecutionRequest {
         draft_id,
+        workspace_base_directory,
         content: content.clone(),
     };
     let request_url_for_cookie_capture = content.url.clone();
@@ -1551,6 +1744,90 @@ fn current_epoch_seconds() -> i64 {
         .unwrap_or(0)
 }
 
+fn describe_body_file_reference(
+    path: &Path,
+    base_directory: Option<&str>,
+) -> Result<BodyFileReference, RequestError> {
+    let metadata = std::fs::metadata(path).map_err(RequestError::persistence)?;
+    if !metadata.is_file() {
+        return Err(RequestError::InvalidInput(
+            "body.file.path.notFile".to_owned(),
+        ));
+    }
+    let canonical_path = path.canonicalize().map_err(RequestError::persistence)?;
+    let file_name = canonical_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| RequestError::InvalidInput("body.file.name.invalid".to_owned()))?
+        .to_owned();
+    let modified_at_epoch_seconds = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok());
+    let path = match base_directory {
+        Some(base_directory) => {
+            let base = PathBuf::from(base_directory)
+                .canonicalize()
+                .map_err(RequestError::persistence)?;
+            if let Ok(relative) = canonical_path.strip_prefix(&base) {
+                let relative = relative
+                    .to_str()
+                    .ok_or_else(|| {
+                        RequestError::InvalidInput("body.file.relative.invalid".to_owned())
+                    })?
+                    .to_owned();
+                if path_has_unsafe_components(&relative) {
+                    return Err(RequestError::InvalidInput(
+                        "body.file.relative.invalid".to_owned(),
+                    ));
+                }
+                BodyFilePath::Relative { path: relative }
+            } else {
+                BodyFilePath::Absolute {
+                    path: canonical_path.to_string_lossy().into_owned(),
+                }
+            }
+        }
+        None => BodyFilePath::Absolute {
+            path: canonical_path.to_string_lossy().into_owned(),
+        },
+    };
+
+    Ok(BodyFileReference {
+        path,
+        file_name,
+        size: metadata.len(),
+        modified_at_epoch_seconds,
+        sha256: sha256_file(&canonical_path)?,
+    })
+}
+
+fn sha256_file(path: &Path) -> Result<String, RequestError> {
+    let mut file = File::open(path).map_err(RequestError::persistence)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 16 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(RequestError::persistence)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn path_has_unsafe_components(path: &str) -> bool {
+    let path = Path::new(path);
+    path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+}
+
 pub fn handle_cancel_request_execution(
     state: State<'_, AppState>,
     input: CancelRequestExecutionInput,
@@ -1576,8 +1853,15 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         WorkspaceSnapshotDto::export_to_string(&cfg)?,
         CreateWorkspaceInput::export_to_string(&cfg)?,
         RenameWorkspaceInput::export_to_string(&cfg)?,
+        SetWorkspaceBaseDirectoryInput::export_to_string(&cfg)?,
         WorkspaceIdInput::export_to_string(&cfg)?,
         OrderedFieldDto::export_to_string(&cfg)?,
+        BodyFilePathDto::export_to_string(&cfg)?,
+        BodyFileReferenceDto::export_to_string(&cfg)?,
+        DescribeBodyFileInput::export_to_string(&cfg)?,
+        RelinkBodyFilesInput::export_to_string(&cfg)?,
+        MultipartPartDto::export_to_string(&cfg)?,
+        RequestBodyDto::export_to_string(&cfg)?,
         RequestContentDto::export_to_string(&cfg)?,
         SavedRequestDto::export_to_string(&cfg)?,
         CollectionFolderDto::export_to_string(&cfg)?,
@@ -1652,6 +1936,10 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \t};\n\
          \trename_workspace: {\n\
          \t\tinput: RenameWorkspaceInput;\n\
+         \t\toutput: WorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tset_workspace_base_directory: {\n\
+         \t\tinput: SetWorkspaceBaseDirectoryInput;\n\
          \t\toutput: WorkspaceSnapshotDto;\n\
          \t};\n\
          \tswitch_workspace: {\n\
@@ -1774,6 +2062,14 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \t\tinput: CookieIdInput;\n\
          \t\toutput: RevealCookieValueOutput;\n\
          \t};\n\
+         \tdescribe_body_file: {\n\
+         \t\tinput: DescribeBodyFileInput;\n\
+         \t\toutput: BodyFileReferenceDto;\n\
+         \t};\n\
+         \trelink_body_files: {\n\
+         \t\tinput: RelinkBodyFilesInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
          \tstart_request_execution: {\n\
          \t\tinput: StartRequestExecutionInput;\n\
          \t\toutput: StartRequestExecutionOutput;\n\
@@ -1848,6 +2144,7 @@ impl From<WorkspaceSnapshot> for WorkspaceSnapshotDto {
                     id: workspace.id.to_string(),
                     name: workspace.name.to_string(),
                     is_selected: workspace.is_selected,
+                    base_directory: workspace.base_directory,
                 })
                 .collect(),
         }
@@ -2215,7 +2512,7 @@ impl From<RequestContent> for RequestContentDto {
             name: content.name,
             method: content.method,
             url: content.url,
-            body: content.body,
+            body: RequestBodyDto::from(content.body),
             query: content
                 .query
                 .into_iter()
@@ -2236,13 +2533,149 @@ impl From<RequestContentDto> for RequestContent {
             name: content.name,
             method: content.method,
             url: content.url,
-            body: content.body,
+            body: RequestBody::from(content.body),
             query: content.query.into_iter().map(OrderedField::from).collect(),
             headers: content
                 .headers
                 .into_iter()
                 .map(OrderedField::from)
                 .collect(),
+        }
+    }
+}
+
+impl From<RequestBody> for RequestBodyDto {
+    fn from(body: RequestBody) -> Self {
+        match body {
+            RequestBody::None => Self::None,
+            RequestBody::Raw { content } => Self::Raw { content },
+            RequestBody::UrlEncoded { fields } => Self::UrlEncoded {
+                fields: fields.into_iter().map(OrderedFieldDto::from).collect(),
+            },
+            RequestBody::Multipart { parts } => Self::Multipart {
+                parts: parts.into_iter().map(MultipartPartDto::from).collect(),
+            },
+            RequestBody::Binary { file } => Self::Binary {
+                file: BodyFileReferenceDto::from(file),
+            },
+        }
+    }
+}
+
+impl From<RequestBodyDto> for RequestBody {
+    fn from(body: RequestBodyDto) -> Self {
+        match body {
+            RequestBodyDto::None => Self::None,
+            RequestBodyDto::Raw { content } => Self::Raw { content },
+            RequestBodyDto::UrlEncoded { fields } => Self::UrlEncoded {
+                fields: fields.into_iter().map(OrderedField::from).collect(),
+            },
+            RequestBodyDto::Multipart { parts } => Self::Multipart {
+                parts: parts.into_iter().map(MultipartPart::from).collect(),
+            },
+            RequestBodyDto::Binary { file } => Self::Binary {
+                file: BodyFileReference::from(file),
+            },
+        }
+    }
+}
+
+impl From<MultipartPart> for MultipartPartDto {
+    fn from(part: MultipartPart) -> Self {
+        match part {
+            MultipartPart::Field {
+                enabled,
+                order,
+                name,
+                value,
+            } => Self::Field {
+                enabled,
+                order,
+                name,
+                value,
+            },
+            MultipartPart::File {
+                enabled,
+                order,
+                name,
+                file,
+            } => Self::File {
+                enabled,
+                order,
+                name,
+                file: BodyFileReferenceDto::from(file),
+            },
+        }
+    }
+}
+
+impl From<MultipartPartDto> for MultipartPart {
+    fn from(part: MultipartPartDto) -> Self {
+        match part {
+            MultipartPartDto::Field {
+                enabled,
+                order,
+                name,
+                value,
+            } => Self::Field {
+                enabled,
+                order,
+                name,
+                value,
+            },
+            MultipartPartDto::File {
+                enabled,
+                order,
+                name,
+                file,
+            } => Self::File {
+                enabled,
+                order,
+                name,
+                file: BodyFileReference::from(file),
+            },
+        }
+    }
+}
+
+impl From<BodyFileReference> for BodyFileReferenceDto {
+    fn from(file: BodyFileReference) -> Self {
+        Self {
+            path: BodyFilePathDto::from(file.path),
+            file_name: file.file_name,
+            size: file.size,
+            modified_at_epoch_seconds: file.modified_at_epoch_seconds,
+            sha256: file.sha256,
+        }
+    }
+}
+
+impl From<BodyFileReferenceDto> for BodyFileReference {
+    fn from(file: BodyFileReferenceDto) -> Self {
+        Self {
+            path: BodyFilePath::from(file.path),
+            file_name: file.file_name,
+            size: file.size,
+            modified_at_epoch_seconds: file.modified_at_epoch_seconds,
+            sha256: file.sha256,
+        }
+    }
+}
+
+impl From<BodyFilePath> for BodyFilePathDto {
+    fn from(path: BodyFilePath) -> Self {
+        match path {
+            BodyFilePath::Relative { path } => Self::Relative { path },
+            BodyFilePath::Absolute { path } => Self::Absolute { path },
+        }
+    }
+}
+
+impl From<BodyFilePathDto> for BodyFilePath {
+    fn from(path: BodyFilePathDto) -> Self {
+        match path {
+            BodyFilePathDto::Relative { path } => Self::Relative { path },
+            BodyFilePathDto::Absolute { path } => Self::Absolute { path },
         }
     }
 }
@@ -2556,6 +2989,7 @@ mod tests {
                         id: workspace.id,
                         name: workspace.name,
                         is_selected: true,
+                        base_directory: None,
                     }],
                 },
                 next_error: None,
@@ -2612,6 +3046,14 @@ mod tests {
             self.result("rename")
         }
 
+        fn set_workspace_base_directory(
+            &mut self,
+            _id: WorkspaceId,
+            _base_directory: Option<String>,
+        ) -> Result<WorkspaceSnapshot, WorkspaceError> {
+            self.result("set_base_directory")
+        }
+
         fn switch_workspace(
             &mut self,
             _id: WorkspaceId,
@@ -2641,7 +3083,8 @@ mod tests {
                 "workspaces": [{
                     "id": value["workspaces"][0]["id"],
                     "name": "Personal",
-                    "isSelected": true
+                    "isSelected": true,
+                    "baseDirectory": null
                 }]
             })
         );
