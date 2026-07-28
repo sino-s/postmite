@@ -17,13 +17,16 @@ use crate::{
     },
     application::request::{
         CloseTabDecision, CollectionLocation, RequestError, RequestRepository, RequestService,
-        RequestWorkspaceSnapshot,
+        RequestWorkspaceSnapshot, ResolvedField, ResolvedRequestContent, ResolvedValue,
+        ResolvedVariableReference, VariableResolutionError, VariableResolutionErrorKind,
+        VariableSource,
     },
     application::workspace::{WorkspaceError, WorkspaceService, WorkspaceSnapshot},
     domain::{
         request::{
-            CollectionFolder, CollectionId, OrderedField, RequestContent, RequestDraft,
-            RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId,
+            CollectionFolder, CollectionId, CollectionVariable, Environment, EnvironmentId,
+            EnvironmentVariable, OrderedField, RequestContent, RequestDraft, RequestDraftId,
+            RequestTab, RequestTabId, SavedRequest, SavedRequestId, Variable, VariableValue,
         },
         workspace::{WorkspaceId, WorkspaceNameError},
     },
@@ -39,6 +42,8 @@ pub const LIST_REQUEST_WORKSPACE_COMMAND: &str = "list_request_workspace";
 pub const OPEN_UNSAVED_REQUEST_TAB_COMMAND: &str = "open_unsaved_request_tab";
 pub const CREATE_SAVED_REQUEST_COMMAND: &str = "create_saved_request";
 pub const CREATE_COLLECTION_FOLDER_COMMAND: &str = "create_collection_folder";
+pub const SELECT_ENVIRONMENT_COMMAND: &str = "select_environment";
+pub const RESOLVE_REQUEST_CONTENT_COMMAND: &str = "resolve_request_content";
 pub const RENAME_COLLECTION_FOLDER_COMMAND: &str = "rename_collection_folder";
 pub const MOVE_COLLECTION_FOLDER_COMMAND: &str = "move_collection_folder";
 pub const DUPLICATE_COLLECTION_FOLDER_COMMAND: &str = "duplicate_collection_folder";
@@ -131,6 +136,49 @@ pub struct CollectionFolderDto {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct EnvironmentDto {
+    pub id: String,
+    pub workspace_id: String,
+    pub name: String,
+    pub position: u32,
+    pub is_selected: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum VariableValueDto {
+    Plain { value: String },
+    SecretReference { reference: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct VariableDto {
+    pub name: String,
+    pub value: VariableValueDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionVariableDto {
+    pub workspace_id: String,
+    pub variable: VariableDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentVariableDto {
+    pub environment_id: String,
+    pub workspace_id: String,
+    pub variable: VariableDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct RequestDraftDto {
     pub id: String,
     pub workspace_id: String,
@@ -156,6 +204,9 @@ pub struct RequestTabDto {
 pub struct RequestWorkspaceSnapshotDto {
     pub workspace_id: String,
     pub collection_folders: Vec<CollectionFolderDto>,
+    pub environments: Vec<EnvironmentDto>,
+    pub collection_variables: Vec<CollectionVariableDto>,
+    pub environment_variables: Vec<EnvironmentVariableDto>,
     pub saved_requests: Vec<SavedRequestDto>,
     pub drafts: Vec<RequestDraftDto>,
     pub tabs: Vec<RequestTabDto>,
@@ -173,6 +224,76 @@ pub struct CreateSavedRequestInput {
 pub struct CollectionLocationDto {
     pub collection_id: Option<String>,
     pub position: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectEnvironmentInput {
+    pub workspace_id: String,
+    pub environment_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveRequestContentInput {
+    pub workspace_id: String,
+    pub content: RequestContentDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedRequestContentDto {
+    pub url: ResolvedValueDto,
+    pub body: ResolvedValueDto,
+    pub query: Vec<ResolvedFieldDto>,
+    pub headers: Vec<ResolvedFieldDto>,
+    pub references: Vec<ResolvedVariableReferenceDto>,
+    pub errors: Vec<VariableResolutionErrorDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedFieldDto {
+    pub enabled: bool,
+    pub order: u32,
+    pub name: ResolvedValueDto,
+    pub value: ResolvedValueDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedValueDto {
+    pub value: String,
+    pub contains_secret: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedVariableReferenceDto {
+    pub name: String,
+    pub source: VariableSourceDto,
+    pub value: ResolvedValueDto,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum VariableSourceDto {
+    Collection,
+    Environment,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct VariableResolutionErrorDto {
+    pub name: String,
+    pub kind: VariableResolutionErrorKindDto,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum VariableResolutionErrorKindDto {
+    Missing,
+    Cycle,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -363,6 +484,7 @@ pub enum BoundaryError {
     Request(RequestError),
     InvalidWorkspaceId,
     InvalidCollectionId,
+    InvalidEnvironmentId,
     InvalidSavedRequestId,
     InvalidRequestDraftId,
     InvalidRequestTabId,
@@ -447,6 +569,24 @@ pub fn create_collection_folder(
 ) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
     let service = state.requests.lock().map_err(map_poison_error)?;
     handle_create_collection_folder(service, input)
+}
+
+#[tauri::command]
+pub fn select_environment(
+    state: State<'_, AppState>,
+    input: SelectEnvironmentInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_select_environment(service, input)
+}
+
+#[tauri::command]
+pub fn resolve_request_content(
+    state: State<'_, AppState>,
+    input: ResolveRequestContentInput,
+) -> Result<ResolvedRequestContentDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_resolve_request_content(service, input)
 }
 
 #[tauri::command]
@@ -695,6 +835,35 @@ where
         .map_err(|error| BoundaryError::Request(error).into())
 }
 
+pub fn handle_select_environment<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: SelectEnvironmentInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let environment_id = parse_optional_environment_id(input.environment_id)?;
+    service
+        .select_environment(workspace_id, environment_id)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_resolve_request_content<R>(
+    service: MutexGuard<'_, RequestService<R>>,
+    input: ResolveRequestContentInput,
+) -> Result<ResolvedRequestContentDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    service
+        .resolve_request_content(workspace_id, &RequestContent::from(input.content))
+        .map(ResolvedRequestContentDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
 pub fn handle_rename_collection_folder<R>(
     mut service: MutexGuard<'_, RequestService<R>>,
     input: RenameCollectionFolderInput,
@@ -933,11 +1102,25 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         RequestContentDto::export_to_string(&cfg)?,
         SavedRequestDto::export_to_string(&cfg)?,
         CollectionFolderDto::export_to_string(&cfg)?,
+        EnvironmentDto::export_to_string(&cfg)?,
+        VariableValueDto::export_to_string(&cfg)?,
+        VariableDto::export_to_string(&cfg)?,
+        CollectionVariableDto::export_to_string(&cfg)?,
+        EnvironmentVariableDto::export_to_string(&cfg)?,
         RequestDraftDto::export_to_string(&cfg)?,
         RequestTabDto::export_to_string(&cfg)?,
         RequestWorkspaceSnapshotDto::export_to_string(&cfg)?,
         CreateSavedRequestInput::export_to_string(&cfg)?,
         CollectionLocationDto::export_to_string(&cfg)?,
+        SelectEnvironmentInput::export_to_string(&cfg)?,
+        ResolveRequestContentInput::export_to_string(&cfg)?,
+        ResolvedRequestContentDto::export_to_string(&cfg)?,
+        ResolvedFieldDto::export_to_string(&cfg)?,
+        ResolvedValueDto::export_to_string(&cfg)?,
+        ResolvedVariableReferenceDto::export_to_string(&cfg)?,
+        VariableSourceDto::export_to_string(&cfg)?,
+        VariableResolutionErrorDto::export_to_string(&cfg)?,
+        VariableResolutionErrorKindDto::export_to_string(&cfg)?,
         CreateCollectionFolderInput::export_to_string(&cfg)?,
         RenameCollectionFolderInput::export_to_string(&cfg)?,
         MoveCollectionFolderInput::export_to_string(&cfg)?,
@@ -1007,6 +1190,14 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \tcreate_collection_folder: {\n\
          \t\tinput: CreateCollectionFolderInput;\n\
          \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tselect_environment: {\n\
+         \t\tinput: SelectEnvironmentInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tresolve_request_content: {\n\
+         \t\tinput: ResolveRequestContentInput;\n\
+         \t\toutput: ResolvedRequestContentDto;\n\
          \t};\n\
          \trename_collection_folder: {\n\
          \t\tinput: RenameCollectionFolderInput;\n\
@@ -1083,6 +1274,14 @@ fn parse_optional_collection_id(value: Option<String>) -> Result<Option<Collecti
     value.as_deref().map(parse_collection_id).transpose()
 }
 
+fn parse_environment_id(value: &str) -> Result<EnvironmentId, IpcError> {
+    EnvironmentId::from_str(value).map_err(|_| BoundaryError::InvalidEnvironmentId.into())
+}
+
+fn parse_optional_environment_id(value: Option<String>) -> Result<Option<EnvironmentId>, IpcError> {
+    value.as_deref().map(parse_environment_id).transpose()
+}
+
 fn parse_saved_request_id(value: &str) -> Result<SavedRequestId, IpcError> {
     SavedRequestId::from_str(value).map_err(|_| BoundaryError::InvalidSavedRequestId.into())
 }
@@ -1129,6 +1328,21 @@ impl From<RequestWorkspaceSnapshot> for RequestWorkspaceSnapshotDto {
                 .into_iter()
                 .map(CollectionFolderDto::from)
                 .collect(),
+            environments: snapshot
+                .environments
+                .into_iter()
+                .map(EnvironmentDto::from)
+                .collect(),
+            collection_variables: snapshot
+                .collection_variables
+                .into_iter()
+                .map(CollectionVariableDto::from)
+                .collect(),
+            environment_variables: snapshot
+                .environment_variables
+                .into_iter()
+                .map(EnvironmentVariableDto::from)
+                .collect(),
             saved_requests: snapshot
                 .saved_requests
                 .into_iter()
@@ -1168,6 +1382,55 @@ impl From<CollectionFolder> for CollectionFolderDto {
     }
 }
 
+impl From<Environment> for EnvironmentDto {
+    fn from(environment: Environment) -> Self {
+        Self {
+            id: environment.id.to_string(),
+            workspace_id: environment.workspace_id.to_string(),
+            name: environment.name,
+            position: environment.position,
+            is_selected: environment.is_selected,
+        }
+    }
+}
+
+impl From<CollectionVariable> for CollectionVariableDto {
+    fn from(variable: CollectionVariable) -> Self {
+        Self {
+            workspace_id: variable.workspace_id.to_string(),
+            variable: VariableDto::from(variable.variable),
+        }
+    }
+}
+
+impl From<EnvironmentVariable> for EnvironmentVariableDto {
+    fn from(variable: EnvironmentVariable) -> Self {
+        Self {
+            environment_id: variable.environment_id.to_string(),
+            workspace_id: variable.workspace_id.to_string(),
+            variable: VariableDto::from(variable.variable),
+        }
+    }
+}
+
+impl From<Variable> for VariableDto {
+    fn from(variable: Variable) -> Self {
+        Self {
+            name: variable.name,
+            value: VariableValueDto::from(variable.value),
+        }
+    }
+}
+
+impl From<VariableValue> for VariableValueDto {
+    fn from(value: VariableValue) -> Self {
+        match value {
+            VariableValue::Plain(value) => Self::Plain { value },
+            VariableValue::SecretReference(reference) => Self::SecretReference { reference },
+        }
+    }
+}
+
 impl TryFrom<CollectionLocationDto> for CollectionLocation {
     type Error = IpcError;
 
@@ -1176,6 +1439,92 @@ impl TryFrom<CollectionLocationDto> for CollectionLocation {
             collection_id: parse_optional_collection_id(location.collection_id)?,
             position: location.position,
         })
+    }
+}
+
+impl From<ResolvedRequestContent> for ResolvedRequestContentDto {
+    fn from(content: ResolvedRequestContent) -> Self {
+        Self {
+            url: ResolvedValueDto::from(content.url),
+            body: ResolvedValueDto::from(content.body),
+            query: content
+                .query
+                .into_iter()
+                .map(ResolvedFieldDto::from)
+                .collect(),
+            headers: content
+                .headers
+                .into_iter()
+                .map(ResolvedFieldDto::from)
+                .collect(),
+            references: content
+                .references
+                .into_iter()
+                .map(ResolvedVariableReferenceDto::from)
+                .collect(),
+            errors: content
+                .errors
+                .into_iter()
+                .map(VariableResolutionErrorDto::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<ResolvedField> for ResolvedFieldDto {
+    fn from(field: ResolvedField) -> Self {
+        Self {
+            enabled: field.enabled,
+            order: field.order,
+            name: ResolvedValueDto::from(field.name),
+            value: ResolvedValueDto::from(field.value),
+        }
+    }
+}
+
+impl From<ResolvedValue> for ResolvedValueDto {
+    fn from(value: ResolvedValue) -> Self {
+        Self {
+            value: value.value,
+            contains_secret: value.contains_secret,
+        }
+    }
+}
+
+impl From<ResolvedVariableReference> for ResolvedVariableReferenceDto {
+    fn from(reference: ResolvedVariableReference) -> Self {
+        Self {
+            name: reference.name,
+            source: VariableSourceDto::from(reference.source),
+            value: ResolvedValueDto::from(reference.value),
+        }
+    }
+}
+
+impl From<VariableSource> for VariableSourceDto {
+    fn from(source: VariableSource) -> Self {
+        match source {
+            VariableSource::Collection => Self::Collection,
+            VariableSource::Environment => Self::Environment,
+        }
+    }
+}
+
+impl From<VariableResolutionError> for VariableResolutionErrorDto {
+    fn from(error: VariableResolutionError) -> Self {
+        Self {
+            name: error.name,
+            kind: VariableResolutionErrorKindDto::from(error.kind),
+        }
+    }
+}
+
+impl From<VariableResolutionErrorKind> for VariableResolutionErrorKindDto {
+    fn from(kind: VariableResolutionErrorKind) -> Self {
+        match kind {
+            VariableResolutionErrorKind::Missing => Self::Missing,
+            VariableResolutionErrorKind::Cycle => Self::Cycle,
+        }
     }
 }
 
@@ -1364,6 +1713,12 @@ impl From<BoundaryError> for IpcError {
                 code: IpcErrorCode::InvalidInput,
                 message: "Collection id is invalid.".to_owned(),
                 details: Some("collectionId".to_owned()),
+                retryable: false,
+            },
+            BoundaryError::InvalidEnvironmentId => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "Environment id is invalid.".to_owned(),
+                details: Some("environmentId".to_owned()),
                 retryable: false,
             },
             BoundaryError::InvalidSavedRequestId => Self {

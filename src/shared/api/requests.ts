@@ -9,9 +9,11 @@ import type {
   MoveSavedRequestInput,
   OpenSavedRequestTabInput,
   RequestDraftIdInput,
+  ResolveRequestContentInput,
   RequestWorkspaceSnapshotDto,
   RenameCollectionFolderInput,
   SavedRequestIdInput,
+  SelectEnvironmentInput,
   UpdateRequestDraftInput,
   WorkspaceIdInput,
 } from "./generated/ipc";
@@ -56,6 +58,21 @@ export async function createCollectionFolder(
     input.workspaceId,
     requestIpc.createCollectionFolder(input),
   );
+}
+
+export async function selectEnvironment(
+  queryClient: QueryClient,
+  input: SelectEnvironmentInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.selectEnvironment(input),
+  );
+}
+
+export async function resolveRequestContent(input: ResolveRequestContentInput) {
+  return requestIpc.resolveRequestContent(input);
 }
 
 export async function renameCollectionFolder(

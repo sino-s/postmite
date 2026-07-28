@@ -13,9 +13,11 @@ import type {
   MoveSavedRequestInput,
   OpenSavedRequestTabInput,
   RequestDraftIdInput,
+  ResolveRequestContentInput,
   RenameWorkspaceInput,
   RenameCollectionFolderInput,
   SavedRequestIdInput,
+  SelectEnvironmentInput,
   StartRequestExecutionInput,
   UpdateRequestDraftInput,
   WorkspaceIdInput,
@@ -73,6 +75,10 @@ export const requestIpc = {
     invokeCommand("create_saved_request", input),
   createCollectionFolder: (input: CreateCollectionFolderInput) =>
     invokeCommand("create_collection_folder", input),
+  selectEnvironment: (input: SelectEnvironmentInput) =>
+    invokeCommand("select_environment", input),
+  resolveRequestContent: (input: ResolveRequestContentInput) =>
+    invokeCommand("resolve_request_content", input),
   renameCollectionFolder: (input: RenameCollectionFolderInput) =>
     invokeCommand("rename_collection_folder", input),
   moveCollectionFolder: (input: MoveCollectionFolderInput) =>

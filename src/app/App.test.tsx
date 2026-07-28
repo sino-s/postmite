@@ -39,7 +39,9 @@ const requestApiMock = vi.hoisted(() => ({
   requestWorkspaceQueryKey: (workspaceId: string) =>
     ["requestWorkspace", workspaceId] as const,
   renameCollectionFolder: vi.fn(),
+  resolveRequestContent: vi.fn(),
   saveRequestDraft: vi.fn(),
+  selectEnvironment: vi.fn(),
   updateRequestDraft: vi.fn(),
 }));
 
@@ -91,6 +93,7 @@ describe("App request editor", () => {
         queryFn: vi.fn().mockResolvedValue(emptyRequestSnapshot()),
       }),
     );
+    requestApiMock.resolveRequestContent.mockResolvedValue(emptyResolution());
     executionApiMock.startRequestExecution.mockResolvedValue({
       status: "queued",
       executionId: "execution-1",
@@ -410,6 +413,55 @@ describe("App request editor", () => {
     promptSpy.mockRestore();
   });
 
+  it("switches environments and shows resolved masked variable values", async () => {
+    const user = userEvent.setup();
+    const queryClient = renderApp(environmentRequestSnapshot());
+    const switched = environmentRequestSnapshot({ selectedEnvironmentId: "env-prod" });
+    requestApiMock.selectEnvironment.mockImplementation(
+      async (client: QueryClient) => {
+        client.setQueryData(requestWorkspaceQueryKey("workspace-1"), switched);
+        return switched;
+      },
+    );
+    requestApiMock.resolveRequestContent.mockResolvedValue({
+      url: { value: "https://prod.example.test/users", containsSecret: false },
+      body: { value: "", containsSecret: false },
+      query: [],
+      headers: [],
+      references: [
+        {
+          name: "baseUrl",
+          source: "ENVIRONMENT",
+          value: {
+            value: "https://prod.example.test",
+            containsSecret: false,
+          },
+        },
+        {
+          name: "token",
+          source: "ENVIRONMENT",
+          value: { value: "********", containsSecret: true },
+        },
+      ],
+      errors: [],
+    });
+
+    await user.selectOptions(
+      await screen.findByLabelText("Environment"),
+      "Production",
+    );
+
+    expect(requestApiMock.selectEnvironment).toHaveBeenCalledWith(queryClient, {
+      workspaceId: "workspace-1",
+      environmentId: "env-prod",
+    });
+    expect(requestApiMock.updateRequestDraft).not.toHaveBeenCalled();
+    expect(await screen.findByText("baseUrl")).toBeInTheDocument();
+    expect(screen.getAllByText("Environment").length).toBeGreaterThan(1);
+    expect(screen.getByText("https://prod.example.test")).toBeInTheDocument();
+    expect(screen.getByText("********")).toBeInTheDocument();
+  });
+
   it("opens a saved request from the tree with keyboard and focuses the existing tab", async () => {
     const user = userEvent.setup();
     const queryClient = renderApp(collectionRequestSnapshot());
@@ -483,6 +535,9 @@ function emptyRequestSnapshot(): RequestWorkspaceSnapshotDto {
   return {
     workspaceId: "workspace-1",
     collectionFolders: [],
+    environments: [],
+    collectionVariables: [],
+    environmentVariables: [],
     savedRequests: [],
     drafts: [],
     tabs: [],
@@ -503,6 +558,9 @@ function requestSnapshot({
   return {
     workspaceId: "workspace-1",
     collectionFolders: [],
+    environments: [],
+    collectionVariables: [],
+    environmentVariables: [],
     savedRequests: savedRequestId
       ? [
           {
@@ -546,6 +604,9 @@ function twoTabRequestSnapshot(): RequestWorkspaceSnapshotDto {
   return {
     workspaceId: "workspace-1",
     collectionFolders: [],
+    environments: [],
+    collectionVariables: [],
+    environmentVariables: [],
     savedRequests: [],
     drafts: [
       {
@@ -603,6 +664,9 @@ function collectionRequestSnapshot({
         position: 0,
       },
     ],
+    environments: [],
+    collectionVariables: [],
+    environmentVariables: [],
     savedRequests: [
       {
         id: "saved-1",
@@ -636,6 +700,74 @@ function collectionRequestSnapshot({
           },
         ]
       : [],
+  };
+}
+
+function environmentRequestSnapshot({
+  selectedEnvironmentId = null,
+}: {
+  selectedEnvironmentId?: string | null;
+} = {}): RequestWorkspaceSnapshotDto {
+  const content = requestContent({
+    url: "{{baseUrl}}/users",
+    headers: [{ enabled: true, order: 0, name: "Authorization", value: "Bearer {{token}}" }],
+  });
+  return {
+    ...requestSnapshot({ content, isDirty: false }),
+    environments: [
+      {
+        id: "env-dev",
+        workspaceId: "workspace-1",
+        name: "Development",
+        position: 0,
+        isSelected: selectedEnvironmentId === "env-dev",
+      },
+      {
+        id: "env-prod",
+        workspaceId: "workspace-1",
+        name: "Production",
+        position: 1,
+        isSelected: selectedEnvironmentId === "env-prod",
+      },
+    ],
+    collectionVariables: [
+      {
+        workspaceId: "workspace-1",
+        variable: {
+          name: "baseUrl",
+          value: { type: "PLAIN", value: "https://collection.example.test" },
+        },
+      },
+    ],
+    environmentVariables: [
+      {
+        environmentId: "env-prod",
+        workspaceId: "workspace-1",
+        variable: {
+          name: "baseUrl",
+          value: { type: "PLAIN", value: "https://prod.example.test" },
+        },
+      },
+      {
+        environmentId: "env-prod",
+        workspaceId: "workspace-1",
+        variable: {
+          name: "token",
+          value: { type: "SECRET_REFERENCE", reference: "secret://token-prod" },
+        },
+      },
+    ],
+  };
+}
+
+function emptyResolution() {
+  return {
+    url: { value: "", containsSecret: false },
+    body: { value: "", containsSecret: false },
+    query: [],
+    headers: [],
+    references: [],
+    errors: [],
   };
 }
 

@@ -51,6 +51,8 @@ pub fn run() {
             ipc::open_unsaved_request_tab,
             ipc::create_saved_request,
             ipc::create_collection_folder,
+            ipc::select_environment,
+            ipc::resolve_request_content,
             ipc::rename_collection_folder,
             ipc::move_collection_folder,
             ipc::duplicate_collection_folder,
