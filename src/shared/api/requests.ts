@@ -1,11 +1,17 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import type {
+  CollectionFolderIdInput,
   CloseRequestTabInput,
+  CreateCollectionFolderInput,
   CreateSavedRequestInput,
+  MoveCollectionFolderInput,
+  MoveSavedRequestInput,
   OpenSavedRequestTabInput,
   RequestDraftIdInput,
   RequestWorkspaceSnapshotDto,
+  RenameCollectionFolderInput,
+  SavedRequestIdInput,
   UpdateRequestDraftInput,
   WorkspaceIdInput,
 } from "./generated/ipc";
@@ -38,6 +44,94 @@ export async function createSavedRequest(
     queryClient,
     input.workspaceId,
     requestIpc.createSavedRequest(input),
+  );
+}
+
+export async function createCollectionFolder(
+  queryClient: QueryClient,
+  input: CreateCollectionFolderInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.createCollectionFolder(input),
+  );
+}
+
+export async function renameCollectionFolder(
+  queryClient: QueryClient,
+  input: RenameCollectionFolderInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.renameCollectionFolder(input),
+  );
+}
+
+export async function moveCollectionFolder(
+  queryClient: QueryClient,
+  input: MoveCollectionFolderInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.moveCollectionFolder(input),
+  );
+}
+
+export async function duplicateCollectionFolder(
+  queryClient: QueryClient,
+  input: CollectionFolderIdInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.duplicateCollectionFolder(input),
+  );
+}
+
+export async function deleteCollectionFolder(
+  queryClient: QueryClient,
+  input: CollectionFolderIdInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.deleteCollectionFolder(input),
+  );
+}
+
+export async function moveSavedRequest(
+  queryClient: QueryClient,
+  input: MoveSavedRequestInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.moveSavedRequest(input),
+  );
+}
+
+export async function duplicateSavedRequest(
+  queryClient: QueryClient,
+  input: SavedRequestIdInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.duplicateSavedRequest(input),
+  );
+}
+
+export async function deleteSavedRequest(
+  queryClient: QueryClient,
+  input: SavedRequestIdInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.deleteSavedRequest(input),
   );
 }
 

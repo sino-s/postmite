@@ -26,10 +26,19 @@ const workspaceApiMock = vi.hoisted(() => ({
 
 const requestApiMock = vi.hoisted(() => ({
   closeRequestTab: vi.fn(),
+  createCollectionFolder: vi.fn(),
+  deleteCollectionFolder: vi.fn(),
+  deleteSavedRequest: vi.fn(),
+  duplicateCollectionFolder: vi.fn(),
+  duplicateSavedRequest: vi.fn(),
+  moveCollectionFolder: vi.fn(),
+  moveSavedRequest: vi.fn(),
+  openSavedRequestTab: vi.fn(),
   openUnsavedRequestTab: vi.fn(),
   requestWorkspaceQuery: vi.fn(),
   requestWorkspaceQueryKey: (workspaceId: string) =>
     ["requestWorkspace", workspaceId] as const,
+  renameCollectionFolder: vi.fn(),
   saveRequestDraft: vi.fn(),
   updateRequestDraft: vi.fn(),
 }));
@@ -349,6 +358,83 @@ describe("App request editor", () => {
     expect(screen.getByLabelText("URL")).toHaveValue("https://example.test");
   });
 
+  it("runs collection tree pointer actions through typed request APIs", async () => {
+    const user = userEvent.setup();
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Renamed");
+    const snapshot = collectionRequestSnapshot();
+    renderApp(snapshot);
+    requestApiMock.createCollectionFolder.mockResolvedValue(snapshot);
+    requestApiMock.renameCollectionFolder.mockResolvedValue(snapshot);
+    requestApiMock.moveSavedRequest.mockResolvedValue(snapshot);
+    requestApiMock.duplicateSavedRequest.mockResolvedValue(snapshot);
+    requestApiMock.deleteSavedRequest.mockResolvedValue(snapshot);
+
+    await user.click(await screen.findByRole("button", { name: "New root folder" }));
+    await user.click(screen.getByRole("button", { name: "Rename folder" }));
+    await user.click(screen.getByRole("button", { name: "Move request down" }));
+    await user.click(screen.getByRole("button", { name: "Duplicate request" }));
+    await user.click(screen.getByRole("button", { name: "Delete request" }));
+
+    expect(requestApiMock.createCollectionFolder).toHaveBeenCalledWith(
+      expect.any(QueryClient),
+      {
+        workspaceId: "workspace-1",
+        parentCollectionId: null,
+        name: "Renamed",
+      },
+    );
+    expect(requestApiMock.renameCollectionFolder).toHaveBeenCalledWith(
+      expect.any(QueryClient),
+      {
+        workspaceId: "workspace-1",
+        collectionId: "collection-1",
+        name: "Renamed",
+      },
+    );
+    expect(requestApiMock.moveSavedRequest).toHaveBeenCalledWith(
+      expect.any(QueryClient),
+      {
+        workspaceId: "workspace-1",
+        savedRequestId: "saved-1",
+        location: { collectionId: "collection-1", position: 1 },
+      },
+    );
+    expect(requestApiMock.duplicateSavedRequest).toHaveBeenCalledWith(
+      expect.any(QueryClient),
+      { workspaceId: "workspace-1", savedRequestId: "saved-1" },
+    );
+    expect(requestApiMock.deleteSavedRequest).toHaveBeenCalledWith(
+      expect.any(QueryClient),
+      { workspaceId: "workspace-1", savedRequestId: "saved-1" },
+    );
+    promptSpy.mockRestore();
+  });
+
+  it("opens a saved request from the tree with keyboard and focuses the existing tab", async () => {
+    const user = userEvent.setup();
+    const queryClient = renderApp(collectionRequestSnapshot());
+    const focused = collectionRequestSnapshot({ activeSavedRequestId: "saved-1" });
+    requestApiMock.openSavedRequestTab.mockImplementation(
+      async (client: QueryClient) => {
+        client.setQueryData(requestWorkspaceQueryKey("workspace-1"), focused);
+        return focused;
+      },
+    );
+
+    const treeItem = await screen.findByRole("treeitem", { name: "Saved Request" });
+    treeItem.focus();
+    await user.keyboard("{Enter}");
+
+    expect(requestApiMock.openSavedRequestTab).toHaveBeenCalledWith(queryClient, {
+      workspaceId: "workspace-1",
+      savedRequestId: "saved-1",
+    });
+    expect(screen.getByRole("button", { name: "Saved Request" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
   it("has no automated accessibility violations in the editor shell", async () => {
     renderApp(
       requestSnapshot({ content: requestContent(), isDirty: true }),
@@ -396,6 +482,7 @@ function workspaceSnapshot(): WorkspaceSnapshotDto {
 function emptyRequestSnapshot(): RequestWorkspaceSnapshotDto {
   return {
     workspaceId: "workspace-1",
+    collectionFolders: [],
     savedRequests: [],
     drafts: [],
     tabs: [],
@@ -415,12 +502,14 @@ function requestSnapshot({
 } = {}): RequestWorkspaceSnapshotDto {
   return {
     workspaceId: "workspace-1",
+    collectionFolders: [],
     savedRequests: savedRequestId
       ? [
           {
             id: savedRequestId,
             workspaceId: "workspace-1",
             collectionId: null,
+            position: 0,
             content,
           },
         ]
@@ -456,6 +545,7 @@ function twoTabRequestSnapshot(): RequestWorkspaceSnapshotDto {
   });
   return {
     workspaceId: "workspace-1",
+    collectionFolders: [],
     savedRequests: [],
     drafts: [
       {
@@ -493,6 +583,59 @@ function twoTabRequestSnapshot(): RequestWorkspaceSnapshotDto {
         isActive: false,
       },
     ],
+  };
+}
+
+function collectionRequestSnapshot({
+  activeSavedRequestId = null,
+}: {
+  activeSavedRequestId?: string | null;
+} = {}): RequestWorkspaceSnapshotDto {
+  const content = requestContent({ name: "Saved Request" });
+  return {
+    workspaceId: "workspace-1",
+    collectionFolders: [
+      {
+        id: "collection-1",
+        workspaceId: "workspace-1",
+        parentCollectionId: null,
+        name: "Folder",
+        position: 0,
+      },
+    ],
+    savedRequests: [
+      {
+        id: "saved-1",
+        workspaceId: "workspace-1",
+        collectionId: "collection-1",
+        position: 0,
+        content,
+      },
+    ],
+    drafts: activeSavedRequestId
+      ? [
+          {
+            id: "draft-1",
+            workspaceId: "workspace-1",
+            savedRequestId: activeSavedRequestId,
+            content,
+            isDirty: false,
+          },
+        ]
+      : [],
+    tabs: activeSavedRequestId
+      ? [
+          {
+            id: "tab-1",
+            workspaceId: "workspace-1",
+            savedRequestId: activeSavedRequestId,
+            draftId: "draft-1",
+            position: 0,
+            title: "Saved Request",
+            isActive: true,
+          },
+        ]
+      : [],
   };
 }
 

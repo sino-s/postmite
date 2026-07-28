@@ -3,14 +3,16 @@ use std::{path::Path, str::FromStr, time::Duration};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Transaction};
 
 use crate::{
-    application::request::{RequestError, RequestRepository, RequestWorkspaceSnapshot},
+    application::request::{
+        CollectionLocation, RequestError, RequestRepository, RequestWorkspaceSnapshot,
+    },
     application::workspace::{
         WorkspaceError, WorkspaceRepository, WorkspaceSnapshot, WorkspaceSummary,
     },
     domain::{
         request::{
-            CollectionId, OrderedField, RequestContent, RequestDraft, RequestDraftId, RequestTab,
-            RequestTabId, SavedRequest, SavedRequestId,
+            CollectionFolder, CollectionId, OrderedField, RequestContent, RequestDraft,
+            RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId,
         },
         workspace::{Workspace, WorkspaceId, WorkspaceName, DEFAULT_WORKSPACE_NAME},
     },
@@ -148,6 +150,20 @@ CREATE UNIQUE INDEX request_tabs_one_saved_request_per_workspace
         sql: r#"
 ALTER TABLE saved_requests ADD COLUMN body TEXT NOT NULL DEFAULT '';
 ALTER TABLE request_drafts ADD COLUMN body TEXT NOT NULL DEFAULT '';
+"#,
+    },
+    Migration {
+        version: 4,
+        name: "add_collection_tree_ordering",
+        sql: r#"
+ALTER TABLE collections ADD COLUMN parent_collection_id TEXT;
+ALTER TABLE collections ADD COLUMN position INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0);
+ALTER TABLE saved_requests ADD COLUMN position INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0);
+
+CREATE INDEX collections_workspace_parent_position
+    ON collections(workspace_id, parent_collection_id, position, created_at, id);
+CREATE INDEX saved_requests_workspace_collection_position
+    ON saved_requests(workspace_id, collection_id, position, created_at, id);
 "#,
     },
 ];
@@ -353,6 +369,273 @@ impl RequestRepository for SqliteWorkspaceRepository {
             .map_err(RequestError::persistence)?;
         ensure_request_workspace_exists(&tx, workspace_id)?;
         insert_saved_request(&tx, workspace_id, SavedRequestId::new(), None, &content)?;
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn create_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        parent_collection_id: Option<CollectionId>,
+        name: String,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        ensure_collection_parent(&tx, workspace_id, parent_collection_id)?;
+        validate_collection_name(&name)?;
+        let position = next_collection_position(&tx, workspace_id, parent_collection_id)?;
+        tx.execute(
+            "INSERT INTO collections
+                (id, workspace_id, parent_collection_id, name, position)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                CollectionId::new().to_string(),
+                workspace_id.to_string(),
+                parent_collection_id.map(|id| id.to_string()),
+                name.trim(),
+                position,
+            ],
+        )
+        .map_err(map_request_sqlite_error)?;
+
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn rename_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+        name: String,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        validate_collection_name(&name)?;
+        let changed = tx
+            .execute(
+                "UPDATE collections
+                 SET name = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE workspace_id = ?2 AND id = ?3",
+                params![
+                    name.trim(),
+                    workspace_id.to_string(),
+                    collection_id.to_string()
+                ],
+            )
+            .map_err(map_request_sqlite_error)?;
+        if changed == 0 {
+            return Err(RequestError::NotFound);
+        }
+
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn move_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+        location: CollectionLocation,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        let folder = load_collection_folder(&tx, workspace_id, collection_id)?;
+        ensure_collection_parent(&tx, workspace_id, location.collection_id)?;
+        if location.collection_id == Some(collection_id)
+            || collection_descends_from(&tx, workspace_id, location.collection_id, collection_id)?
+        {
+            return Err(RequestError::InvalidInput("collection.cycle".to_owned()));
+        }
+
+        shift_collection_position(
+            &tx,
+            workspace_id,
+            folder.parent_collection_id,
+            folder.position,
+            location.collection_id,
+            location.position,
+        )?;
+        tx.execute(
+            "UPDATE collections
+             SET parent_collection_id = ?1, position = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE workspace_id = ?3 AND id = ?4",
+            params![
+                location.collection_id.map(|id| id.to_string()),
+                i64::from(location.position),
+                workspace_id.to_string(),
+                collection_id.to_string()
+            ],
+        )
+        .map_err(map_request_sqlite_error)?;
+        compact_collection_positions(&tx, workspace_id)?;
+
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn duplicate_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        duplicate_collection_subtree(&tx, workspace_id, collection_id, None)?;
+        compact_collection_positions(&tx, workspace_id)?;
+        compact_saved_request_positions(&tx, workspace_id)?;
+
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn delete_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        ensure_collection_in_workspace(&tx, workspace_id, collection_id)?;
+        delete_collection_subtree(&tx, workspace_id, collection_id)?;
+        compact_collection_positions(&tx, workspace_id)?;
+        compact_saved_request_positions(&tx, workspace_id)?;
+
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn move_saved_request(
+        &mut self,
+        workspace_id: WorkspaceId,
+        saved_request_id: SavedRequestId,
+        location: CollectionLocation,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        let saved_request = load_saved_request(&tx, workspace_id, saved_request_id)?;
+        ensure_collection_parent(&tx, workspace_id, location.collection_id)?;
+        shift_saved_request_position(
+            &tx,
+            workspace_id,
+            saved_request.collection_id,
+            saved_request.position,
+            location.collection_id,
+            location.position,
+        )?;
+        tx.execute(
+            "UPDATE saved_requests
+             SET collection_id = ?1, position = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE workspace_id = ?3 AND id = ?4",
+            params![
+                location.collection_id.map(|id| id.to_string()),
+                i64::from(location.position),
+                workspace_id.to_string(),
+                saved_request_id.to_string(),
+            ],
+        )
+        .map_err(map_request_sqlite_error)?;
+        compact_saved_request_positions(&tx, workspace_id)?;
+
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn duplicate_saved_request(
+        &mut self,
+        workspace_id: WorkspaceId,
+        saved_request_id: SavedRequestId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        let saved_request = load_saved_request(&tx, workspace_id, saved_request_id)?;
+        let location = CollectionLocation {
+            collection_id: saved_request.collection_id,
+            position: saved_request.position.saturating_add(1),
+        };
+        let mut content = saved_request.content.clone();
+        content.name = format!("{} Copy", content.name);
+        make_saved_request_position_space(
+            &tx,
+            workspace_id,
+            location.collection_id,
+            location.position,
+        )?;
+        insert_saved_request_at(
+            &tx,
+            workspace_id,
+            SavedRequestId::new(),
+            location.collection_id,
+            location.position,
+            &content,
+        )?;
+        compact_saved_request_positions(&tx, workspace_id)?;
+
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn delete_saved_request(
+        &mut self,
+        workspace_id: WorkspaceId,
+        saved_request_id: SavedRequestId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        ensure_saved_request_in_workspace(&tx, workspace_id, saved_request_id)?;
+        tx.execute(
+            "DELETE FROM request_tabs
+             WHERE workspace_id = ?1 AND saved_request_id = ?2",
+            params![workspace_id.to_string(), saved_request_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+        tx.execute(
+            "DELETE FROM request_drafts
+             WHERE workspace_id = ?1 AND saved_request_id = ?2",
+            params![workspace_id.to_string(), saved_request_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+        tx.execute(
+            "DELETE FROM saved_requests WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace_id.to_string(), saved_request_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+        compact_tab_positions(&tx, workspace_id)?;
+        compact_saved_request_positions(&tx, workspace_id)?;
+
         let snapshot = load_request_snapshot(&tx, workspace_id)?;
         tx.commit().map_err(RequestError::persistence)?;
         Ok(snapshot)
@@ -704,6 +987,53 @@ fn ensure_draft_in_workspace(
     exists.ok_or(RequestError::NotFound)
 }
 
+fn ensure_saved_request_in_workspace(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    saved_request_id: SavedRequestId,
+) -> Result<(), RequestError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM saved_requests WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace_id.to_string(), saved_request_id.to_string()],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(RequestError::persistence)?;
+
+    exists.ok_or(RequestError::NotFound)
+}
+
+fn ensure_collection_in_workspace(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    collection_id: CollectionId,
+) -> Result<(), RequestError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM collections WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace_id.to_string(), collection_id.to_string()],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(RequestError::persistence)?;
+
+    exists.ok_or(RequestError::NotFound)
+}
+
+fn ensure_collection_parent(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    parent_collection_id: Option<CollectionId>,
+) -> Result<(), RequestError> {
+    match parent_collection_id {
+        Some(collection_id) => {
+            ensure_collection_in_workspace(connection, workspace_id, collection_id)
+        }
+        None => Ok(()),
+    }
+}
+
 fn insert_saved_request(
     tx: &Transaction<'_>,
     workspace_id: WorkspaceId,
@@ -711,10 +1041,32 @@ fn insert_saved_request(
     collection_id: Option<CollectionId>,
     content: &RequestContent,
 ) -> Result<(), RequestError> {
+    let position = next_saved_request_position(tx, workspace_id, collection_id)?;
+    insert_saved_request_at(
+        tx,
+        workspace_id,
+        saved_request_id,
+        collection_id,
+        u32::try_from(position)
+            .map_err(|_| RequestError::InvalidInput("position.tooLarge".to_owned()))?,
+        content,
+    )
+}
+
+fn insert_saved_request_at(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    saved_request_id: SavedRequestId,
+    collection_id: Option<CollectionId>,
+    position: u32,
+    content: &RequestContent,
+) -> Result<(), RequestError> {
     validate_request_content(content)?;
+    ensure_collection_parent(tx, workspace_id, collection_id)?;
     tx.execute(
-        "INSERT INTO saved_requests (id, workspace_id, collection_id, name, method, url, body)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO saved_requests
+            (id, workspace_id, collection_id, name, method, url, body, position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             saved_request_id.to_string(),
             workspace_id.to_string(),
@@ -723,6 +1075,7 @@ fn insert_saved_request(
             content.method.as_str(),
             content.url.as_str(),
             content.body.as_str(),
+            i64::from(position),
         ],
     )
     .map_err(map_request_sqlite_error)?;
@@ -952,6 +1305,452 @@ fn next_tab_position(
         .map_err(RequestError::persistence)
 }
 
+fn next_collection_position(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    parent_collection_id: Option<CollectionId>,
+) -> Result<i64, RequestError> {
+    let parent = parent_collection_id.map(|id| id.to_string());
+    connection
+        .query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0)
+             FROM collections
+             WHERE workspace_id = ?1 AND parent_collection_id IS ?2",
+            params![workspace_id.to_string(), parent],
+            |row| row.get(0),
+        )
+        .map_err(RequestError::persistence)
+}
+
+fn next_saved_request_position(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    collection_id: Option<CollectionId>,
+) -> Result<i64, RequestError> {
+    let collection = collection_id.map(|id| id.to_string());
+    connection
+        .query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0)
+             FROM saved_requests
+             WHERE workspace_id = ?1 AND collection_id IS ?2",
+            params![workspace_id.to_string(), collection],
+            |row| row.get(0),
+        )
+        .map_err(RequestError::persistence)
+}
+
+fn shift_collection_position(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    old_parent_collection_id: Option<CollectionId>,
+    old_position: u32,
+    new_parent_collection_id: Option<CollectionId>,
+    new_position: u32,
+) -> Result<(), RequestError> {
+    shift_tree_positions(
+        tx,
+        "collections",
+        "parent_collection_id",
+        workspace_id,
+        TreePositionMove {
+            old_parent_id: old_parent_collection_id,
+            old_position,
+            new_parent_id: new_parent_collection_id,
+            new_position,
+        },
+    )
+}
+
+fn shift_saved_request_position(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    old_collection_id: Option<CollectionId>,
+    old_position: u32,
+    new_collection_id: Option<CollectionId>,
+    new_position: u32,
+) -> Result<(), RequestError> {
+    shift_tree_positions(
+        tx,
+        "saved_requests",
+        "collection_id",
+        workspace_id,
+        TreePositionMove {
+            old_parent_id: old_collection_id,
+            old_position,
+            new_parent_id: new_collection_id,
+            new_position,
+        },
+    )
+}
+
+fn make_collection_position_space(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    parent_collection_id: Option<CollectionId>,
+    position: u32,
+) -> Result<(), RequestError> {
+    make_tree_position_space(
+        tx,
+        "collections",
+        "parent_collection_id",
+        workspace_id,
+        parent_collection_id,
+        position,
+    )
+}
+
+fn make_saved_request_position_space(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    collection_id: Option<CollectionId>,
+    position: u32,
+) -> Result<(), RequestError> {
+    make_tree_position_space(
+        tx,
+        "saved_requests",
+        "collection_id",
+        workspace_id,
+        collection_id,
+        position,
+    )
+}
+
+fn make_tree_position_space(
+    tx: &Transaction<'_>,
+    table: &str,
+    parent_column: &str,
+    workspace_id: WorkspaceId,
+    parent_id: Option<CollectionId>,
+    position: u32,
+) -> Result<(), RequestError> {
+    let parent = parent_id.map(|id| id.to_string());
+    tx.execute(
+        &format!(
+            "UPDATE {table}
+             SET position = position + 1
+             WHERE workspace_id = ?1 AND {parent_column} IS ?2 AND position >= ?3"
+        ),
+        params![workspace_id.to_string(), parent, i64::from(position)],
+    )
+    .map(|_| ())
+    .map_err(map_request_sqlite_error)
+}
+
+fn shift_tree_positions(
+    tx: &Transaction<'_>,
+    table: &str,
+    parent_column: &str,
+    workspace_id: WorkspaceId,
+    position_move: TreePositionMove,
+) -> Result<(), RequestError> {
+    let old_parent = position_move.old_parent_id.map(|id| id.to_string());
+    let new_parent = position_move.new_parent_id.map(|id| id.to_string());
+    if old_parent == new_parent {
+        if position_move.new_position < position_move.old_position {
+            tx.execute(
+                &format!(
+                    "UPDATE {table}
+                     SET position = position + 1
+                     WHERE workspace_id = ?1 AND {parent_column} IS ?2
+                       AND position >= ?3 AND position < ?4"
+                ),
+                params![
+                    workspace_id.to_string(),
+                    old_parent,
+                    i64::from(position_move.new_position),
+                    i64::from(position_move.old_position)
+                ],
+            )
+            .map_err(map_request_sqlite_error)?;
+        } else if position_move.new_position > position_move.old_position {
+            tx.execute(
+                &format!(
+                    "UPDATE {table}
+                     SET position = position - 1
+                     WHERE workspace_id = ?1 AND {parent_column} IS ?2
+                       AND position > ?3 AND position <= ?4"
+                ),
+                params![
+                    workspace_id.to_string(),
+                    old_parent,
+                    i64::from(position_move.old_position),
+                    i64::from(position_move.new_position)
+                ],
+            )
+            .map_err(map_request_sqlite_error)?;
+        }
+        return Ok(());
+    }
+
+    tx.execute(
+        &format!(
+            "UPDATE {table}
+             SET position = position - 1
+             WHERE workspace_id = ?1 AND {parent_column} IS ?2 AND position > ?3"
+        ),
+        params![
+            workspace_id.to_string(),
+            old_parent,
+            i64::from(position_move.old_position)
+        ],
+    )
+    .map_err(map_request_sqlite_error)?;
+    tx.execute(
+        &format!(
+            "UPDATE {table}
+             SET position = position + 1
+             WHERE workspace_id = ?1 AND {parent_column} IS ?2 AND position >= ?3"
+        ),
+        params![
+            workspace_id.to_string(),
+            new_parent,
+            i64::from(position_move.new_position)
+        ],
+    )
+    .map_err(map_request_sqlite_error)?;
+    Ok(())
+}
+
+struct TreePositionMove {
+    old_parent_id: Option<CollectionId>,
+    old_position: u32,
+    new_parent_id: Option<CollectionId>,
+    new_position: u32,
+}
+
+fn compact_collection_positions(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+) -> Result<(), RequestError> {
+    let parents = collection_parent_ids(tx, workspace_id)?;
+    for parent in parents {
+        let parent_text = parent.map(|id| id.to_string());
+        let mut statement = tx
+            .prepare(
+                "SELECT id
+                 FROM collections
+                 WHERE workspace_id = ?1 AND parent_collection_id IS ?2
+                 ORDER BY position, updated_at, created_at, id",
+            )
+            .map_err(RequestError::persistence)?;
+        let ids = statement
+            .query_map(
+                params![workspace_id.to_string(), parent_text],
+                collection_id_from_row,
+            )
+            .map_err(RequestError::persistence)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(RequestError::persistence)?;
+        drop(statement);
+
+        for (position, id) in ids.into_iter().enumerate() {
+            tx.execute(
+                "UPDATE collections SET position = ?1 WHERE workspace_id = ?2 AND id = ?3",
+                params![position as i64, workspace_id.to_string(), id.to_string()],
+            )
+            .map_err(map_request_sqlite_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn compact_saved_request_positions(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+) -> Result<(), RequestError> {
+    let collections = saved_request_collection_ids(tx, workspace_id)?;
+    for collection_id in collections {
+        let collection_text = collection_id.map(|id| id.to_string());
+        let mut statement = tx
+            .prepare(
+                "SELECT id
+                 FROM saved_requests
+                 WHERE workspace_id = ?1 AND collection_id IS ?2
+                 ORDER BY position, updated_at, created_at, id",
+            )
+            .map_err(RequestError::persistence)?;
+        let ids = statement
+            .query_map(
+                params![workspace_id.to_string(), collection_text],
+                saved_request_id_from_row,
+            )
+            .map_err(RequestError::persistence)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(RequestError::persistence)?;
+        drop(statement);
+
+        for (position, id) in ids.into_iter().enumerate() {
+            tx.execute(
+                "UPDATE saved_requests SET position = ?1 WHERE workspace_id = ?2 AND id = ?3",
+                params![position as i64, workspace_id.to_string(), id.to_string()],
+            )
+            .map_err(map_request_sqlite_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn collection_parent_ids(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<Option<CollectionId>>, RequestError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT parent_collection_id
+             FROM collections
+             WHERE workspace_id = ?1
+             ORDER BY parent_collection_id",
+        )
+        .map_err(RequestError::persistence)?;
+    let mut parents = statement
+        .query_map(params![workspace_id.to_string()], |row| {
+            optional_collection_id_from_row(row, 0)
+        })
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+    if !parents.iter().any(Option::is_none) {
+        parents.push(None);
+    }
+    Ok(parents)
+}
+
+fn saved_request_collection_ids(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<Option<CollectionId>>, RequestError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT collection_id
+             FROM saved_requests
+             WHERE workspace_id = ?1
+             ORDER BY collection_id",
+        )
+        .map_err(RequestError::persistence)?;
+    let mut collections = statement
+        .query_map(params![workspace_id.to_string()], |row| {
+            optional_collection_id_from_row(row, 0)
+        })
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+    if !collections.iter().any(Option::is_none) {
+        collections.push(None);
+    }
+    Ok(collections)
+}
+
+fn collection_descends_from(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    collection_id: Option<CollectionId>,
+    ancestor_id: CollectionId,
+) -> Result<bool, RequestError> {
+    let Some(mut cursor) = collection_id else {
+        return Ok(false);
+    };
+    loop {
+        if cursor == ancestor_id {
+            return Ok(true);
+        }
+        let parent = connection
+            .query_row(
+                "SELECT parent_collection_id
+                 FROM collections
+                 WHERE workspace_id = ?1 AND id = ?2",
+                params![workspace_id.to_string(), cursor.to_string()],
+                |row| optional_collection_id_from_row(row, 0),
+            )
+            .optional()
+            .map_err(RequestError::persistence)?
+            .ok_or(RequestError::NotFound)?;
+        match parent {
+            Some(parent_id) => cursor = parent_id,
+            None => return Ok(false),
+        }
+    }
+}
+
+fn duplicate_collection_subtree(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    source_id: CollectionId,
+    parent_override: Option<CollectionId>,
+) -> Result<CollectionId, RequestError> {
+    let source = load_collection_folder(tx, workspace_id, source_id)?;
+    let new_id = CollectionId::new();
+    let parent_collection_id = parent_override.or(source.parent_collection_id);
+    let position = source.position.saturating_add(1);
+    make_collection_position_space(tx, workspace_id, parent_collection_id, position)?;
+    tx.execute(
+        "INSERT INTO collections
+            (id, workspace_id, parent_collection_id, name, position)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            new_id.to_string(),
+            workspace_id.to_string(),
+            parent_collection_id.map(|id| id.to_string()),
+            format!("{} Copy", source.name),
+            i64::from(position),
+        ],
+    )
+    .map_err(map_request_sqlite_error)?;
+
+    for request in load_saved_requests_in_collection(tx, workspace_id, Some(source_id))? {
+        insert_saved_request_at(
+            tx,
+            workspace_id,
+            SavedRequestId::new(),
+            Some(new_id),
+            request.position,
+            &request.content,
+        )?;
+    }
+    for child in load_child_collections(tx, workspace_id, source_id)? {
+        duplicate_collection_subtree(tx, workspace_id, child.id, Some(new_id))?;
+    }
+    Ok(new_id)
+}
+
+fn delete_collection_subtree(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    collection_id: CollectionId,
+) -> Result<(), RequestError> {
+    for child in load_child_collections(tx, workspace_id, collection_id)? {
+        delete_collection_subtree(tx, workspace_id, child.id)?;
+    }
+    let request_ids = load_saved_requests_in_collection(tx, workspace_id, Some(collection_id))?
+        .into_iter()
+        .map(|request| request.id)
+        .collect::<Vec<_>>();
+    for request_id in request_ids {
+        tx.execute(
+            "DELETE FROM request_tabs
+             WHERE workspace_id = ?1 AND saved_request_id = ?2",
+            params![workspace_id.to_string(), request_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+        tx.execute(
+            "DELETE FROM request_drafts
+             WHERE workspace_id = ?1 AND saved_request_id = ?2",
+            params![workspace_id.to_string(), request_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+        tx.execute(
+            "DELETE FROM saved_requests WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace_id.to_string(), request_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+    }
+    tx.execute(
+        "DELETE FROM collections WHERE workspace_id = ?1 AND id = ?2",
+        params![workspace_id.to_string(), collection_id.to_string()],
+    )
+    .map_err(map_request_sqlite_error)?;
+    compact_tab_positions(tx, workspace_id)
+}
+
 fn replace_fields(
     tx: &Transaction<'_>,
     table: &str,
@@ -991,10 +1790,76 @@ fn load_request_snapshot(
 ) -> Result<RequestWorkspaceSnapshot, RequestError> {
     Ok(RequestWorkspaceSnapshot {
         workspace_id,
+        collection_folders: load_collection_folders(connection, workspace_id)?,
         saved_requests: load_saved_requests(connection, workspace_id)?,
         drafts: load_open_drafts(connection, workspace_id)?,
         tabs: load_tabs(connection, workspace_id)?,
     })
+}
+
+fn load_collection_folders(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<CollectionFolder>, RequestError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, workspace_id, parent_collection_id, name, position
+             FROM collections
+             WHERE workspace_id = ?1
+             ORDER BY parent_collection_id, position, created_at, id",
+        )
+        .map_err(RequestError::persistence)?;
+    let folders = statement
+        .query_map(
+            params![workspace_id.to_string()],
+            collection_folder_from_row,
+        )
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+    Ok(folders)
+}
+
+fn load_collection_folder(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    collection_id: CollectionId,
+) -> Result<CollectionFolder, RequestError> {
+    connection
+        .query_row(
+            "SELECT id, workspace_id, parent_collection_id, name, position
+             FROM collections
+             WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace_id.to_string(), collection_id.to_string()],
+            collection_folder_from_row,
+        )
+        .optional()
+        .map_err(RequestError::persistence)?
+        .ok_or(RequestError::NotFound)
+}
+
+fn load_child_collections(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    parent_collection_id: CollectionId,
+) -> Result<Vec<CollectionFolder>, RequestError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, workspace_id, parent_collection_id, name, position
+             FROM collections
+             WHERE workspace_id = ?1 AND parent_collection_id = ?2
+             ORDER BY position, created_at, id",
+        )
+        .map_err(RequestError::persistence)?;
+    let folders = statement
+        .query_map(
+            params![workspace_id.to_string(), parent_collection_id.to_string()],
+            collection_folder_from_row,
+        )
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+    Ok(folders)
 }
 
 fn load_saved_requests(
@@ -1004,9 +1869,10 @@ fn load_saved_requests(
     let mut statement = connection
         .prepare(
             "SELECT id, workspace_id, collection_id, name, method, url, body
+             , position
              FROM saved_requests
              WHERE workspace_id = ?1
-             ORDER BY created_at, id",
+             ORDER BY collection_id, position, created_at, id",
         )
         .map_err(RequestError::persistence)?;
     let rows = statement
@@ -1026,6 +1892,13 @@ fn load_saved_requests(
                 id,
                 workspace_id: row_workspace_id,
                 collection_id,
+                position: u32::try_from(row.get::<_, i64>(7)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        7,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?,
                 content,
             })
         })
@@ -1050,6 +1923,17 @@ fn load_saved_requests(
             Ok(request)
         })
         .collect()
+}
+
+fn load_saved_requests_in_collection(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    collection_id: Option<CollectionId>,
+) -> Result<Vec<SavedRequest>, RequestError> {
+    Ok(load_saved_requests(connection, workspace_id)?
+        .into_iter()
+        .filter(|request| request.collection_id == collection_id)
+        .collect())
 }
 
 fn load_saved_request(
@@ -1201,6 +2085,15 @@ fn validate_request_content(content: &RequestContent) -> Result<(), RequestError
     Ok(())
 }
 
+fn validate_collection_name(name: &str) -> Result<(), RequestError> {
+    if name.trim().is_empty() {
+        return Err(RequestError::InvalidInput(
+            "collection.name.required".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn draft_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestDraft> {
     Ok(RequestDraft {
         id: request_draft_id_from_row(row)?,
@@ -1215,6 +2108,23 @@ fn draft_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestDraft> {
             headers: Vec::new(),
         },
         is_dirty: row.get::<_, i64>(7)? != 0,
+    })
+}
+
+fn collection_folder_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CollectionFolder> {
+    let position: i64 = row.get(4)?;
+    Ok(CollectionFolder {
+        id: collection_id_from_row(row)?,
+        workspace_id: workspace_id_from_row_index(row, 1)?,
+        parent_collection_id: optional_collection_id_from_row(row, 2)?,
+        name: row.get(3)?,
+        position: u32::try_from(position).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                4,
+                rusqlite::types::Type::Integer,
+                Box::new(error),
+            )
+        })?,
     })
 }
 
@@ -1254,6 +2164,13 @@ fn workspace_id_from_row_index(
 fn saved_request_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SavedRequestId> {
     let id: String = row.get(0)?;
     SavedRequestId::from_str(&id).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })
+}
+
+fn collection_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CollectionId> {
+    let id: String = row.get(0)?;
+    CollectionId::from_str(&id).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
     })
 }
@@ -1501,6 +2418,173 @@ mod tests {
             Err(rusqlite::Error::SqliteFailure(failure, _))
                 if failure.code == ErrorCode::ConstraintViolation
         ));
+    }
+
+    #[test]
+    fn collection_tree_order_survives_restart() {
+        let db = NamedTempFile::new().expect("temporary database");
+        let workspace_id = {
+            let mut repository = SqliteWorkspaceRepository::open(db.path()).expect("open database");
+            let workspace_id = repository
+                .initialize()
+                .expect("initialize")
+                .selected_workspace_id;
+            let first = repository
+                .create_collection_folder(workspace_id, None, "First".to_owned())
+                .expect("create first")
+                .collection_folders[0]
+                .id;
+            let snapshot = repository
+                .create_collection_folder(workspace_id, None, "Second".to_owned())
+                .expect("create second");
+            let second = snapshot
+                .collection_folders
+                .iter()
+                .find(|folder| folder.name == "Second")
+                .expect("second folder")
+                .id;
+            let saved = repository
+                .create_saved_request(workspace_id, request_content("Root", "root-url"))
+                .expect("create root request")
+                .saved_requests[0]
+                .id;
+            repository
+                .move_collection_folder(
+                    workspace_id,
+                    second,
+                    CollectionLocation {
+                        collection_id: None,
+                        position: 0,
+                    },
+                )
+                .expect("move second before first");
+            repository
+                .move_saved_request(
+                    workspace_id,
+                    saved,
+                    CollectionLocation {
+                        collection_id: Some(first),
+                        position: 0,
+                    },
+                )
+                .expect("move request into first");
+            workspace_id
+        };
+
+        let mut reopened = SqliteWorkspaceRepository::open(db.path()).expect("reopen database");
+        reopened.initialize().expect("initialize after restart");
+        let snapshot = reopened
+            .list_request_workspace(workspace_id)
+            .expect("load request workspace");
+
+        assert_eq!(
+            snapshot
+                .collection_folders
+                .iter()
+                .filter(|folder| folder.parent_collection_id.is_none())
+                .map(|folder| folder.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Second", "First"]
+        );
+        assert_eq!(snapshot.saved_requests[0].content.name, "Root");
+        assert_eq!(
+            snapshot.saved_requests[0].collection_id,
+            Some(
+                snapshot
+                    .collection_folders
+                    .iter()
+                    .find(|folder| folder.name == "First")
+                    .expect("first folder")
+                    .id
+            )
+        );
+    }
+
+    #[test]
+    fn collection_deletes_are_transactional_and_remove_descendants() {
+        let mut repository = repository();
+        let workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        let folder_id = repository
+            .create_collection_folder(workspace_id, None, "Folder".to_owned())
+            .expect("create folder")
+            .collection_folders[0]
+            .id;
+        let child_id = repository
+            .create_collection_folder(workspace_id, Some(folder_id), "Child".to_owned())
+            .expect("create child")
+            .collection_folders
+            .iter()
+            .find(|folder| folder.name == "Child")
+            .expect("child")
+            .id;
+        let request_id = repository
+            .create_saved_request(workspace_id, request_content("Saved", "url"))
+            .expect("create request")
+            .saved_requests[0]
+            .id;
+        repository
+            .move_saved_request(
+                workspace_id,
+                request_id,
+                CollectionLocation {
+                    collection_id: Some(child_id),
+                    position: 0,
+                },
+            )
+            .expect("move request into child");
+
+        let snapshot = repository
+            .delete_collection_folder(workspace_id, folder_id)
+            .expect("delete folder tree");
+
+        assert!(snapshot.collection_folders.is_empty());
+        assert!(snapshot.saved_requests.is_empty());
+        assert!(snapshot.tabs.is_empty());
+    }
+
+    #[test]
+    fn moving_saved_request_rejects_cross_workspace_collection() {
+        let mut repository = repository();
+        let first_workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        let second_workspace_id = repository
+            .create_workspace(WorkspaceName::new("Second").expect("valid name"))
+            .expect("create workspace")
+            .selected_workspace_id;
+        let request_id = repository
+            .create_saved_request(first_workspace_id, request_content("Saved", "url"))
+            .expect("create request")
+            .saved_requests[0]
+            .id;
+        let other_collection_id = repository
+            .create_collection_folder(second_workspace_id, None, "Other".to_owned())
+            .expect("create other collection")
+            .collection_folders[0]
+            .id;
+
+        let result = repository.move_saved_request(
+            first_workspace_id,
+            request_id,
+            CollectionLocation {
+                collection_id: Some(other_collection_id),
+                position: 0,
+            },
+        );
+
+        assert!(matches!(result, Err(RequestError::NotFound)));
+        assert_eq!(
+            repository
+                .list_request_workspace(first_workspace_id)
+                .expect("first snapshot")
+                .saved_requests[0]
+                .collection_id,
+            None
+        );
     }
 
     #[test]
