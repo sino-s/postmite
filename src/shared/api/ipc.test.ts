@@ -78,6 +78,41 @@ describe("typed IPC adapter", () => {
     });
   });
 
+  it("invokes cookie jar commands through typed IPC", async () => {
+    invokeMock.mockResolvedValue({
+      workspaceId: "workspace-1",
+      cookies: [],
+    });
+
+    await requestIpc.upsertCookie({
+      workspaceId: "workspace-1",
+      cookieId: null,
+      name: "sid",
+      value: "cookie-value",
+      domain: "example.test",
+      path: "/",
+      secure: true,
+      httpOnly: true,
+      sameSite: "LAX",
+      expiresAtEpochSeconds: null,
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("upsert_cookie", {
+      input: {
+        workspaceId: "workspace-1",
+        cookieId: null,
+        name: "sid",
+        value: "cookie-value",
+        domain: "example.test",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+        sameSite: "LAX",
+        expiresAtEpochSeconds: null,
+      },
+    });
+  });
+
   it("wraps safe Rust IPC errors without exposing unknown thrown values", async () => {
     invokeMock.mockRejectedValue({
       code: "PERSISTENCE_UNAVAILABLE",

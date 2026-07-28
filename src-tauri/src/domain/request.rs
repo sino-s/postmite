@@ -179,6 +179,35 @@ impl FromStr for ExecutionRecordId {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct CookieId(Uuid);
+
+impl CookieId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for CookieId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for CookieId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for CookieId {
+    type Err = uuid::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(value)?))
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CollectionFolder {
     pub id: CollectionId,
@@ -290,6 +319,42 @@ pub struct ExecutionRecord {
     pub request: RequestContent,
     pub response: ExecutionRecordResponse,
     pub pinned: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum CookieSameSite {
+    Strict,
+    Lax,
+    None,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WorkspaceCookie {
+    pub id: CookieId,
+    pub workspace_id: WorkspaceId,
+    pub name: String,
+    pub domain: String,
+    pub path: String,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<CookieSameSite>,
+    pub expires_at_epoch_seconds: Option<i64>,
+    pub session: bool,
+    pub has_value: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CookieDraft {
+    pub id: Option<CookieId>,
+    pub workspace_id: WorkspaceId,
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub path: String,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<CookieSameSite>,
+    pub expires_at_epoch_seconds: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

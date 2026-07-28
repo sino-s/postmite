@@ -5,6 +5,7 @@ import { axe } from "jest-axe";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
+  CookieJarSnapshotDto,
   ExecutionEventDto,
   ExecutionEventKindDto,
   ExecutionHistorySnapshotDto,
@@ -14,6 +15,7 @@ import type {
   WorkspaceSnapshotDto,
 } from "../shared/api/generated/ipc";
 import {
+  cookieJarQueryKey,
   executionHistoryQueryKey,
   requestWorkspaceQueryKey,
 } from "../shared/api/requests";
@@ -31,7 +33,11 @@ const workspaceApiMock = vi.hoisted(() => ({
 
 const requestApiMock = vi.hoisted(() => ({
   closeRequestTab: vi.fn(),
+  clearCookies: vi.fn(),
+  cookieJarQuery: vi.fn(),
+  cookieJarQueryKey: (workspaceId: string) => ["cookieJar", workspaceId] as const,
   createCollectionFolder: vi.fn(),
+  deleteCookie: vi.fn(),
   deleteCollectionFolder: vi.fn(),
   deleteSavedRequest: vi.fn(),
   duplicateCollectionFolder: vi.fn(),
@@ -48,11 +54,13 @@ const requestApiMock = vi.hoisted(() => ({
   requestWorkspaceQueryKey: (workspaceId: string) =>
     ["requestWorkspace", workspaceId] as const,
   renameCollectionFolder: vi.fn(),
+  revealCookieValue: vi.fn(),
   resolveRequestContent: vi.fn(),
   saveRequestDraft: vi.fn(),
   selectEnvironment: vi.fn(),
   setExecutionHistoryDisabled: vi.fn(),
   setExecutionRecordPinned: vi.fn(),
+  upsertCookie: vi.fn(),
   updateRequestDraft: vi.fn(),
 }));
 
@@ -110,7 +118,14 @@ describe("App request editor", () => {
         queryFn: vi.fn().mockResolvedValue(emptyExecutionHistorySnapshot()),
       }),
     );
+    requestApiMock.cookieJarQuery.mockImplementation(
+      ({ workspaceId }: { workspaceId: string }) => ({
+        queryKey: cookieJarQueryKey(workspaceId),
+        queryFn: vi.fn().mockResolvedValue(emptyCookieJarSnapshot()),
+      }),
+    );
     requestApiMock.resolveRequestContent.mockResolvedValue(emptyResolution());
+    requestApiMock.revealCookieValue.mockResolvedValue({ value: "sid-value" });
     executionApiMock.startRequestExecution.mockResolvedValue({
       status: "queued",
       executionId: "execution-1",
@@ -553,6 +568,51 @@ describe("App request editor", () => {
     );
   });
 
+  it("inspects edits deletes and clears cookies without exposing values by default", async () => {
+    const user = userEvent.setup();
+    const queryClient = renderApp(
+      requestSnapshot({ content: requestContent(), isDirty: true }),
+      emptyExecutionHistorySnapshot(),
+      cookieJarSnapshot(),
+    );
+
+    expect(await screen.findByText("Value ********")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Inspect sid cookie" }));
+    expect(await screen.findByText("Value sid-value")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit sid cookie" }));
+    await user.clear(screen.getByLabelText("Cookie value"));
+    await user.type(screen.getByLabelText("Cookie value"), "updated-value");
+    await user.click(screen.getByRole("button", { name: "Update cookie" }));
+    await user.click(screen.getByRole("button", { name: "Delete sid cookie" }));
+    await user.click(screen.getByRole("button", { name: "Clear cookies" }));
+
+    expect(requestApiMock.revealCookieValue).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      cookieId: "cookie-1",
+    });
+    expect(requestApiMock.upsertCookie).toHaveBeenCalledWith(queryClient, {
+      workspaceId: "workspace-1",
+      cookieId: "cookie-1",
+      name: "sid",
+      value: "updated-value",
+      domain: "example.test",
+      path: "/",
+      secure: true,
+      httpOnly: true,
+      sameSite: "LAX",
+      expiresAtEpochSeconds: 1_900_000_000n,
+    });
+    expect(requestApiMock.deleteCookie).toHaveBeenCalledWith(queryClient, {
+      workspaceId: "workspace-1",
+      cookieId: "cookie-1",
+    });
+    expect(requestApiMock.clearCookies).toHaveBeenCalledWith(queryClient, {
+      workspaceId: "workspace-1",
+    });
+  });
+
   it("has no automated accessibility violations in the editor shell", async () => {
     renderApp(
       requestSnapshot({ content: requestContent(), isDirty: true }),
@@ -568,6 +628,7 @@ describe("App request editor", () => {
 function renderApp(
   snapshot: RequestWorkspaceSnapshotDto,
   history: ExecutionHistorySnapshotDto = emptyExecutionHistorySnapshot(),
+  cookies: CookieJarSnapshotDto = emptyCookieJarSnapshot(),
 ) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -578,6 +639,7 @@ function renderApp(
   queryClient.setQueryData(workspaceQueryKey, workspaceSnapshot());
   queryClient.setQueryData(requestWorkspaceQueryKey("workspace-1"), snapshot);
   queryClient.setQueryData(executionHistoryQueryKey("workspace-1"), history);
+  queryClient.setQueryData(cookieJarQueryKey("workspace-1"), cookies);
   requestApiMock.requestWorkspaceQuery.mockImplementation(
     ({ workspaceId }: { workspaceId: string }) => ({
       queryKey: requestWorkspaceQueryKey(workspaceId),
@@ -588,6 +650,12 @@ function renderApp(
     ({ workspaceId }: { workspaceId: string }) => ({
       queryKey: executionHistoryQueryKey(workspaceId),
       queryFn: vi.fn().mockResolvedValue(history),
+    }),
+  );
+  requestApiMock.cookieJarQuery.mockImplementation(
+    ({ workspaceId }: { workspaceId: string }) => ({
+      queryKey: cookieJarQueryKey(workspaceId),
+      queryFn: vi.fn().mockResolvedValue(cookies),
     }),
   );
 
@@ -662,6 +730,35 @@ function executionRecord({ pinned = false }: { pinned?: boolean } = {}): Executi
       durationMs: 42n,
     },
     pinned,
+  };
+}
+
+function emptyCookieJarSnapshot(): CookieJarSnapshotDto {
+  return {
+    workspaceId: "workspace-1",
+    cookies: [],
+  };
+}
+
+function cookieJarSnapshot(): CookieJarSnapshotDto {
+  return {
+    workspaceId: "workspace-1",
+    cookies: [
+      {
+        id: "cookie-1",
+        workspaceId: "workspace-1",
+        name: "sid",
+        domain: "example.test",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+        sameSite: "LAX",
+        expiresAtEpochSeconds: 1_900_000_000n,
+        session: false,
+        hasValue: true,
+        valuePreview: "********",
+      },
+    ],
   };
 }
 

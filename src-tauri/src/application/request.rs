@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 
+use cookie::{Cookie, Expiration, SameSite};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::domain::{
     request::{
-        CollectionFolder, CollectionId, CollectionVariable, Environment, EnvironmentId,
-        EnvironmentVariable, ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse,
-        OrderedField, RequestContent, RequestDraft, RequestDraftId, RequestTab, RequestTabId,
-        SavedRequest, SavedRequestId, VariableValue,
+        CollectionFolder, CollectionId, CollectionVariable, CookieDraft, CookieId, CookieSameSite,
+        Environment, EnvironmentId, EnvironmentVariable, ExecutionRecord, ExecutionRecordId,
+        ExecutionRecordResponse, OrderedField, RequestContent, RequestDraft, RequestDraftId,
+        RequestTab, RequestTabId, SavedRequest, SavedRequestId, VariableValue, WorkspaceCookie,
     },
     workspace::WorkspaceId,
 };
@@ -35,6 +37,12 @@ pub struct ExecutionHistorySnapshot {
     pub disabled: bool,
     pub records: Vec<ExecutionRecord>,
     pub warning: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CookieJarSnapshot {
+    pub workspace_id: WorkspaceId,
+    pub cookies: Vec<WorkspaceCookie>,
 }
 
 impl ExecutionHistorySnapshot {
@@ -170,6 +178,25 @@ pub trait RequestRepository {
         workspace_id: WorkspaceId,
         record_id: ExecutionRecordId,
     ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn list_cookies(&self, workspace_id: WorkspaceId)
+        -> Result<Vec<WorkspaceCookie>, RequestError>;
+    fn upsert_cookie_metadata(
+        &mut self,
+        draft: CookieDraft,
+        has_value: bool,
+        now_epoch_seconds: i64,
+    ) -> Result<WorkspaceCookie, RequestError>;
+    fn delete_cookie(
+        &mut self,
+        workspace_id: WorkspaceId,
+        cookie_id: CookieId,
+    ) -> Result<(), RequestError>;
+    fn clear_cookies(&mut self, workspace_id: WorkspaceId) -> Result<(), RequestError>;
+    fn cleanup_expired_cookies(
+        &mut self,
+        workspace_id: WorkspaceId,
+        now_epoch_seconds: i64,
+    ) -> Result<Vec<CookieId>, RequestError>;
 }
 
 pub struct RequestService<R>
@@ -178,6 +205,7 @@ where
 {
     repository: R,
     pending_drafts: HashMap<RequestDraftId, PendingDraft>,
+    cookie_values: HashMap<CookieId, String>,
 }
 
 impl<R> RequestService<R>
@@ -188,6 +216,7 @@ where
         Self {
             repository,
             pending_drafts: HashMap::new(),
+            cookie_values: HashMap::new(),
         }
     }
 
@@ -428,6 +457,151 @@ where
         self.repository
             .open_execution_record_as_draft(workspace_id, record_id)
     }
+
+    pub fn list_cookies(
+        &mut self,
+        workspace_id: WorkspaceId,
+    ) -> Result<CookieJarSnapshot, RequestError> {
+        let cookies = self.cleanup_and_load_cookies(workspace_id, current_epoch_seconds())?;
+        Ok(CookieJarSnapshot {
+            workspace_id,
+            cookies,
+        })
+    }
+
+    pub fn reveal_cookie_value(
+        &mut self,
+        workspace_id: WorkspaceId,
+        cookie_id: CookieId,
+    ) -> Result<String, RequestError> {
+        let cookies = self.cleanup_and_load_cookies(workspace_id, current_epoch_seconds())?;
+        if !cookies.iter().any(|cookie| cookie.id == cookie_id) {
+            return Err(RequestError::NotFound);
+        }
+        self.cookie_values
+            .get(&cookie_id)
+            .cloned()
+            .ok_or(RequestError::NotFound)
+    }
+
+    pub fn upsert_cookie(&mut self, draft: CookieDraft) -> Result<CookieJarSnapshot, RequestError> {
+        validate_cookie_draft(&draft)?;
+        let now = current_epoch_seconds();
+        let cookie = self
+            .repository
+            .upsert_cookie_metadata(draft.clone(), true, now)?;
+        self.cookie_values.insert(cookie.id, draft.value);
+        self.list_cookies(cookie.workspace_id)
+    }
+
+    pub fn delete_cookie(
+        &mut self,
+        workspace_id: WorkspaceId,
+        cookie_id: CookieId,
+    ) -> Result<CookieJarSnapshot, RequestError> {
+        self.repository.delete_cookie(workspace_id, cookie_id)?;
+        self.cookie_values.remove(&cookie_id);
+        self.list_cookies(workspace_id)
+    }
+
+    pub fn clear_cookies(
+        &mut self,
+        workspace_id: WorkspaceId,
+    ) -> Result<CookieJarSnapshot, RequestError> {
+        let existing = self.repository.list_cookies(workspace_id)?;
+        self.repository.clear_cookies(workspace_id)?;
+        for cookie in existing {
+            self.cookie_values.remove(&cookie.id);
+        }
+        self.list_cookies(workspace_id)
+    }
+
+    pub fn attach_matching_cookies(
+        &mut self,
+        workspace_id: WorkspaceId,
+        mut content: RequestContent,
+    ) -> Result<RequestContent, RequestError> {
+        if has_enabled_cookie_header(&content.headers) {
+            return Ok(content);
+        }
+
+        let url = Url::parse(&content.url)
+            .map_err(|_| RequestError::InvalidInput("url.invalid".to_owned()))?;
+        let now = current_epoch_seconds();
+        let cookies = self.cleanup_and_load_cookies(workspace_id, now)?;
+        let mut pairs = Vec::new();
+        for cookie in cookies {
+            if cookie_matches_url(&cookie, &url, now) {
+                if let Some(value) = self.cookie_values.get(&cookie.id) {
+                    pairs.push(format!("{}={}", cookie.name, value));
+                }
+            }
+        }
+
+        if !pairs.is_empty() {
+            let order = content
+                .headers
+                .iter()
+                .map(|field| field.order)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            content.headers.push(OrderedField {
+                enabled: true,
+                order,
+                name: "Cookie".to_owned(),
+                value: pairs.join("; "),
+            });
+        }
+
+        Ok(content)
+    }
+
+    pub fn capture_set_cookie_headers(
+        &mut self,
+        workspace_id: WorkspaceId,
+        request_url: &str,
+        headers: &[OrderedField],
+    ) -> Result<(), RequestError> {
+        let url = Url::parse(request_url)
+            .map_err(|_| RequestError::InvalidInput("url.invalid".to_owned()))?;
+        for header in headers {
+            if !header.name.eq_ignore_ascii_case("set-cookie") {
+                continue;
+            }
+            if let Some(draft) = cookie_draft_from_set_cookie(workspace_id, &url, &header.value)? {
+                let cookie = self.repository.upsert_cookie_metadata(
+                    draft.clone(),
+                    true,
+                    current_epoch_seconds(),
+                )?;
+                self.cookie_values.insert(cookie.id, draft.value);
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup_and_load_cookies(
+        &mut self,
+        workspace_id: WorkspaceId,
+        now_epoch_seconds: i64,
+    ) -> Result<Vec<WorkspaceCookie>, RequestError> {
+        let removed = self
+            .repository
+            .cleanup_expired_cookies(workspace_id, now_epoch_seconds)?;
+        for id in removed {
+            self.cookie_values.remove(&id);
+        }
+        self.repository.list_cookies(workspace_id).map(|cookies| {
+            cookies
+                .into_iter()
+                .map(|mut cookie| {
+                    cookie.has_value = self.cookie_values.contains_key(&cookie.id);
+                    cookie
+                })
+                .collect()
+        })
+    }
 }
 
 impl<R> Drop for RequestService<R>
@@ -624,7 +798,117 @@ fn redact_value_pair(original: String, resolved: &ResolvedValue) -> String {
 }
 
 fn is_sensitive_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("cookie")
+    name.eq_ignore_ascii_case("authorization")
+        || name.eq_ignore_ascii_case("cookie")
+        || name.eq_ignore_ascii_case("set-cookie")
+}
+
+fn has_enabled_cookie_header(headers: &[OrderedField]) -> bool {
+    headers
+        .iter()
+        .any(|field| field.enabled && field.name.eq_ignore_ascii_case("cookie"))
+}
+
+fn validate_cookie_draft(draft: &CookieDraft) -> Result<(), RequestError> {
+    if draft.name.trim().is_empty() {
+        return Err(RequestError::InvalidInput(
+            "cookie.name.required".to_owned(),
+        ));
+    }
+    if draft.name.contains('=') || draft.name.contains(';') {
+        return Err(RequestError::InvalidInput("cookie.name.invalid".to_owned()));
+    }
+    if draft.domain.trim().is_empty() {
+        return Err(RequestError::InvalidInput(
+            "cookie.domain.required".to_owned(),
+        ));
+    }
+    if !draft.path.starts_with('/') {
+        return Err(RequestError::InvalidInput("cookie.path.invalid".to_owned()));
+    }
+    Ok(())
+}
+
+fn cookie_matches_url(cookie: &WorkspaceCookie, url: &Url, now_epoch_seconds: i64) -> bool {
+    if let Some(expires_at) = cookie.expires_at_epoch_seconds {
+        if expires_at <= now_epoch_seconds {
+            return false;
+        }
+    }
+    if cookie.secure && url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let cookie_domain = cookie.domain.trim_start_matches('.').to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    if host != cookie_domain && !host.ends_with(&format!(".{cookie_domain}")) {
+        return false;
+    }
+    url.path().starts_with(&cookie.path)
+}
+
+fn cookie_draft_from_set_cookie(
+    workspace_id: WorkspaceId,
+    url: &Url,
+    value: &str,
+) -> Result<Option<CookieDraft>, RequestError> {
+    let parsed = Cookie::parse(value.to_owned())
+        .map_err(|_| RequestError::InvalidInput("cookie.set_cookie.invalid".to_owned()))?;
+    let Some(host) = url.host_str() else {
+        return Ok(None);
+    };
+    let domain = parsed
+        .domain()
+        .map(str::to_owned)
+        .unwrap_or_else(|| host.to_owned());
+    let path = parsed
+        .path()
+        .map(str::to_owned)
+        .unwrap_or_else(|| default_cookie_path(url.path()));
+    let expires_at_epoch_seconds = match parsed.expires() {
+        Some(Expiration::DateTime(datetime)) => Some(datetime.unix_timestamp()),
+        _ => None,
+    };
+    let same_site = parsed.same_site().map(cookie_same_site_from_cookie);
+    Ok(Some(CookieDraft {
+        id: None,
+        workspace_id,
+        name: parsed.name().to_owned(),
+        value: parsed.value().to_owned(),
+        domain,
+        path,
+        secure: parsed.secure().unwrap_or(false),
+        http_only: parsed.http_only().unwrap_or(false),
+        same_site,
+        expires_at_epoch_seconds,
+    }))
+}
+
+fn default_cookie_path(url_path: &str) -> String {
+    if !url_path.starts_with('/') || url_path == "/" {
+        return "/".to_owned();
+    }
+    match url_path.rfind('/') {
+        Some(0) | None => "/".to_owned(),
+        Some(index) => url_path[..index].to_owned(),
+    }
+}
+
+fn cookie_same_site_from_cookie(value: SameSite) -> CookieSameSite {
+    match value {
+        SameSite::Strict => CookieSameSite::Strict,
+        SameSite::Lax => CookieSameSite::Lax,
+        SameSite::None => CookieSameSite::None,
+    }
+}
+
+fn current_epoch_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 #[derive(Clone)]
@@ -798,6 +1082,7 @@ mod tests {
     struct FakeRequestRepository {
         persisted: Vec<(WorkspaceId, RequestDraftId, RequestContent)>,
         history_records: Vec<ExecutionRecordDraft>,
+        cookies: Vec<WorkspaceCookie>,
         snapshot: Option<RequestWorkspaceSnapshot>,
         close_calls: usize,
         save_calls: usize,
@@ -991,6 +1276,88 @@ mod tests {
         ) -> Result<RequestWorkspaceSnapshot, RequestError> {
             self.list_request_workspace(workspace_id)
         }
+
+        fn list_cookies(
+            &self,
+            workspace_id: WorkspaceId,
+        ) -> Result<Vec<WorkspaceCookie>, RequestError> {
+            Ok(self
+                .cookies
+                .iter()
+                .filter(|cookie| cookie.workspace_id == workspace_id)
+                .cloned()
+                .collect())
+        }
+
+        fn upsert_cookie_metadata(
+            &mut self,
+            draft: CookieDraft,
+            has_value: bool,
+            _now_epoch_seconds: i64,
+        ) -> Result<WorkspaceCookie, RequestError> {
+            let id = draft.id.unwrap_or_default();
+            let cookie = WorkspaceCookie {
+                id,
+                workspace_id: draft.workspace_id,
+                name: draft.name,
+                domain: draft.domain,
+                path: draft.path,
+                secure: draft.secure,
+                http_only: draft.http_only,
+                same_site: draft.same_site,
+                expires_at_epoch_seconds: draft.expires_at_epoch_seconds,
+                session: draft.expires_at_epoch_seconds.is_none(),
+                has_value,
+            };
+            self.cookies.retain(|existing| {
+                !(existing.workspace_id == cookie.workspace_id
+                    && existing.name == cookie.name
+                    && existing.domain == cookie.domain
+                    && existing.path == cookie.path)
+            });
+            self.cookies.push(cookie.clone());
+            Ok(cookie)
+        }
+
+        fn delete_cookie(
+            &mut self,
+            workspace_id: WorkspaceId,
+            cookie_id: CookieId,
+        ) -> Result<(), RequestError> {
+            let before = self.cookies.len();
+            self.cookies
+                .retain(|cookie| !(cookie.workspace_id == workspace_id && cookie.id == cookie_id));
+            if before == self.cookies.len() {
+                return Err(RequestError::NotFound);
+            }
+            Ok(())
+        }
+
+        fn clear_cookies(&mut self, workspace_id: WorkspaceId) -> Result<(), RequestError> {
+            self.cookies
+                .retain(|cookie| cookie.workspace_id != workspace_id);
+            Ok(())
+        }
+
+        fn cleanup_expired_cookies(
+            &mut self,
+            workspace_id: WorkspaceId,
+            now_epoch_seconds: i64,
+        ) -> Result<Vec<CookieId>, RequestError> {
+            let removed = self
+                .cookies
+                .iter()
+                .filter(|cookie| {
+                    cookie.workspace_id == workspace_id
+                        && cookie
+                            .expires_at_epoch_seconds
+                            .is_some_and(|expires_at| expires_at <= now_epoch_seconds)
+                })
+                .map(|cookie| cookie.id)
+                .collect::<Vec<_>>();
+            self.cookies.retain(|cookie| !removed.contains(&cookie.id));
+            Ok(removed)
+        }
     }
 
     #[test]
@@ -1049,6 +1416,161 @@ mod tests {
         assert!(service.repository.persisted.is_empty());
         assert_eq!(service.repository.save_calls, 0);
         assert_eq!(service.repository.close_calls, 0);
+    }
+
+    #[test]
+    fn matching_cookie_is_attached_without_cross_workspace_leakage() {
+        let workspace_id = WorkspaceId::new();
+        let other_workspace_id = WorkspaceId::new();
+        let mut service = RequestService::new(FakeRequestRepository::default());
+        service
+            .upsert_cookie(cookie_draft(
+                workspace_id,
+                "sid",
+                "jar-session",
+                "example.test",
+                "/api",
+                false,
+                None,
+            ))
+            .expect("store matching cookie");
+        service
+            .upsert_cookie(cookie_draft(
+                other_workspace_id,
+                "sid",
+                "wrong-workspace",
+                "example.test",
+                "/api",
+                false,
+                None,
+            ))
+            .expect("store other workspace cookie");
+
+        let content = service
+            .attach_matching_cookies(
+                workspace_id,
+                RequestContent {
+                    url: "https://example.test/api/users".to_owned(),
+                    ..RequestContent::blank()
+                },
+            )
+            .expect("attach cookies");
+
+        assert_eq!(content.headers.len(), 1);
+        assert_eq!(content.headers[0].name, "Cookie");
+        assert_eq!(content.headers[0].value, "sid=jar-session");
+    }
+
+    #[test]
+    fn explicit_cookie_header_wins_for_one_execution() {
+        let workspace_id = WorkspaceId::new();
+        let mut service = RequestService::new(FakeRequestRepository::default());
+        service
+            .upsert_cookie(cookie_draft(
+                workspace_id,
+                "sid",
+                "jar-value",
+                "example.test",
+                "/",
+                false,
+                None,
+            ))
+            .expect("store cookie");
+
+        let content = service
+            .attach_matching_cookies(
+                workspace_id,
+                RequestContent {
+                    url: "https://example.test/".to_owned(),
+                    headers: vec![OrderedField {
+                        enabled: true,
+                        order: 0,
+                        name: "Cookie".to_owned(),
+                        value: "sid=explicit".to_owned(),
+                    }],
+                    ..RequestContent::blank()
+                },
+            )
+            .expect("attach cookies");
+
+        assert_eq!(content.headers.len(), 1);
+        assert_eq!(content.headers[0].value, "sid=explicit");
+    }
+
+    #[test]
+    fn secure_and_expired_cookies_are_not_attached() {
+        let workspace_id = WorkspaceId::new();
+        let mut service = RequestService::new(FakeRequestRepository::default());
+        service
+            .upsert_cookie(cookie_draft(
+                workspace_id,
+                "secure_sid",
+                "secure",
+                "example.test",
+                "/",
+                true,
+                None,
+            ))
+            .expect("store secure cookie");
+        service.repository.cookies.push(WorkspaceCookie {
+            id: CookieId::new(),
+            workspace_id,
+            name: "old".to_owned(),
+            domain: "example.test".to_owned(),
+            path: "/".to_owned(),
+            secure: false,
+            http_only: false,
+            same_site: None,
+            expires_at_epoch_seconds: Some(1),
+            session: false,
+            has_value: true,
+        });
+
+        let content = service
+            .attach_matching_cookies(
+                workspace_id,
+                RequestContent {
+                    url: "http://example.test/".to_owned(),
+                    ..RequestContent::blank()
+                },
+            )
+            .expect("attach cookies");
+
+        assert!(content.headers.is_empty());
+    }
+
+    #[test]
+    fn set_cookie_headers_are_captured_with_default_path() {
+        let workspace_id = WorkspaceId::new();
+        let mut service = RequestService::new(FakeRequestRepository::default());
+
+        service
+            .capture_set_cookie_headers(
+                workspace_id,
+                "https://api.example.test/v1/users",
+                &[OrderedField {
+                    enabled: true,
+                    order: 0,
+                    name: "Set-Cookie".to_owned(),
+                    value: "token=token-value; Secure; HttpOnly; SameSite=Lax".to_owned(),
+                }],
+            )
+            .expect("capture set-cookie");
+
+        let snapshot = service.list_cookies(workspace_id).expect("list cookies");
+        assert_eq!(snapshot.cookies.len(), 1);
+        assert_eq!(snapshot.cookies[0].name, "token");
+        assert_eq!(snapshot.cookies[0].domain, "api.example.test");
+        assert_eq!(snapshot.cookies[0].path, "/v1");
+        assert!(snapshot.cookies[0].secure);
+        assert!(snapshot.cookies[0].http_only);
+        assert_eq!(snapshot.cookies[0].same_site, Some(CookieSameSite::Lax));
+        assert_eq!(
+            service
+                .reveal_cookie_value(workspace_id, snapshot.cookies[0].id)
+                .expect("reveal"),
+            "token-value"
+        );
     }
 
     #[test]
@@ -1283,6 +1805,29 @@ mod tests {
                 value: String::new(),
             }],
             headers: Vec::new(),
+        }
+    }
+
+    fn cookie_draft(
+        workspace_id: WorkspaceId,
+        name: &str,
+        value: &str,
+        domain: &str,
+        path: &str,
+        secure: bool,
+        expires_at_epoch_seconds: Option<i64>,
+    ) -> CookieDraft {
+        CookieDraft {
+            id: None,
+            workspace_id,
+            name: name.to_owned(),
+            value: value.to_owned(),
+            domain: domain.to_owned(),
+            path: path.to_owned(),
+            secure,
+            http_only: false,
+            same_site: None,
+            expires_at_epoch_seconds,
         }
     }
 }

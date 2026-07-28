@@ -17,18 +17,19 @@ use crate::{
         ExecutionId, ExecutionRequest, StartExecutionResult,
     },
     application::request::{
-        CloseTabDecision, CollectionLocation, ExecutionHistorySnapshot, RequestError,
-        RequestRepository, RequestService, RequestWorkspaceSnapshot, ResolvedField,
+        CloseTabDecision, CollectionLocation, CookieJarSnapshot, ExecutionHistorySnapshot,
+        RequestError, RequestRepository, RequestService, RequestWorkspaceSnapshot, ResolvedField,
         ResolvedRequestContent, ResolvedValue, ResolvedVariableReference, VariableResolutionError,
-        VariableResolutionErrorKind, VariableSource,
+        VariableResolutionErrorKind, VariableSource, REDACTED_VALUE,
     },
     application::workspace::{WorkspaceError, WorkspaceService, WorkspaceSnapshot},
     domain::{
         request::{
-            CollectionFolder, CollectionId, CollectionVariable, Environment, EnvironmentId,
-            EnvironmentVariable, ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse,
-            OrderedField, RequestContent, RequestDraft, RequestDraftId, RequestTab, RequestTabId,
-            SavedRequest, SavedRequestId, Variable, VariableValue,
+            CollectionFolder, CollectionId, CollectionVariable, CookieDraft, CookieId,
+            CookieSameSite, Environment, EnvironmentId, EnvironmentVariable, ExecutionRecord,
+            ExecutionRecordId, ExecutionRecordResponse, OrderedField, RequestContent, RequestDraft,
+            RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId, Variable,
+            VariableValue, WorkspaceCookie,
         },
         workspace::{WorkspaceId, WorkspaceNameError},
     },
@@ -62,6 +63,11 @@ pub const LIST_EXECUTION_HISTORY_COMMAND: &str = "list_execution_history";
 pub const SET_EXECUTION_HISTORY_DISABLED_COMMAND: &str = "set_execution_history_disabled";
 pub const SET_EXECUTION_RECORD_PINNED_COMMAND: &str = "set_execution_record_pinned";
 pub const OPEN_EXECUTION_RECORD_AS_DRAFT_COMMAND: &str = "open_execution_record_as_draft";
+pub const LIST_COOKIES_COMMAND: &str = "list_cookies";
+pub const UPSERT_COOKIE_COMMAND: &str = "upsert_cookie";
+pub const DELETE_COOKIE_COMMAND: &str = "delete_cookie";
+pub const CLEAR_COOKIES_COMMAND: &str = "clear_cookies";
+pub const REVEAL_COOKIE_VALUE_COMMAND: &str = "reveal_cookie_value";
 pub const START_REQUEST_EXECUTION_COMMAND: &str = "start_request_execution";
 pub const CANCEL_REQUEST_EXECUTION_COMMAND: &str = "cancel_request_execution";
 pub const REQUEST_EXECUTION_EVENT: &str = "request_execution_event";
@@ -247,6 +253,66 @@ pub struct ExecutionRecordResponseDto {
     pub body_truncated: bool,
     pub error: Option<String>,
     pub duration_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CookieSameSiteDto {
+    Strict,
+    Lax,
+    None,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceCookieDto {
+    pub id: String,
+    pub workspace_id: String,
+    pub name: String,
+    pub domain: String,
+    pub path: String,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<CookieSameSiteDto>,
+    pub expires_at_epoch_seconds: Option<i64>,
+    pub session: bool,
+    pub has_value: bool,
+    pub value_preview: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CookieJarSnapshotDto {
+    pub workspace_id: String,
+    pub cookies: Vec<WorkspaceCookieDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsertCookieInput {
+    pub workspace_id: String,
+    pub cookie_id: Option<String>,
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub path: String,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<CookieSameSiteDto>,
+    pub expires_at_epoch_seconds: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CookieIdInput {
+    pub workspace_id: String,
+    pub cookie_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RevealCookieValueOutput {
+    pub value: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -549,6 +615,7 @@ pub enum BoundaryError {
     InvalidRequestTabId,
     InvalidExecutionId,
     InvalidExecutionRecordId,
+    InvalidCookieId,
     Execution(ExecutionError),
     StateUnavailable,
 }
@@ -788,6 +855,51 @@ pub fn open_execution_record_as_draft(
 ) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
     let service = state.requests.lock().map_err(map_poison_error)?;
     handle_open_execution_record_as_draft(service, input)
+}
+
+#[tauri::command]
+pub fn list_cookies(
+    state: State<'_, AppState>,
+    input: WorkspaceIdInput,
+) -> Result<CookieJarSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_list_cookies(service, input)
+}
+
+#[tauri::command]
+pub fn upsert_cookie(
+    state: State<'_, AppState>,
+    input: UpsertCookieInput,
+) -> Result<CookieJarSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_upsert_cookie(service, input)
+}
+
+#[tauri::command]
+pub fn delete_cookie(
+    state: State<'_, AppState>,
+    input: CookieIdInput,
+) -> Result<CookieJarSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_delete_cookie(service, input)
+}
+
+#[tauri::command]
+pub fn clear_cookies(
+    state: State<'_, AppState>,
+    input: WorkspaceIdInput,
+) -> Result<CookieJarSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_clear_cookies(service, input)
+}
+
+#[tauri::command]
+pub fn reveal_cookie_value(
+    state: State<'_, AppState>,
+    input: CookieIdInput,
+) -> Result<RevealCookieValueOutput, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_reveal_cookie_value(service, input)
 }
 
 #[tauri::command]
@@ -1200,6 +1312,78 @@ where
         .map_err(|error| BoundaryError::Request(error).into())
 }
 
+pub fn handle_list_cookies<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: WorkspaceIdInput,
+) -> Result<CookieJarSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    service
+        .list_cookies(workspace_id)
+        .map(CookieJarSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_upsert_cookie<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: UpsertCookieInput,
+) -> Result<CookieJarSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let draft = CookieDraft::try_from(input)?;
+    service
+        .upsert_cookie(draft)
+        .map(CookieJarSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_delete_cookie<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: CookieIdInput,
+) -> Result<CookieJarSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let cookie_id = parse_cookie_id(&input.cookie_id)?;
+    service
+        .delete_cookie(workspace_id, cookie_id)
+        .map(CookieJarSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_clear_cookies<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: WorkspaceIdInput,
+) -> Result<CookieJarSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    service
+        .clear_cookies(workspace_id)
+        .map(CookieJarSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_reveal_cookie_value<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: CookieIdInput,
+) -> Result<RevealCookieValueOutput, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let cookie_id = parse_cookie_id(&input.cookie_id)?;
+    service
+        .reveal_cookie_value(workspace_id, cookie_id)
+        .map(|value| RevealCookieValueOutput { value })
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
 pub fn handle_start_request_execution(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -1207,11 +1391,17 @@ pub fn handle_start_request_execution(
 ) -> Result<StartRequestExecutionOutput, IpcError> {
     let workspace_id = parse_workspace_id(&input.workspace_id)?;
     let draft_id = parse_request_draft_id(&input.draft_id)?;
-    let content = RequestContent::from(input.content);
+    let content = {
+        let mut requests = state.requests.lock().map_err(map_poison_error)?;
+        requests
+            .attach_matching_cookies(workspace_id, RequestContent::from(input.content))
+            .map_err(|error| IpcError::from(BoundaryError::Request(error)))?
+    };
     let request = ExecutionRequest {
         draft_id,
         content: content.clone(),
     };
+    let request_url_for_cookie_capture = content.url.clone();
     let observer = Arc::new(std::sync::Mutex::new(ExecutionHistoryObserver::new(
         workspace_id,
         content,
@@ -1220,6 +1410,26 @@ pub fn handle_start_request_execution(
     let observer_for_sink = Arc::clone(&observer);
     let app_for_sink = app.clone();
     let sink = Arc::new(move |event: ExecutionEvent| {
+        if let ExecutionEventKind::ResponseHeaders { headers, .. } = &event.kind {
+            let app_state = app_for_sink.state::<AppState>();
+            if let Ok(mut requests) = app_state.requests.lock() {
+                let response_headers = headers
+                    .iter()
+                    .enumerate()
+                    .map(|(order, header)| OrderedField {
+                        enabled: true,
+                        order: u32::try_from(order).unwrap_or(u32::MAX),
+                        name: header.name.clone(),
+                        value: header.value.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                let _ = requests.capture_set_cookie_headers(
+                    workspace_id,
+                    &request_url_for_cookie_capture,
+                    &response_headers,
+                );
+            };
+        }
         if let Ok(mut observer) = observer_for_sink.lock() {
             if let Some(record) = observer.observe(&event) {
                 let app_state = app_for_sink.state::<AppState>();
@@ -1382,6 +1592,12 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         ExecutionHistorySnapshotDto::export_to_string(&cfg)?,
         ExecutionRecordDto::export_to_string(&cfg)?,
         ExecutionRecordResponseDto::export_to_string(&cfg)?,
+        CookieSameSiteDto::export_to_string(&cfg)?,
+        WorkspaceCookieDto::export_to_string(&cfg)?,
+        CookieJarSnapshotDto::export_to_string(&cfg)?,
+        UpsertCookieInput::export_to_string(&cfg)?,
+        CookieIdInput::export_to_string(&cfg)?,
+        RevealCookieValueOutput::export_to_string(&cfg)?,
         CreateSavedRequestInput::export_to_string(&cfg)?,
         CollectionLocationDto::export_to_string(&cfg)?,
         SelectEnvironmentInput::export_to_string(&cfg)?,
@@ -1538,6 +1754,26 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \t\tinput: ExecutionRecordIdInput;\n\
          \t\toutput: RequestWorkspaceSnapshotDto;\n\
          \t};\n\
+         \tlist_cookies: {\n\
+         \t\tinput: WorkspaceIdInput;\n\
+         \t\toutput: CookieJarSnapshotDto;\n\
+         \t};\n\
+         \tupsert_cookie: {\n\
+         \t\tinput: UpsertCookieInput;\n\
+         \t\toutput: CookieJarSnapshotDto;\n\
+         \t};\n\
+         \tdelete_cookie: {\n\
+         \t\tinput: CookieIdInput;\n\
+         \t\toutput: CookieJarSnapshotDto;\n\
+         \t};\n\
+         \tclear_cookies: {\n\
+         \t\tinput: WorkspaceIdInput;\n\
+         \t\toutput: CookieJarSnapshotDto;\n\
+         \t};\n\
+         \treveal_cookie_value: {\n\
+         \t\tinput: CookieIdInput;\n\
+         \t\toutput: RevealCookieValueOutput;\n\
+         \t};\n\
          \tstart_request_execution: {\n\
          \t\tinput: StartRequestExecutionInput;\n\
          \t\toutput: StartRequestExecutionOutput;\n\
@@ -1591,6 +1827,10 @@ fn parse_execution_id(value: &str) -> Result<ExecutionId, IpcError> {
 
 fn parse_execution_record_id(value: &str) -> Result<ExecutionRecordId, IpcError> {
     ExecutionRecordId::from_str(value).map_err(|_| BoundaryError::InvalidExecutionRecordId.into())
+}
+
+fn parse_cookie_id(value: &str) -> Result<CookieId, IpcError> {
+    CookieId::from_str(value).map_err(|_| BoundaryError::InvalidCookieId.into())
 }
 
 fn map_poison_error<T>(_error: PoisonError<T>) -> IpcError {
@@ -1665,6 +1905,81 @@ impl From<ExecutionHistorySnapshot> for ExecutionHistorySnapshotDto {
                 .collect(),
             warning: snapshot.warning,
         }
+    }
+}
+
+impl From<CookieJarSnapshot> for CookieJarSnapshotDto {
+    fn from(snapshot: CookieJarSnapshot) -> Self {
+        Self {
+            workspace_id: snapshot.workspace_id.to_string(),
+            cookies: snapshot
+                .cookies
+                .into_iter()
+                .map(WorkspaceCookieDto::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<WorkspaceCookie> for WorkspaceCookieDto {
+    fn from(cookie: WorkspaceCookie) -> Self {
+        Self {
+            id: cookie.id.to_string(),
+            workspace_id: cookie.workspace_id.to_string(),
+            name: cookie.name,
+            domain: cookie.domain,
+            path: cookie.path,
+            secure: cookie.secure,
+            http_only: cookie.http_only,
+            same_site: cookie.same_site.map(CookieSameSiteDto::from),
+            expires_at_epoch_seconds: cookie.expires_at_epoch_seconds,
+            session: cookie.session,
+            has_value: cookie.has_value,
+            value_preview: REDACTED_VALUE.to_owned(),
+        }
+    }
+}
+
+impl From<CookieSameSite> for CookieSameSiteDto {
+    fn from(value: CookieSameSite) -> Self {
+        match value {
+            CookieSameSite::Strict => Self::Strict,
+            CookieSameSite::Lax => Self::Lax,
+            CookieSameSite::None => Self::None,
+        }
+    }
+}
+
+impl From<CookieSameSiteDto> for CookieSameSite {
+    fn from(value: CookieSameSiteDto) -> Self {
+        match value {
+            CookieSameSiteDto::Strict => Self::Strict,
+            CookieSameSiteDto::Lax => Self::Lax,
+            CookieSameSiteDto::None => Self::None,
+        }
+    }
+}
+
+impl TryFrom<UpsertCookieInput> for CookieDraft {
+    type Error = IpcError;
+
+    fn try_from(input: UpsertCookieInput) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: input
+                .cookie_id
+                .as_deref()
+                .map(parse_cookie_id)
+                .transpose()?,
+            workspace_id: parse_workspace_id(&input.workspace_id)?,
+            name: input.name,
+            value: input.value,
+            domain: input.domain,
+            path: input.path,
+            secure: input.secure,
+            http_only: input.http_only,
+            same_site: input.same_site.map(CookieSameSite::from),
+            expires_at_epoch_seconds: input.expires_at_epoch_seconds,
+        })
     }
 }
 
@@ -2030,9 +2345,14 @@ impl From<ExecutionEventKind> for ExecutionEventKindDto {
 
 impl From<ExecutionHeader> for ExecutionHeaderDto {
     fn from(header: ExecutionHeader) -> Self {
+        let value = if header.name.eq_ignore_ascii_case("set-cookie") {
+            REDACTED_VALUE.to_owned()
+        } else {
+            header.value
+        };
         Self {
             name: header.name,
-            value: header.value,
+            value,
         }
     }
 }
@@ -2089,6 +2409,12 @@ impl From<BoundaryError> for IpcError {
                 code: IpcErrorCode::InvalidInput,
                 message: "Execution record id is invalid.".to_owned(),
                 details: Some("recordId".to_owned()),
+                retryable: false,
+            },
+            BoundaryError::InvalidCookieId => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "Cookie id is invalid.".to_owned(),
+                details: Some("cookieId".to_owned()),
                 retryable: false,
             },
             BoundaryError::StateUnavailable => Self {

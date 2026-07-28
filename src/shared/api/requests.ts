@@ -5,6 +5,8 @@ import type {
   CloseRequestTabInput,
   CreateCollectionFolderInput,
   CreateSavedRequestInput,
+  CookieIdInput,
+  CookieJarSnapshotDto,
   ExecutionRecordIdInput,
   ExecutionHistorySnapshotDto,
   MoveCollectionFolderInput,
@@ -19,6 +21,7 @@ import type {
   SetExecutionHistoryDisabledInput,
   SetExecutionRecordPinnedInput,
   UpdateRequestDraftInput,
+  UpsertCookieInput,
   WorkspaceIdInput,
 } from "./generated/ipc";
 import { requestIpc } from "./ipc";
@@ -29,6 +32,9 @@ export const requestWorkspaceQueryKey = (workspaceId: string) =>
 export const executionHistoryQueryKey = (workspaceId: string) =>
   ["executionHistory", workspaceId] as const;
 
+export const cookieJarQueryKey = (workspaceId: string) =>
+  ["cookieJar", workspaceId] as const;
+
 export const requestWorkspaceQuery = (input: WorkspaceIdInput) => ({
   queryKey: requestWorkspaceQueryKey(input.workspaceId),
   queryFn: () => requestIpc.listRequestWorkspace(input),
@@ -37,6 +43,11 @@ export const requestWorkspaceQuery = (input: WorkspaceIdInput) => ({
 export const executionHistoryQuery = (input: WorkspaceIdInput) => ({
   queryKey: executionHistoryQueryKey(input.workspaceId),
   queryFn: () => requestIpc.listExecutionHistory(input),
+});
+
+export const cookieJarQuery = (input: WorkspaceIdInput) => ({
+  queryKey: cookieJarQueryKey(input.workspaceId),
+  queryFn: () => requestIpc.listCookies(input),
 });
 
 export async function openUnsavedRequestTab(
@@ -238,6 +249,43 @@ export async function openExecutionRecordAsDraft(
   );
 }
 
+export async function upsertCookie(
+  queryClient: QueryClient,
+  input: UpsertCookieInput,
+) {
+  return updateCookieJarSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.upsertCookie(input),
+  );
+}
+
+export async function deleteCookie(
+  queryClient: QueryClient,
+  input: CookieIdInput,
+) {
+  return updateCookieJarSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.deleteCookie(input),
+  );
+}
+
+export async function clearCookies(
+  queryClient: QueryClient,
+  input: WorkspaceIdInput,
+) {
+  return updateCookieJarSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.clearCookies(input),
+  );
+}
+
+export async function revealCookieValue(input: CookieIdInput) {
+  return requestIpc.revealCookieValue(input);
+}
+
 async function updateRequestWorkspaceSnapshot(
   queryClient: QueryClient,
   workspaceId: string,
@@ -245,6 +293,16 @@ async function updateRequestWorkspaceSnapshot(
 ) {
   const snapshot = await operation;
   queryClient.setQueryData(requestWorkspaceQueryKey(workspaceId), snapshot);
+  return snapshot;
+}
+
+async function updateCookieJarSnapshot(
+  queryClient: QueryClient,
+  workspaceId: string,
+  operation: Promise<CookieJarSnapshotDto>,
+) {
+  const snapshot = await operation;
+  queryClient.setQueryData(cookieJarQueryKey(workspaceId), snapshot);
   return snapshot;
 }
 

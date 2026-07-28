@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CloseRequestTabInput,
   CancelRequestExecutionInput,
+  CookieIdInput,
   CollectionFolderIdInput,
   CreateSavedRequestInput,
   CreateCollectionFolderInput,
@@ -23,6 +24,7 @@ import type {
   SetExecutionRecordPinnedInput,
   StartRequestExecutionInput,
   UpdateRequestDraftInput,
+  UpsertCookieInput,
   WorkspaceIdInput,
 } from "./generated/ipc";
 
@@ -113,6 +115,13 @@ export const requestIpc = {
     invokeCommand("set_execution_record_pinned", input),
   openExecutionRecordAsDraft: (input: ExecutionRecordIdInput) =>
     invokeCommand("open_execution_record_as_draft", input),
+  listCookies: (input: WorkspaceIdInput) => invokeCommand("list_cookies", input),
+  upsertCookie: (input: UpsertCookieInput) =>
+    invokeCommand("upsert_cookie", input),
+  deleteCookie: (input: CookieIdInput) => invokeCommand("delete_cookie", input),
+  clearCookies: (input: WorkspaceIdInput) => invokeCommand("clear_cookies", input),
+  revealCookieValue: (input: CookieIdInput) =>
+    invokeCommand("reveal_cookie_value", input),
   startRequestExecution: (input: StartRequestExecutionInput) =>
     invokeCommand("start_request_execution", input),
   cancelRequestExecution: (input: CancelRequestExecutionInput) =>
