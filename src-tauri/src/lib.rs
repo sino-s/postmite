@@ -65,6 +65,10 @@ pub fn run() {
             ipc::flush_request_drafts,
             ipc::save_request_draft,
             ipc::close_request_tab,
+            ipc::list_execution_history,
+            ipc::set_execution_history_disabled,
+            ipc::set_execution_record_pinned,
+            ipc::open_execution_record_as_draft,
             ipc::start_request_execution,
             ipc::cancel_request_execution,
         ])

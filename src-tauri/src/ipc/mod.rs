@@ -4,10 +4,11 @@ use std::{
     str::FromStr,
     sync::Arc,
     sync::{MutexGuard, PoisonError},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use ts_rs::{Config, TS};
 
 use crate::{
@@ -16,17 +17,18 @@ use crate::{
         ExecutionId, ExecutionRequest, StartExecutionResult,
     },
     application::request::{
-        CloseTabDecision, CollectionLocation, RequestError, RequestRepository, RequestService,
-        RequestWorkspaceSnapshot, ResolvedField, ResolvedRequestContent, ResolvedValue,
-        ResolvedVariableReference, VariableResolutionError, VariableResolutionErrorKind,
-        VariableSource,
+        CloseTabDecision, CollectionLocation, ExecutionHistorySnapshot, RequestError,
+        RequestRepository, RequestService, RequestWorkspaceSnapshot, ResolvedField,
+        ResolvedRequestContent, ResolvedValue, ResolvedVariableReference, VariableResolutionError,
+        VariableResolutionErrorKind, VariableSource,
     },
     application::workspace::{WorkspaceError, WorkspaceService, WorkspaceSnapshot},
     domain::{
         request::{
             CollectionFolder, CollectionId, CollectionVariable, Environment, EnvironmentId,
-            EnvironmentVariable, OrderedField, RequestContent, RequestDraft, RequestDraftId,
-            RequestTab, RequestTabId, SavedRequest, SavedRequestId, Variable, VariableValue,
+            EnvironmentVariable, ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse,
+            OrderedField, RequestContent, RequestDraft, RequestDraftId, RequestTab, RequestTabId,
+            SavedRequest, SavedRequestId, Variable, VariableValue,
         },
         workspace::{WorkspaceId, WorkspaceNameError},
     },
@@ -56,6 +58,10 @@ pub const UPDATE_REQUEST_DRAFT_COMMAND: &str = "update_request_draft";
 pub const FLUSH_REQUEST_DRAFTS_COMMAND: &str = "flush_request_drafts";
 pub const SAVE_REQUEST_DRAFT_COMMAND: &str = "save_request_draft";
 pub const CLOSE_REQUEST_TAB_COMMAND: &str = "close_request_tab";
+pub const LIST_EXECUTION_HISTORY_COMMAND: &str = "list_execution_history";
+pub const SET_EXECUTION_HISTORY_DISABLED_COMMAND: &str = "set_execution_history_disabled";
+pub const SET_EXECUTION_RECORD_PINNED_COMMAND: &str = "set_execution_record_pinned";
+pub const OPEN_EXECUTION_RECORD_AS_DRAFT_COMMAND: &str = "open_execution_record_as_draft";
 pub const START_REQUEST_EXECUTION_COMMAND: &str = "start_request_execution";
 pub const CANCEL_REQUEST_EXECUTION_COMMAND: &str = "cancel_request_execution";
 pub const REQUEST_EXECUTION_EVENT: &str = "request_execution_event";
@@ -210,6 +216,37 @@ pub struct RequestWorkspaceSnapshotDto {
     pub saved_requests: Vec<SavedRequestDto>,
     pub drafts: Vec<RequestDraftDto>,
     pub tabs: Vec<RequestTabDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionHistorySnapshotDto {
+    pub workspace_id: String,
+    pub disabled: bool,
+    pub records: Vec<ExecutionRecordDto>,
+    pub warning: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionRecordDto {
+    pub id: String,
+    pub workspace_id: String,
+    pub created_at_epoch_seconds: i64,
+    pub request: RequestContentDto,
+    pub response: ExecutionRecordResponseDto,
+    pub pinned: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionRecordResponseDto {
+    pub status: Option<u16>,
+    pub headers: Vec<OrderedFieldDto>,
+    pub body_preview: String,
+    pub body_truncated: bool,
+    pub error: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -382,6 +419,28 @@ pub struct CloseRequestTabInput {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct SetExecutionHistoryDisabledInput {
+    pub workspace_id: String,
+    pub disabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SetExecutionRecordPinnedInput {
+    pub workspace_id: String,
+    pub record_id: String,
+    pub pinned: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionRecordIdInput {
+    pub workspace_id: String,
+    pub record_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct StartRequestExecutionInput {
     pub workspace_id: String,
     pub draft_id: String,
@@ -489,6 +548,7 @@ pub enum BoundaryError {
     InvalidRequestDraftId,
     InvalidRequestTabId,
     InvalidExecutionId,
+    InvalidExecutionRecordId,
     Execution(ExecutionError),
     StateUnavailable,
 }
@@ -692,6 +752,42 @@ pub fn close_request_tab(
 ) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
     let service = state.requests.lock().map_err(map_poison_error)?;
     handle_close_request_tab(service, input)
+}
+
+#[tauri::command]
+pub fn list_execution_history(
+    state: State<'_, AppState>,
+    input: WorkspaceIdInput,
+) -> Result<ExecutionHistorySnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_list_execution_history(service, input)
+}
+
+#[tauri::command]
+pub fn set_execution_history_disabled(
+    state: State<'_, AppState>,
+    input: SetExecutionHistoryDisabledInput,
+) -> Result<ExecutionHistorySnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_set_execution_history_disabled(service, input)
+}
+
+#[tauri::command]
+pub fn set_execution_record_pinned(
+    state: State<'_, AppState>,
+    input: SetExecutionRecordPinnedInput,
+) -> Result<ExecutionHistorySnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_set_execution_record_pinned(service, input)
+}
+
+#[tauri::command]
+pub fn open_execution_record_as_draft(
+    state: State<'_, AppState>,
+    input: ExecutionRecordIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_open_execution_record_as_draft(service, input)
 }
 
 #[tauri::command]
@@ -1046,19 +1142,102 @@ where
         .map_err(|error| BoundaryError::Request(error).into())
 }
 
+pub fn handle_list_execution_history<R>(
+    service: MutexGuard<'_, RequestService<R>>,
+    input: WorkspaceIdInput,
+) -> Result<ExecutionHistorySnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    service
+        .list_execution_history(workspace_id)
+        .map(ExecutionHistorySnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_set_execution_history_disabled<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: SetExecutionHistoryDisabledInput,
+) -> Result<ExecutionHistorySnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    service
+        .set_execution_history_disabled(workspace_id, input.disabled)
+        .map(ExecutionHistorySnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_set_execution_record_pinned<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: SetExecutionRecordPinnedInput,
+) -> Result<ExecutionHistorySnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let record_id = parse_execution_record_id(&input.record_id)?;
+    service
+        .set_execution_record_pinned(workspace_id, record_id, input.pinned)
+        .map(ExecutionHistorySnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_open_execution_record_as_draft<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: ExecutionRecordIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let record_id = parse_execution_record_id(&input.record_id)?;
+    service
+        .open_execution_record_as_draft(workspace_id, record_id)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
 pub fn handle_start_request_execution(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     input: StartRequestExecutionInput,
 ) -> Result<StartRequestExecutionOutput, IpcError> {
-    let _workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
     let draft_id = parse_request_draft_id(&input.draft_id)?;
+    let content = RequestContent::from(input.content);
     let request = ExecutionRequest {
         draft_id,
-        content: RequestContent::from(input.content),
+        content: content.clone(),
     };
+    let observer = Arc::new(std::sync::Mutex::new(ExecutionHistoryObserver::new(
+        workspace_id,
+        content,
+        Instant::now(),
+    )));
+    let observer_for_sink = Arc::clone(&observer);
+    let app_for_sink = app.clone();
     let sink = Arc::new(move |event: ExecutionEvent| {
-        let _ = app.emit(REQUEST_EXECUTION_EVENT, ExecutionEventDto::from(event));
+        if let Ok(mut observer) = observer_for_sink.lock() {
+            if let Some(record) = observer.observe(&event) {
+                let app_state = app_for_sink.state::<AppState>();
+                let result = if let Ok(mut requests) = app_state.requests.lock() {
+                    let _ = requests.record_execution(
+                        record.workspace_id,
+                        record.content,
+                        record.response,
+                        record.completed_at_epoch_seconds,
+                    );
+                    Ok(())
+                } else {
+                    Err(())
+                };
+                let _ = result;
+            }
+        }
+        let _ = app_for_sink.emit(REQUEST_EXECUTION_EVENT, ExecutionEventDto::from(event));
     });
 
     state
@@ -1070,6 +1249,96 @@ pub fn handle_start_request_execution(
         )
         .map(StartRequestExecutionOutput::from)
         .map_err(|error| BoundaryError::Execution(error).into())
+}
+
+struct ExecutionHistoryObserver {
+    workspace_id: WorkspaceId,
+    content: RequestContent,
+    response_headers: Vec<OrderedField>,
+    started_at: Instant,
+    recorded: bool,
+}
+
+struct ObservedExecutionRecord {
+    workspace_id: WorkspaceId,
+    content: RequestContent,
+    response: ExecutionRecordResponse,
+    completed_at_epoch_seconds: i64,
+}
+
+impl ExecutionHistoryObserver {
+    fn new(workspace_id: WorkspaceId, content: RequestContent, started_at: Instant) -> Self {
+        Self {
+            workspace_id,
+            content,
+            response_headers: Vec::new(),
+            started_at,
+            recorded: false,
+        }
+    }
+
+    fn observe(&mut self, event: &ExecutionEvent) -> Option<ObservedExecutionRecord> {
+        match &event.kind {
+            ExecutionEventKind::ResponseHeaders { headers, .. } => {
+                self.response_headers = headers
+                    .iter()
+                    .enumerate()
+                    .map(|(order, header)| OrderedField {
+                        enabled: true,
+                        order: u32::try_from(order).unwrap_or(u32::MAX),
+                        name: header.name.clone(),
+                        value: header.value.clone(),
+                    })
+                    .collect();
+                None
+            }
+            ExecutionEventKind::Completed {
+                status,
+                body_preview,
+                body_truncated,
+            } => self.record(Some(*status), body_preview.clone(), *body_truncated, None),
+            ExecutionEventKind::Failed { message } => {
+                self.record(None, String::new(), false, Some(message.clone()))
+            }
+            ExecutionEventKind::Cancelled => {
+                self.record(None, String::new(), false, Some("cancelled".to_owned()))
+            }
+            _ => None,
+        }
+    }
+
+    fn record(
+        &mut self,
+        status: Option<u16>,
+        body_preview: String,
+        body_truncated: bool,
+        error: Option<String>,
+    ) -> Option<ObservedExecutionRecord> {
+        if self.recorded {
+            return None;
+        }
+        self.recorded = true;
+        Some(ObservedExecutionRecord {
+            workspace_id: self.workspace_id,
+            content: self.content.clone(),
+            response: ExecutionRecordResponse {
+                status,
+                headers: self.response_headers.clone(),
+                body_preview,
+                body_truncated,
+                error,
+                duration_ms: Some(self.started_at.elapsed().as_millis() as u64),
+            },
+            completed_at_epoch_seconds: current_epoch_seconds(),
+        })
+    }
+}
+
+fn current_epoch_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 pub fn handle_cancel_request_execution(
@@ -1110,6 +1379,9 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         RequestDraftDto::export_to_string(&cfg)?,
         RequestTabDto::export_to_string(&cfg)?,
         RequestWorkspaceSnapshotDto::export_to_string(&cfg)?,
+        ExecutionHistorySnapshotDto::export_to_string(&cfg)?,
+        ExecutionRecordDto::export_to_string(&cfg)?,
+        ExecutionRecordResponseDto::export_to_string(&cfg)?,
         CreateSavedRequestInput::export_to_string(&cfg)?,
         CollectionLocationDto::export_to_string(&cfg)?,
         SelectEnvironmentInput::export_to_string(&cfg)?,
@@ -1132,6 +1404,9 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         RequestDraftIdInput::export_to_string(&cfg)?,
         CloseTabDecisionDto::export_to_string(&cfg)?,
         CloseRequestTabInput::export_to_string(&cfg)?,
+        SetExecutionHistoryDisabledInput::export_to_string(&cfg)?,
+        SetExecutionRecordPinnedInput::export_to_string(&cfg)?,
+        ExecutionRecordIdInput::export_to_string(&cfg)?,
         StartRequestExecutionInput::export_to_string(&cfg)?,
         StartRequestExecutionOutput::export_to_string(&cfg)?,
         CancelRequestExecutionInput::export_to_string(&cfg)?,
@@ -1247,6 +1522,22 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \t\tinput: CloseRequestTabInput;\n\
          \t\toutput: RequestWorkspaceSnapshotDto;\n\
          \t};\n\
+         \tlist_execution_history: {\n\
+         \t\tinput: WorkspaceIdInput;\n\
+         \t\toutput: ExecutionHistorySnapshotDto;\n\
+         \t};\n\
+         \tset_execution_history_disabled: {\n\
+         \t\tinput: SetExecutionHistoryDisabledInput;\n\
+         \t\toutput: ExecutionHistorySnapshotDto;\n\
+         \t};\n\
+         \tset_execution_record_pinned: {\n\
+         \t\tinput: SetExecutionRecordPinnedInput;\n\
+         \t\toutput: ExecutionHistorySnapshotDto;\n\
+         \t};\n\
+         \topen_execution_record_as_draft: {\n\
+         \t\tinput: ExecutionRecordIdInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
          \tstart_request_execution: {\n\
          \t\tinput: StartRequestExecutionInput;\n\
          \t\toutput: StartRequestExecutionOutput;\n\
@@ -1296,6 +1587,10 @@ fn parse_request_tab_id(value: &str) -> Result<RequestTabId, IpcError> {
 
 fn parse_execution_id(value: &str) -> Result<ExecutionId, IpcError> {
     ExecutionId::from_str(value).map_err(|_| BoundaryError::InvalidExecutionId.into())
+}
+
+fn parse_execution_record_id(value: &str) -> Result<ExecutionRecordId, IpcError> {
+    ExecutionRecordId::from_str(value).map_err(|_| BoundaryError::InvalidExecutionRecordId.into())
 }
 
 fn map_poison_error<T>(_error: PoisonError<T>) -> IpcError {
@@ -1354,6 +1649,51 @@ impl From<RequestWorkspaceSnapshot> for RequestWorkspaceSnapshotDto {
                 .map(RequestDraftDto::from)
                 .collect(),
             tabs: snapshot.tabs.into_iter().map(RequestTabDto::from).collect(),
+        }
+    }
+}
+
+impl From<ExecutionHistorySnapshot> for ExecutionHistorySnapshotDto {
+    fn from(snapshot: ExecutionHistorySnapshot) -> Self {
+        Self {
+            workspace_id: snapshot.workspace_id.to_string(),
+            disabled: snapshot.disabled,
+            records: snapshot
+                .records
+                .into_iter()
+                .map(ExecutionRecordDto::from)
+                .collect(),
+            warning: snapshot.warning,
+        }
+    }
+}
+
+impl From<ExecutionRecord> for ExecutionRecordDto {
+    fn from(record: ExecutionRecord) -> Self {
+        Self {
+            id: record.id.to_string(),
+            workspace_id: record.workspace_id.to_string(),
+            created_at_epoch_seconds: record.created_at_epoch_seconds,
+            request: RequestContentDto::from(record.request),
+            response: ExecutionRecordResponseDto::from(record.response),
+            pinned: record.pinned,
+        }
+    }
+}
+
+impl From<ExecutionRecordResponse> for ExecutionRecordResponseDto {
+    fn from(response: ExecutionRecordResponse) -> Self {
+        Self {
+            status: response.status,
+            headers: response
+                .headers
+                .into_iter()
+                .map(OrderedFieldDto::from)
+                .collect(),
+            body_preview: response.body_preview,
+            body_truncated: response.body_truncated,
+            error: response.error,
+            duration_ms: response.duration_ms,
         }
     }
 }
@@ -1743,6 +2083,12 @@ impl From<BoundaryError> for IpcError {
                 code: IpcErrorCode::InvalidInput,
                 message: "Execution id is invalid.".to_owned(),
                 details: Some("executionId".to_owned()),
+                retryable: false,
+            },
+            BoundaryError::InvalidExecutionRecordId => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "Execution record id is invalid.".to_owned(),
+                details: Some("recordId".to_owned()),
                 retryable: false,
             },
             BoundaryError::StateUnavailable => Self {

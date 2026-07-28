@@ -1,10 +1,16 @@
-use std::{path::Path, str::FromStr, time::Duration};
+use std::{
+    path::Path,
+    str::FromStr,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Transaction};
 
 use crate::{
     application::request::{
-        CollectionLocation, RequestError, RequestRepository, RequestWorkspaceSnapshot,
+        CollectionLocation, ExecutionHistorySnapshot, ExecutionRecordDraft, RequestError,
+        RequestRepository, RequestWorkspaceSnapshot, EXECUTION_HISTORY_RETENTION_DAYS,
+        EXECUTION_HISTORY_RETENTION_LIMIT,
     },
     application::workspace::{
         WorkspaceError, WorkspaceRepository, WorkspaceSnapshot, WorkspaceSummary,
@@ -12,8 +18,9 @@ use crate::{
     domain::{
         request::{
             CollectionFolder, CollectionId, CollectionVariable, Environment, EnvironmentId,
-            EnvironmentVariable, OrderedField, RequestContent, RequestDraft, RequestDraftId,
-            RequestTab, RequestTabId, SavedRequest, SavedRequestId, Variable, VariableValue,
+            EnvironmentVariable, ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse,
+            OrderedField, RequestContent, RequestDraft, RequestDraftId, RequestTab, RequestTabId,
+            SavedRequest, SavedRequestId, Variable, VariableValue,
         },
         workspace::{Workspace, WorkspaceId, WorkspaceName, DEFAULT_WORKSPACE_NAME},
     },
@@ -220,6 +227,71 @@ CREATE INDEX environments_workspace_position
     ON environments(workspace_id, position, created_at, id);
 CREATE INDEX environment_variables_workspace
     ON environment_variables(workspace_id, environment_id, name);
+"#,
+    },
+    Migration {
+        version: 6,
+        name: "create_execution_history_tables",
+        sql: r#"
+CREATE TABLE execution_history_settings (
+    workspace_id TEXT PRIMARY KEY,
+    disabled INTEGER NOT NULL CHECK (disabled IN (0, 1)),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE TABLE execution_records (
+    id TEXT PRIMARY KEY CHECK (length(id) > 0),
+    workspace_id TEXT NOT NULL,
+    created_at_epoch_seconds INTEGER NOT NULL,
+    pinned INTEGER NOT NULL CHECK (pinned IN (0, 1)),
+    name TEXT NOT NULL CHECK (length(name) > 0),
+    method TEXT NOT NULL CHECK (length(method) > 0),
+    url TEXT NOT NULL,
+    body TEXT NOT NULL,
+    response_status INTEGER,
+    response_body_preview TEXT NOT NULL,
+    response_body_truncated INTEGER NOT NULL CHECK (response_body_truncated IN (0, 1)),
+    response_error TEXT,
+    response_duration_ms INTEGER,
+    UNIQUE (id, workspace_id),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE TABLE execution_record_query_rows (
+    execution_record_id TEXT NOT NULL,
+    row_order INTEGER NOT NULL CHECK (row_order >= 0),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (execution_record_id, row_order),
+    FOREIGN KEY (execution_record_id) REFERENCES execution_records(id) ON DELETE CASCADE
+);
+
+CREATE TABLE execution_record_header_rows (
+    execution_record_id TEXT NOT NULL,
+    row_order INTEGER NOT NULL CHECK (row_order >= 0),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (execution_record_id, row_order),
+    FOREIGN KEY (execution_record_id) REFERENCES execution_records(id) ON DELETE CASCADE
+);
+
+CREATE TABLE execution_record_response_header_rows (
+    execution_record_id TEXT NOT NULL,
+    row_order INTEGER NOT NULL CHECK (row_order >= 0),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (execution_record_id, row_order),
+    FOREIGN KEY (execution_record_id) REFERENCES execution_records(id) ON DELETE CASCADE
+);
+
+CREATE INDEX execution_records_workspace_created
+    ON execution_records(workspace_id, created_at_epoch_seconds DESC, id);
+CREATE INDEX execution_records_workspace_unpinned_created
+    ON execution_records(workspace_id, pinned, created_at_epoch_seconds, id);
 "#,
     },
 ];
@@ -885,6 +957,112 @@ impl RequestRepository for SqliteWorkspaceRepository {
         )
         .map_err(map_request_sqlite_error)?;
         compact_tab_positions(&tx, workspace_id)?;
+
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn list_execution_history(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<ExecutionHistorySnapshot, RequestError> {
+        ensure_request_workspace_exists(&self.connection, workspace_id)?;
+        load_execution_history_snapshot(&self.connection, workspace_id)
+    }
+
+    fn set_execution_history_disabled(
+        &mut self,
+        workspace_id: WorkspaceId,
+        disabled: bool,
+    ) -> Result<ExecutionHistorySnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        tx.execute(
+            "INSERT INTO execution_history_settings (workspace_id, disabled)
+             VALUES (?1, ?2)
+             ON CONFLICT(workspace_id) DO UPDATE SET
+                 disabled = excluded.disabled,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![workspace_id.to_string(), bool_to_i64(disabled)],
+        )
+        .map_err(map_request_sqlite_error)?;
+        let snapshot = load_execution_history_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn set_execution_record_pinned(
+        &mut self,
+        workspace_id: WorkspaceId,
+        record_id: ExecutionRecordId,
+        pinned: bool,
+    ) -> Result<ExecutionHistorySnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        let changed = tx
+            .execute(
+                "UPDATE execution_records
+                 SET pinned = ?1
+                 WHERE workspace_id = ?2 AND id = ?3",
+                params![
+                    bool_to_i64(pinned),
+                    workspace_id.to_string(),
+                    record_id.to_string()
+                ],
+            )
+            .map_err(map_request_sqlite_error)?;
+        if changed == 0 {
+            return Err(RequestError::NotFound);
+        }
+        cleanup_execution_records(&tx, workspace_id, None)?;
+        let snapshot = load_execution_history_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn insert_execution_record(&mut self, draft: ExecutionRecordDraft) -> Result<(), RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, draft.workspace_id)?;
+        if execution_history_disabled(&tx, draft.workspace_id)? {
+            tx.commit().map_err(RequestError::persistence)?;
+            return Ok(());
+        }
+        insert_execution_record(&tx, draft)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(())
+    }
+
+    fn open_execution_record_as_draft(
+        &mut self,
+        workspace_id: WorkspaceId,
+        record_id: ExecutionRecordId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        let record = load_execution_record(&tx, workspace_id, record_id)?;
+        let draft_id = RequestDraftId::new();
+        insert_draft(&tx, workspace_id, draft_id, None, &record.request, true)?;
+        insert_tab(
+            &tx,
+            workspace_id,
+            RequestTabId::new(),
+            None,
+            draft_id,
+            record.request.name,
+        )?;
 
         let snapshot = load_request_snapshot(&tx, workspace_id)?;
         tx.commit().map_err(RequestError::persistence)?;
@@ -1888,6 +2066,200 @@ fn replace_fields(
     Ok(())
 }
 
+fn insert_execution_record(
+    tx: &Transaction<'_>,
+    draft: ExecutionRecordDraft,
+) -> Result<(), RequestError> {
+    let record_id = ExecutionRecordId::new();
+    validate_request_content(&draft.content)?;
+    tx.execute(
+        "INSERT INTO execution_records
+            (id, workspace_id, created_at_epoch_seconds, pinned, name, method, url, body,
+             response_status, response_body_preview, response_body_truncated,
+             response_error, response_duration_ms)
+         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            record_id.to_string(),
+            draft.workspace_id.to_string(),
+            draft.completed_at_epoch_seconds,
+            draft.content.name.as_str(),
+            draft.content.method.as_str(),
+            draft.content.url.as_str(),
+            draft.content.body.as_str(),
+            draft.response.status.map(i64::from),
+            draft.response.body_preview.as_str(),
+            bool_to_i64(draft.response.body_truncated),
+            draft.response.error.as_deref(),
+            draft.response.duration_ms.map(|value| value as i64),
+        ],
+    )
+    .map_err(map_request_sqlite_error)?;
+    replace_fields(
+        tx,
+        "execution_record_query_rows",
+        "execution_record_id",
+        &record_id.to_string(),
+        &draft.content.query,
+    )?;
+    replace_fields(
+        tx,
+        "execution_record_header_rows",
+        "execution_record_id",
+        &record_id.to_string(),
+        &draft.content.headers,
+    )?;
+    replace_fields(
+        tx,
+        "execution_record_response_header_rows",
+        "execution_record_id",
+        &record_id.to_string(),
+        &draft.response.headers,
+    )?;
+    cleanup_execution_records(
+        tx,
+        draft.workspace_id,
+        Some(draft.completed_at_epoch_seconds),
+    )
+}
+
+fn cleanup_execution_records(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    now_epoch_seconds: Option<i64>,
+) -> Result<(), RequestError> {
+    let now_epoch_seconds = now_epoch_seconds.unwrap_or_else(current_epoch_seconds);
+    let cutoff_epoch_seconds = now_epoch_seconds - EXECUTION_HISTORY_RETENTION_DAYS * 24 * 60 * 60;
+    tx.execute(
+        "DELETE FROM execution_records
+         WHERE workspace_id = ?1 AND pinned = 0 AND created_at_epoch_seconds < ?2",
+        params![workspace_id.to_string(), cutoff_epoch_seconds],
+    )
+    .map_err(map_request_sqlite_error)?;
+
+    let mut statement = tx
+        .prepare(
+            "SELECT id
+             FROM execution_records
+             WHERE workspace_id = ?1 AND pinned = 0
+             ORDER BY created_at_epoch_seconds DESC, id DESC
+             LIMIT -1 OFFSET ?2",
+        )
+        .map_err(RequestError::persistence)?;
+    let ids = statement
+        .query_map(
+            params![
+                workspace_id.to_string(),
+                i64::try_from(EXECUTION_HISTORY_RETENTION_LIMIT)
+                    .map_err(|_| RequestError::InvalidInput("history.limit".to_owned()))?,
+            ],
+            execution_record_id_from_row,
+        )
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+    drop(statement);
+
+    for id in ids {
+        tx.execute(
+            "DELETE FROM execution_records WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace_id.to_string(), id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+    }
+    Ok(())
+}
+
+fn current_epoch_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+fn execution_history_disabled(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<bool, RequestError> {
+    let disabled = connection
+        .query_row(
+            "SELECT disabled FROM execution_history_settings WHERE workspace_id = ?1",
+            params![workspace_id.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(RequestError::persistence)?
+        .unwrap_or(0);
+    Ok(disabled != 0)
+}
+
+fn load_execution_history_snapshot(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<ExecutionHistorySnapshot, RequestError> {
+    Ok(ExecutionHistorySnapshot {
+        workspace_id,
+        disabled: execution_history_disabled(connection, workspace_id)?,
+        records: load_execution_records(connection, workspace_id)?,
+        warning: ExecutionHistorySnapshot::warning_text(),
+    })
+}
+
+fn load_execution_records(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<ExecutionRecord>, RequestError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, workspace_id, created_at_epoch_seconds, pinned, name, method, url, body,
+                    response_status, response_body_preview, response_body_truncated,
+                    response_error, response_duration_ms
+             FROM execution_records
+             WHERE workspace_id = ?1
+             ORDER BY pinned DESC, created_at_epoch_seconds DESC, id DESC",
+        )
+        .map_err(RequestError::persistence)?;
+    let rows = statement
+        .query_map(params![workspace_id.to_string()], execution_record_from_row)
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+
+    rows.into_iter()
+        .map(|mut record| {
+            record.request.query = load_fields(
+                connection,
+                "execution_record_query_rows",
+                "execution_record_id",
+                &record.id.to_string(),
+            )?;
+            record.request.headers = load_fields(
+                connection,
+                "execution_record_header_rows",
+                "execution_record_id",
+                &record.id.to_string(),
+            )?;
+            record.response.headers = load_fields(
+                connection,
+                "execution_record_response_header_rows",
+                "execution_record_id",
+                &record.id.to_string(),
+            )?;
+            Ok(record)
+        })
+        .collect()
+}
+
+fn load_execution_record(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    record_id: ExecutionRecordId,
+) -> Result<ExecutionRecord, RequestError> {
+    load_execution_records(connection, workspace_id)?
+        .into_iter()
+        .find(|record| record.id == record_id)
+        .ok_or(RequestError::NotFound)
+}
+
 fn load_request_snapshot(
     connection: &Connection,
     workspace_id: WorkspaceId,
@@ -2314,6 +2686,53 @@ fn draft_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestDraft> {
     })
 }
 
+fn execution_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRecord> {
+    let status: Option<i64> = row.get(8)?;
+    let duration_ms: Option<i64> = row.get(12)?;
+    Ok(ExecutionRecord {
+        id: execution_record_id_from_row(row)?,
+        workspace_id: workspace_id_from_row_index(row, 1)?,
+        created_at_epoch_seconds: row.get(2)?,
+        pinned: row.get::<_, i64>(3)? != 0,
+        request: RequestContent {
+            name: row.get(4)?,
+            method: row.get(5)?,
+            url: row.get(6)?,
+            body: row.get(7)?,
+            query: Vec::new(),
+            headers: Vec::new(),
+        },
+        response: ExecutionRecordResponse {
+            status: status
+                .map(|value| {
+                    u16::try_from(value).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            8,
+                            rusqlite::types::Type::Integer,
+                            Box::new(error),
+                        )
+                    })
+                })
+                .transpose()?,
+            headers: Vec::new(),
+            body_preview: row.get(9)?,
+            body_truncated: row.get::<_, i64>(10)? != 0,
+            error: row.get(11)?,
+            duration_ms: duration_ms
+                .map(|value| {
+                    u64::try_from(value).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            12,
+                            rusqlite::types::Type::Integer,
+                            Box::new(error),
+                        )
+                    })
+                })
+                .transpose()?,
+        },
+    })
+}
+
 fn collection_folder_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CollectionFolder> {
     let position: i64 = row.get(4)?;
     Ok(CollectionFolder {
@@ -2440,6 +2859,13 @@ fn request_draft_id_from_row_index(
 fn request_tab_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestTabId> {
     let id: String = row.get(0)?;
     RequestTabId::from_str(&id).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })
+}
+
+fn execution_record_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRecordId> {
+    let id: String = row.get(0)?;
+    ExecutionRecordId::from_str(&id).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
     })
 }
@@ -2891,6 +3317,254 @@ mod tests {
     }
 
     #[test]
+    fn execution_history_redaction_leaves_no_known_secret_markers_in_sqlite() {
+        let db = NamedTempFile::new().expect("temporary database");
+        let workspace_id = {
+            let mut repository = SqliteWorkspaceRepository::open(db.path()).expect("open database");
+            let workspace_id = repository
+                .initialize()
+                .expect("initialize")
+                .selected_workspace_id;
+            let environment_id = EnvironmentId::new();
+            repository
+                .connection()
+                .execute(
+                    "INSERT INTO environments (id, workspace_id, name, position)
+                     VALUES (?1, ?2, 'Production', 0)",
+                    params![environment_id.to_string(), workspace_id.to_string()],
+                )
+                .expect("insert environment");
+            repository
+                .connection()
+                .execute(
+                    "INSERT INTO environment_variables
+                        (environment_id, workspace_id, name, plain_value, secret_ref)
+                     VALUES (?1, ?2, 'token', NULL, 'secret://history-token')",
+                    params![environment_id.to_string(), workspace_id.to_string()],
+                )
+                .expect("insert secret reference");
+            repository
+                .select_environment(workspace_id, Some(environment_id))
+                .expect("select environment");
+            workspace_id
+        };
+        {
+            let repository = SqliteWorkspaceRepository::open(db.path()).expect("open requests");
+            let mut service = RequestService::new(repository);
+            service
+                .record_execution(
+                    workspace_id,
+                    RequestContent {
+                        name: "Secret".to_owned(),
+                        method: "GET".to_owned(),
+                        url: "https://example.test/{{token}}".to_owned(),
+                        body: String::new(),
+                        query: Vec::new(),
+                        headers: vec![OrderedField {
+                            enabled: true,
+                            order: 0,
+                            name: "Authorization".to_owned(),
+                            value: "Bearer plain-token-marker".to_owned(),
+                        }],
+                    },
+                    history_response(Some(200)),
+                    1_800_000_000,
+                )
+                .expect("record execution");
+        }
+
+        let connection = Connection::open(db.path()).expect("inspect database");
+        for table in [
+            "execution_records",
+            "execution_record_query_rows",
+            "execution_record_header_rows",
+            "execution_record_response_header_rows",
+        ] {
+            let sql = format!(
+                "SELECT COUNT(*) FROM {table}
+                 WHERE CAST(id AS TEXT) LIKE '%plain-token-marker%'
+                    OR CAST(workspace_id AS TEXT) LIKE '%plain-token-marker%'"
+            );
+            let count: i64 = if table == "execution_records" {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM execution_records
+                         WHERE name LIKE '%plain-token-marker%'
+                            OR method LIKE '%plain-token-marker%'
+                            OR url LIKE '%plain-token-marker%'
+                            OR body LIKE '%plain-token-marker%'
+                            OR response_body_preview LIKE '%plain-token-marker%'
+                            OR response_error LIKE '%plain-token-marker%'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("inspect records")
+            } else {
+                connection
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM {table}
+                             WHERE name LIKE '%plain-token-marker%'
+                                OR value LIKE '%plain-token-marker%'"
+                        ),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("inspect field rows")
+            };
+            assert_eq!(count, 0, "{table} leaked a known secret marker via {sql}");
+        }
+    }
+
+    #[test]
+    fn execution_history_retention_removes_old_unpinned_entries_transactionally() {
+        let mut repository = repository();
+        let workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        repository
+            .insert_execution_record(history_draft(workspace_id, "old", 1_000_000))
+            .expect("insert old");
+        repository
+            .insert_execution_record(history_draft(
+                workspace_id,
+                "new",
+                1_000_000 + 31 * 24 * 60 * 60,
+            ))
+            .expect("insert new");
+
+        let history = repository
+            .list_execution_history(workspace_id)
+            .expect("list history");
+
+        assert_eq!(history.records.len(), 1);
+        assert_eq!(history.records[0].request.name, "new");
+    }
+
+    #[test]
+    fn pinned_execution_history_entries_survive_cleanup() {
+        let mut repository = repository();
+        let workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        repository
+            .insert_execution_record(history_draft(workspace_id, "old pinned", 1_000_000))
+            .expect("insert old");
+        let old_id = repository
+            .list_execution_history(workspace_id)
+            .expect("list history")
+            .records[0]
+            .id;
+        repository
+            .set_execution_record_pinned(workspace_id, old_id, true)
+            .expect("pin old");
+        repository
+            .insert_execution_record(history_draft(
+                workspace_id,
+                "new",
+                1_000_000 + 31 * 24 * 60 * 60,
+            ))
+            .expect("insert new");
+
+        let history = repository
+            .list_execution_history(workspace_id)
+            .expect("list history");
+
+        assert_eq!(history.records.len(), 2);
+        assert!(history
+            .records
+            .iter()
+            .any(|record| record.request.name == "old pinned" && record.pinned));
+    }
+
+    #[test]
+    fn execution_history_limit_keeps_latest_thousand_unpinned_entries() {
+        let mut repository = repository();
+        let workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        for index in 0..1002 {
+            repository
+                .insert_execution_record(history_draft(
+                    workspace_id,
+                    &format!("request-{index}"),
+                    2_000_000 + index,
+                ))
+                .expect("insert history");
+        }
+
+        let history = repository
+            .list_execution_history(workspace_id)
+            .expect("list history");
+
+        assert_eq!(history.records.len(), 1000);
+        assert!(history
+            .records
+            .iter()
+            .any(|record| record.request.name == "request-1001"));
+        assert!(!history
+            .records
+            .iter()
+            .any(|record| record.request.name == "request-0"));
+    }
+
+    #[test]
+    fn disabled_execution_history_skips_new_records() {
+        let mut repository = repository();
+        let workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        repository
+            .set_execution_history_disabled(workspace_id, true)
+            .expect("disable history");
+        repository
+            .insert_execution_record(history_draft(workspace_id, "skipped", 1_800_000_000))
+            .expect("insert skipped");
+
+        let history = repository
+            .list_execution_history(workspace_id)
+            .expect("list history");
+
+        assert!(history.disabled);
+        assert!(history.records.is_empty());
+    }
+
+    #[test]
+    fn opening_execution_history_as_draft_does_not_mutate_collections() {
+        let mut repository = repository();
+        let workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        repository
+            .create_saved_request(workspace_id, request_content("Saved", "saved-url"))
+            .expect("create saved request");
+        repository
+            .insert_execution_record(history_draft(workspace_id, "Replay", 1_800_000_000))
+            .expect("insert history");
+        let record_id = repository
+            .list_execution_history(workspace_id)
+            .expect("list history")
+            .records[0]
+            .id;
+
+        let snapshot = repository
+            .open_execution_record_as_draft(workspace_id, record_id)
+            .expect("open history draft");
+
+        assert_eq!(snapshot.saved_requests.len(), 1);
+        assert_eq!(snapshot.saved_requests[0].content.name, "Saved");
+        assert_eq!(snapshot.drafts.len(), 1);
+        assert_eq!(snapshot.drafts[0].content.name, "Replay");
+        assert_eq!(snapshot.drafts[0].saved_request_id, None);
+        assert!(snapshot.drafts[0].is_dirty);
+    }
+
+    #[test]
     fn selected_environment_rejects_cross_workspace_environment() {
         let mut repository = repository();
         let first_workspace_id = repository
@@ -3160,6 +3834,35 @@ mod tests {
             body: String::new(),
             query: Vec::new(),
             headers: Vec::new(),
+        }
+    }
+
+    fn history_draft(
+        workspace_id: WorkspaceId,
+        name: &str,
+        completed_at_epoch_seconds: i64,
+    ) -> ExecutionRecordDraft {
+        ExecutionRecordDraft {
+            workspace_id,
+            content: request_content(name, "https://history.example.test"),
+            response: history_response(Some(200)),
+            completed_at_epoch_seconds,
+        }
+    }
+
+    fn history_response(status: Option<u16>) -> ExecutionRecordResponse {
+        ExecutionRecordResponse {
+            status,
+            headers: vec![OrderedField {
+                enabled: true,
+                order: 0,
+                name: "content-type".to_owned(),
+                value: "application/json".to_owned(),
+            }],
+            body_preview: "{\"ok\":true}".to_owned(),
+            body_truncated: false,
+            error: None,
+            duration_ms: Some(12),
         }
     }
 }
