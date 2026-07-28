@@ -5,11 +5,19 @@ import type { RequestWorkspaceSnapshotDto } from "./generated/ipc";
 
 const requestIpcMock = vi.hoisted(() => ({
   closeRequestTab: vi.fn(),
+  createCollectionFolder: vi.fn(),
   createSavedRequest: vi.fn(),
+  deleteCollectionFolder: vi.fn(),
+  deleteSavedRequest: vi.fn(),
+  duplicateCollectionFolder: vi.fn(),
+  duplicateSavedRequest: vi.fn(),
   flushRequestDrafts: vi.fn(),
   listRequestWorkspace: vi.fn(),
+  moveCollectionFolder: vi.fn(),
+  moveSavedRequest: vi.fn(),
   openSavedRequestTab: vi.fn(),
   openUnsavedRequestTab: vi.fn(),
+  renameCollectionFolder: vi.fn(),
   saveRequestDraft: vi.fn(),
   updateRequestDraft: vi.fn(),
 }));
@@ -91,6 +99,7 @@ describe("request query API", () => {
 function requestSnapshot(workspaceId: string): RequestWorkspaceSnapshotDto {
   return {
     workspaceId,
+    collectionFolders: [],
     savedRequests: [],
     drafts: [],
     tabs: [],

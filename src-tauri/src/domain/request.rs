@@ -122,6 +122,15 @@ impl FromStr for RequestTabId {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CollectionFolder {
+    pub id: CollectionId,
+    pub workspace_id: WorkspaceId,
+    pub parent_collection_id: Option<CollectionId>,
+    pub name: String,
+    pub position: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OrderedField {
     pub enabled: bool,
     pub order: u32,
@@ -157,6 +166,7 @@ pub struct SavedRequest {
     pub id: SavedRequestId,
     pub workspace_id: WorkspaceId,
     pub collection_id: Option<CollectionId>,
+    pub position: u32,
     pub content: RequestContent,
 }
 

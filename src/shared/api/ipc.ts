@@ -3,13 +3,19 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CloseRequestTabInput,
   CancelRequestExecutionInput,
+  CollectionFolderIdInput,
   CreateSavedRequestInput,
+  CreateCollectionFolderInput,
   CreateWorkspaceInput,
   IpcCommandContracts,
   IpcError,
+  MoveCollectionFolderInput,
+  MoveSavedRequestInput,
   OpenSavedRequestTabInput,
   RequestDraftIdInput,
   RenameWorkspaceInput,
+  RenameCollectionFolderInput,
+  SavedRequestIdInput,
   StartRequestExecutionInput,
   UpdateRequestDraftInput,
   WorkspaceIdInput,
@@ -65,6 +71,22 @@ export const requestIpc = {
     invokeCommand("open_unsaved_request_tab", input),
   createSavedRequest: (input: CreateSavedRequestInput) =>
     invokeCommand("create_saved_request", input),
+  createCollectionFolder: (input: CreateCollectionFolderInput) =>
+    invokeCommand("create_collection_folder", input),
+  renameCollectionFolder: (input: RenameCollectionFolderInput) =>
+    invokeCommand("rename_collection_folder", input),
+  moveCollectionFolder: (input: MoveCollectionFolderInput) =>
+    invokeCommand("move_collection_folder", input),
+  duplicateCollectionFolder: (input: CollectionFolderIdInput) =>
+    invokeCommand("duplicate_collection_folder", input),
+  deleteCollectionFolder: (input: CollectionFolderIdInput) =>
+    invokeCommand("delete_collection_folder", input),
+  moveSavedRequest: (input: MoveSavedRequestInput) =>
+    invokeCommand("move_saved_request", input),
+  duplicateSavedRequest: (input: SavedRequestIdInput) =>
+    invokeCommand("duplicate_saved_request", input),
+  deleteSavedRequest: (input: SavedRequestIdInput) =>
+    invokeCommand("delete_saved_request", input),
   openSavedRequestTab: (input: OpenSavedRequestTabInput) =>
     invokeCommand("open_saved_request_tab", input),
   updateRequestDraft: (input: UpdateRequestDraftInput) =>

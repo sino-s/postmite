@@ -16,13 +16,14 @@ use crate::{
         ExecutionId, ExecutionRequest, StartExecutionResult,
     },
     application::request::{
-        CloseTabDecision, RequestError, RequestRepository, RequestService, RequestWorkspaceSnapshot,
+        CloseTabDecision, CollectionLocation, RequestError, RequestRepository, RequestService,
+        RequestWorkspaceSnapshot,
     },
     application::workspace::{WorkspaceError, WorkspaceService, WorkspaceSnapshot},
     domain::{
         request::{
-            OrderedField, RequestContent, RequestDraft, RequestDraftId, RequestTab, RequestTabId,
-            SavedRequest, SavedRequestId,
+            CollectionFolder, CollectionId, OrderedField, RequestContent, RequestDraft,
+            RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId,
         },
         workspace::{WorkspaceId, WorkspaceNameError},
     },
@@ -37,6 +38,14 @@ pub const DELETE_WORKSPACE_COMMAND: &str = "delete_workspace";
 pub const LIST_REQUEST_WORKSPACE_COMMAND: &str = "list_request_workspace";
 pub const OPEN_UNSAVED_REQUEST_TAB_COMMAND: &str = "open_unsaved_request_tab";
 pub const CREATE_SAVED_REQUEST_COMMAND: &str = "create_saved_request";
+pub const CREATE_COLLECTION_FOLDER_COMMAND: &str = "create_collection_folder";
+pub const RENAME_COLLECTION_FOLDER_COMMAND: &str = "rename_collection_folder";
+pub const MOVE_COLLECTION_FOLDER_COMMAND: &str = "move_collection_folder";
+pub const DUPLICATE_COLLECTION_FOLDER_COMMAND: &str = "duplicate_collection_folder";
+pub const DELETE_COLLECTION_FOLDER_COMMAND: &str = "delete_collection_folder";
+pub const MOVE_SAVED_REQUEST_COMMAND: &str = "move_saved_request";
+pub const DUPLICATE_SAVED_REQUEST_COMMAND: &str = "duplicate_saved_request";
+pub const DELETE_SAVED_REQUEST_COMMAND: &str = "delete_saved_request";
 pub const OPEN_SAVED_REQUEST_TAB_COMMAND: &str = "open_saved_request_tab";
 pub const UPDATE_REQUEST_DRAFT_COMMAND: &str = "update_request_draft";
 pub const FLUSH_REQUEST_DRAFTS_COMMAND: &str = "flush_request_drafts";
@@ -106,7 +115,18 @@ pub struct SavedRequestDto {
     pub id: String,
     pub workspace_id: String,
     pub collection_id: Option<String>,
+    pub position: u32,
     pub content: RequestContentDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionFolderDto {
+    pub id: String,
+    pub workspace_id: String,
+    pub parent_collection_id: Option<String>,
+    pub name: String,
+    pub position: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -135,6 +155,7 @@ pub struct RequestTabDto {
 #[serde(rename_all = "camelCase")]
 pub struct RequestWorkspaceSnapshotDto {
     pub workspace_id: String,
+    pub collection_folders: Vec<CollectionFolderDto>,
     pub saved_requests: Vec<SavedRequestDto>,
     pub drafts: Vec<RequestDraftDto>,
     pub tabs: Vec<RequestTabDto>,
@@ -145,6 +166,59 @@ pub struct RequestWorkspaceSnapshotDto {
 pub struct CreateSavedRequestInput {
     pub workspace_id: String,
     pub content: RequestContentDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionLocationDto {
+    pub collection_id: Option<String>,
+    pub position: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateCollectionFolderInput {
+    pub workspace_id: String,
+    pub parent_collection_id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameCollectionFolderInput {
+    pub workspace_id: String,
+    pub collection_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveCollectionFolderInput {
+    pub workspace_id: String,
+    pub collection_id: String,
+    pub location: CollectionLocationDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionFolderIdInput {
+    pub workspace_id: String,
+    pub collection_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveSavedRequestInput {
+    pub workspace_id: String,
+    pub saved_request_id: String,
+    pub location: CollectionLocationDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedRequestIdInput {
+    pub workspace_id: String,
+    pub saved_request_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -288,6 +362,7 @@ pub enum BoundaryError {
     Workspace(WorkspaceError),
     Request(RequestError),
     InvalidWorkspaceId,
+    InvalidCollectionId,
     InvalidSavedRequestId,
     InvalidRequestDraftId,
     InvalidRequestTabId,
@@ -363,6 +438,78 @@ pub fn create_saved_request(
 ) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
     let service = state.requests.lock().map_err(map_poison_error)?;
     handle_create_saved_request(service, input)
+}
+
+#[tauri::command]
+pub fn create_collection_folder(
+    state: State<'_, AppState>,
+    input: CreateCollectionFolderInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_create_collection_folder(service, input)
+}
+
+#[tauri::command]
+pub fn rename_collection_folder(
+    state: State<'_, AppState>,
+    input: RenameCollectionFolderInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_rename_collection_folder(service, input)
+}
+
+#[tauri::command]
+pub fn move_collection_folder(
+    state: State<'_, AppState>,
+    input: MoveCollectionFolderInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_move_collection_folder(service, input)
+}
+
+#[tauri::command]
+pub fn duplicate_collection_folder(
+    state: State<'_, AppState>,
+    input: CollectionFolderIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_duplicate_collection_folder(service, input)
+}
+
+#[tauri::command]
+pub fn delete_collection_folder(
+    state: State<'_, AppState>,
+    input: CollectionFolderIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_delete_collection_folder(service, input)
+}
+
+#[tauri::command]
+pub fn move_saved_request(
+    state: State<'_, AppState>,
+    input: MoveSavedRequestInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_move_saved_request(service, input)
+}
+
+#[tauri::command]
+pub fn duplicate_saved_request(
+    state: State<'_, AppState>,
+    input: SavedRequestIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_duplicate_saved_request(service, input)
+}
+
+#[tauri::command]
+pub fn delete_saved_request(
+    state: State<'_, AppState>,
+    input: SavedRequestIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_delete_saved_request(service, input)
 }
 
 #[tauri::command]
@@ -533,6 +680,134 @@ where
         .map_err(|error| BoundaryError::Request(error).into())
 }
 
+pub fn handle_create_collection_folder<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: CreateCollectionFolderInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let parent_collection_id = parse_optional_collection_id(input.parent_collection_id)?;
+    service
+        .create_collection_folder(workspace_id, parent_collection_id, input.name)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_rename_collection_folder<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: RenameCollectionFolderInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let collection_id = parse_collection_id(&input.collection_id)?;
+    service
+        .rename_collection_folder(workspace_id, collection_id, input.name)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_move_collection_folder<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: MoveCollectionFolderInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let collection_id = parse_collection_id(&input.collection_id)?;
+    service
+        .move_collection_folder(
+            workspace_id,
+            collection_id,
+            CollectionLocation::try_from(input.location)?,
+        )
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_duplicate_collection_folder<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: CollectionFolderIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let collection_id = parse_collection_id(&input.collection_id)?;
+    service
+        .duplicate_collection_folder(workspace_id, collection_id)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_delete_collection_folder<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: CollectionFolderIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let collection_id = parse_collection_id(&input.collection_id)?;
+    service
+        .delete_collection_folder(workspace_id, collection_id)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_move_saved_request<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: MoveSavedRequestInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let saved_request_id = parse_saved_request_id(&input.saved_request_id)?;
+    service
+        .move_saved_request(
+            workspace_id,
+            saved_request_id,
+            CollectionLocation::try_from(input.location)?,
+        )
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_duplicate_saved_request<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: SavedRequestIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let saved_request_id = parse_saved_request_id(&input.saved_request_id)?;
+    service
+        .duplicate_saved_request(workspace_id, saved_request_id)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_delete_saved_request<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: SavedRequestIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let saved_request_id = parse_saved_request_id(&input.saved_request_id)?;
+    service
+        .delete_saved_request(workspace_id, saved_request_id)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
 pub fn handle_open_saved_request_tab<R>(
     mut service: MutexGuard<'_, RequestService<R>>,
     input: OpenSavedRequestTabInput,
@@ -657,10 +932,18 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         OrderedFieldDto::export_to_string(&cfg)?,
         RequestContentDto::export_to_string(&cfg)?,
         SavedRequestDto::export_to_string(&cfg)?,
+        CollectionFolderDto::export_to_string(&cfg)?,
         RequestDraftDto::export_to_string(&cfg)?,
         RequestTabDto::export_to_string(&cfg)?,
         RequestWorkspaceSnapshotDto::export_to_string(&cfg)?,
         CreateSavedRequestInput::export_to_string(&cfg)?,
+        CollectionLocationDto::export_to_string(&cfg)?,
+        CreateCollectionFolderInput::export_to_string(&cfg)?,
+        RenameCollectionFolderInput::export_to_string(&cfg)?,
+        MoveCollectionFolderInput::export_to_string(&cfg)?,
+        CollectionFolderIdInput::export_to_string(&cfg)?,
+        MoveSavedRequestInput::export_to_string(&cfg)?,
+        SavedRequestIdInput::export_to_string(&cfg)?,
         OpenSavedRequestTabInput::export_to_string(&cfg)?,
         UpdateRequestDraftInput::export_to_string(&cfg)?,
         RequestDraftIdInput::export_to_string(&cfg)?,
@@ -721,6 +1004,38 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \t\tinput: CreateSavedRequestInput;\n\
          \t\toutput: RequestWorkspaceSnapshotDto;\n\
          \t};\n\
+         \tcreate_collection_folder: {\n\
+         \t\tinput: CreateCollectionFolderInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \trename_collection_folder: {\n\
+         \t\tinput: RenameCollectionFolderInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tmove_collection_folder: {\n\
+         \t\tinput: MoveCollectionFolderInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tduplicate_collection_folder: {\n\
+         \t\tinput: CollectionFolderIdInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tdelete_collection_folder: {\n\
+         \t\tinput: CollectionFolderIdInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tmove_saved_request: {\n\
+         \t\tinput: MoveSavedRequestInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tduplicate_saved_request: {\n\
+         \t\tinput: SavedRequestIdInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tdelete_saved_request: {\n\
+         \t\tinput: SavedRequestIdInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
          \topen_saved_request_tab: {\n\
          \t\tinput: OpenSavedRequestTabInput;\n\
          \t\toutput: RequestWorkspaceSnapshotDto;\n\
@@ -758,6 +1073,14 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
 
 fn parse_workspace_id(value: &str) -> Result<WorkspaceId, IpcError> {
     WorkspaceId::from_str(value).map_err(|_| BoundaryError::InvalidWorkspaceId.into())
+}
+
+fn parse_collection_id(value: &str) -> Result<CollectionId, IpcError> {
+    CollectionId::from_str(value).map_err(|_| BoundaryError::InvalidCollectionId.into())
+}
+
+fn parse_optional_collection_id(value: Option<String>) -> Result<Option<CollectionId>, IpcError> {
+    value.as_deref().map(parse_collection_id).transpose()
 }
 
 fn parse_saved_request_id(value: &str) -> Result<SavedRequestId, IpcError> {
@@ -801,6 +1124,11 @@ impl From<RequestWorkspaceSnapshot> for RequestWorkspaceSnapshotDto {
     fn from(snapshot: RequestWorkspaceSnapshot) -> Self {
         Self {
             workspace_id: snapshot.workspace_id.to_string(),
+            collection_folders: snapshot
+                .collection_folders
+                .into_iter()
+                .map(CollectionFolderDto::from)
+                .collect(),
             saved_requests: snapshot
                 .saved_requests
                 .into_iter()
@@ -822,8 +1150,32 @@ impl From<SavedRequest> for SavedRequestDto {
             id: request.id.to_string(),
             workspace_id: request.workspace_id.to_string(),
             collection_id: request.collection_id.map(|id| id.to_string()),
+            position: request.position,
             content: RequestContentDto::from(request.content),
         }
+    }
+}
+
+impl From<CollectionFolder> for CollectionFolderDto {
+    fn from(folder: CollectionFolder) -> Self {
+        Self {
+            id: folder.id.to_string(),
+            workspace_id: folder.workspace_id.to_string(),
+            parent_collection_id: folder.parent_collection_id.map(|id| id.to_string()),
+            name: folder.name,
+            position: folder.position,
+        }
+    }
+}
+
+impl TryFrom<CollectionLocationDto> for CollectionLocation {
+    type Error = IpcError;
+
+    fn try_from(location: CollectionLocationDto) -> Result<Self, Self::Error> {
+        Ok(Self {
+            collection_id: parse_optional_collection_id(location.collection_id)?,
+            position: location.position,
+        })
     }
 }
 
@@ -1006,6 +1358,12 @@ impl From<BoundaryError> for IpcError {
                 code: IpcErrorCode::InvalidInput,
                 message: "Workspace id is invalid.".to_owned(),
                 details: Some("workspaceId".to_owned()),
+                retryable: false,
+            },
+            BoundaryError::InvalidCollectionId => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "Collection id is invalid.".to_owned(),
+                details: Some("collectionId".to_owned()),
                 retryable: false,
             },
             BoundaryError::InvalidSavedRequestId => Self {

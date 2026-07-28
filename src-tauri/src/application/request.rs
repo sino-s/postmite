@@ -5,8 +5,8 @@ use thiserror::Error;
 
 use crate::domain::{
     request::{
-        RequestContent, RequestDraft, RequestDraftId, RequestTab, RequestTabId, SavedRequest,
-        SavedRequestId,
+        CollectionFolder, CollectionId, RequestContent, RequestDraft, RequestDraftId, RequestTab,
+        RequestTabId, SavedRequest, SavedRequestId,
     },
     workspace::WorkspaceId,
 };
@@ -14,9 +14,16 @@ use crate::domain::{
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RequestWorkspaceSnapshot {
     pub workspace_id: WorkspaceId,
+    pub collection_folders: Vec<CollectionFolder>,
     pub saved_requests: Vec<SavedRequest>,
     pub drafts: Vec<RequestDraft>,
     pub tabs: Vec<RequestTab>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CollectionLocation {
+    pub collection_id: Option<CollectionId>,
+    pub position: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -39,6 +46,50 @@ pub trait RequestRepository {
         &mut self,
         workspace_id: WorkspaceId,
         content: RequestContent,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn create_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        parent_collection_id: Option<CollectionId>,
+        name: String,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn rename_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+        name: String,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn move_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+        location: CollectionLocation,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn duplicate_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn delete_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn move_saved_request(
+        &mut self,
+        workspace_id: WorkspaceId,
+        saved_request_id: SavedRequestId,
+        location: CollectionLocation,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn duplicate_saved_request(
+        &mut self,
+        workspace_id: WorkspaceId,
+        saved_request_id: SavedRequestId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn delete_saved_request(
+        &mut self,
+        workspace_id: WorkspaceId,
+        saved_request_id: SavedRequestId,
     ) -> Result<RequestWorkspaceSnapshot, RequestError>;
     fn open_saved_request_tab(
         &mut self,
@@ -102,6 +153,82 @@ where
         content: RequestContent,
     ) -> Result<RequestWorkspaceSnapshot, RequestError> {
         self.repository.create_saved_request(workspace_id, content)
+    }
+
+    pub fn create_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        parent_collection_id: Option<CollectionId>,
+        name: impl Into<String>,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.repository
+            .create_collection_folder(workspace_id, parent_collection_id, name.into())
+    }
+
+    pub fn rename_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+        name: impl Into<String>,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.repository
+            .rename_collection_folder(workspace_id, collection_id, name.into())
+    }
+
+    pub fn move_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+        location: CollectionLocation,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.repository
+            .move_collection_folder(workspace_id, collection_id, location)
+    }
+
+    pub fn duplicate_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.repository
+            .duplicate_collection_folder(workspace_id, collection_id)
+    }
+
+    pub fn delete_collection_folder(
+        &mut self,
+        workspace_id: WorkspaceId,
+        collection_id: CollectionId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.repository
+            .delete_collection_folder(workspace_id, collection_id)
+    }
+
+    pub fn move_saved_request(
+        &mut self,
+        workspace_id: WorkspaceId,
+        saved_request_id: SavedRequestId,
+        location: CollectionLocation,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.repository
+            .move_saved_request(workspace_id, saved_request_id, location)
+    }
+
+    pub fn duplicate_saved_request(
+        &mut self,
+        workspace_id: WorkspaceId,
+        saved_request_id: SavedRequestId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.repository
+            .duplicate_saved_request(workspace_id, saved_request_id)
+    }
+
+    pub fn delete_saved_request(
+        &mut self,
+        workspace_id: WorkspaceId,
+        saved_request_id: SavedRequestId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.repository
+            .delete_saved_request(workspace_id, saved_request_id)
     }
 
     pub fn open_saved_request_tab(
@@ -228,6 +355,7 @@ mod tests {
         ) -> Result<RequestWorkspaceSnapshot, RequestError> {
             Ok(self.snapshot.clone().unwrap_or(RequestWorkspaceSnapshot {
                 workspace_id,
+                collection_folders: Vec::new(),
                 saved_requests: Vec::new(),
                 drafts: Vec::new(),
                 tabs: Vec::new(),
@@ -245,6 +373,74 @@ mod tests {
             &mut self,
             workspace_id: WorkspaceId,
             _content: RequestContent,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            self.list_request_workspace(workspace_id)
+        }
+
+        fn create_collection_folder(
+            &mut self,
+            workspace_id: WorkspaceId,
+            _parent_collection_id: Option<CollectionId>,
+            _name: String,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            self.list_request_workspace(workspace_id)
+        }
+
+        fn rename_collection_folder(
+            &mut self,
+            workspace_id: WorkspaceId,
+            _collection_id: CollectionId,
+            _name: String,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            self.list_request_workspace(workspace_id)
+        }
+
+        fn move_collection_folder(
+            &mut self,
+            workspace_id: WorkspaceId,
+            _collection_id: CollectionId,
+            _location: CollectionLocation,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            self.list_request_workspace(workspace_id)
+        }
+
+        fn duplicate_collection_folder(
+            &mut self,
+            workspace_id: WorkspaceId,
+            _collection_id: CollectionId,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            self.list_request_workspace(workspace_id)
+        }
+
+        fn delete_collection_folder(
+            &mut self,
+            workspace_id: WorkspaceId,
+            _collection_id: CollectionId,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            self.list_request_workspace(workspace_id)
+        }
+
+        fn move_saved_request(
+            &mut self,
+            workspace_id: WorkspaceId,
+            _saved_request_id: SavedRequestId,
+            _location: CollectionLocation,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            self.list_request_workspace(workspace_id)
+        }
+
+        fn duplicate_saved_request(
+            &mut self,
+            workspace_id: WorkspaceId,
+            _saved_request_id: SavedRequestId,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            self.list_request_workspace(workspace_id)
+        }
+
+        fn delete_saved_request(
+            &mut self,
+            workspace_id: WorkspaceId,
+            _saved_request_id: SavedRequestId,
         ) -> Result<RequestWorkspaceSnapshot, RequestError> {
             self.list_request_workspace(workspace_id)
         }
@@ -308,6 +504,7 @@ mod tests {
         let repository = FakeRequestRepository {
             snapshot: Some(RequestWorkspaceSnapshot {
                 workspace_id,
+                collection_folders: Vec::new(),
                 saved_requests: Vec::new(),
                 drafts: vec![RequestDraft {
                     id: draft_id,
