@@ -69,6 +69,11 @@ pub fn run() {
             ipc::set_execution_history_disabled,
             ipc::set_execution_record_pinned,
             ipc::open_execution_record_as_draft,
+            ipc::list_cookies,
+            ipc::upsert_cookie,
+            ipc::delete_cookie,
+            ipc::clear_cookies,
+            ipc::reveal_cookie_value,
             ipc::start_request_execution,
             ipc::cancel_request_execution,
         ])

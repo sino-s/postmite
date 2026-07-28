@@ -17,10 +17,11 @@ use crate::{
     },
     domain::{
         request::{
-            CollectionFolder, CollectionId, CollectionVariable, Environment, EnvironmentId,
-            EnvironmentVariable, ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse,
-            OrderedField, RequestContent, RequestDraft, RequestDraftId, RequestTab, RequestTabId,
-            SavedRequest, SavedRequestId, Variable, VariableValue,
+            CollectionFolder, CollectionId, CollectionVariable, CookieDraft, CookieId,
+            CookieSameSite, Environment, EnvironmentId, EnvironmentVariable, ExecutionRecord,
+            ExecutionRecordId, ExecutionRecordResponse, OrderedField, RequestContent, RequestDraft,
+            RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId, Variable,
+            VariableValue, WorkspaceCookie,
         },
         workspace::{Workspace, WorkspaceId, WorkspaceName, DEFAULT_WORKSPACE_NAME},
     },
@@ -294,6 +295,33 @@ CREATE INDEX execution_records_workspace_unpinned_created
     ON execution_records(workspace_id, pinned, created_at_epoch_seconds, id);
 "#,
     },
+    Migration {
+        version: 7,
+        name: "create_workspace_cookie_metadata",
+        sql: r#"
+CREATE TABLE workspace_cookies (
+    id TEXT PRIMARY KEY CHECK (length(id) > 0),
+    workspace_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK (length(name) > 0),
+    domain TEXT NOT NULL CHECK (length(domain) > 0),
+    path TEXT NOT NULL CHECK (length(path) > 0),
+    secure INTEGER NOT NULL CHECK (secure IN (0, 1)),
+    http_only INTEGER NOT NULL CHECK (http_only IN (0, 1)),
+    same_site TEXT CHECK (same_site IN ('strict', 'lax', 'none')),
+    expires_at_epoch_seconds INTEGER,
+    session INTEGER NOT NULL CHECK (session IN (0, 1)),
+    has_value INTEGER NOT NULL CHECK (has_value IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (id, workspace_id),
+    UNIQUE (workspace_id, name, domain, path),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE INDEX workspace_cookies_workspace_scope
+    ON workspace_cookies(workspace_id, domain, path, secure, expires_at_epoch_seconds);
+"#,
+    },
 ];
 
 struct Migration {
@@ -311,6 +339,7 @@ impl SqliteWorkspaceRepository {
         let connection = Connection::open(path).map_err(WorkspaceError::persistence)?;
         configure_connection(&connection)?;
         apply_migrations(&connection)?;
+        clear_session_cookie_metadata(&connection)?;
 
         Ok(Self { connection })
     }
@@ -1068,6 +1097,147 @@ impl RequestRepository for SqliteWorkspaceRepository {
         tx.commit().map_err(RequestError::persistence)?;
         Ok(snapshot)
     }
+
+    fn list_cookies(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<WorkspaceCookie>, RequestError> {
+        ensure_request_workspace_exists(&self.connection, workspace_id)?;
+        load_workspace_cookies(&self.connection, workspace_id)
+    }
+
+    fn upsert_cookie_metadata(
+        &mut self,
+        draft: CookieDraft,
+        has_value: bool,
+        now_epoch_seconds: i64,
+    ) -> Result<WorkspaceCookie, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, draft.workspace_id)?;
+        validate_cookie_metadata(&draft)?;
+        let session = draft.expires_at_epoch_seconds.is_none();
+        if let Some(expires_at) = draft.expires_at_epoch_seconds {
+            if expires_at <= now_epoch_seconds {
+                tx.execute(
+                    "DELETE FROM workspace_cookies
+                     WHERE workspace_id = ?1 AND name = ?2 AND domain = ?3 AND path = ?4",
+                    params![
+                        draft.workspace_id.to_string(),
+                        draft.name.trim(),
+                        normalize_cookie_domain(&draft.domain),
+                        draft.path.as_str()
+                    ],
+                )
+                .map_err(map_request_sqlite_error)?;
+                tx.commit().map_err(RequestError::persistence)?;
+                return Err(RequestError::NotFound);
+            }
+        }
+
+        let id = draft.id.unwrap_or_default();
+        tx.execute(
+            "INSERT INTO workspace_cookies
+                (id, workspace_id, name, domain, path, secure, http_only, same_site,
+                 expires_at_epoch_seconds, session, has_value)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(workspace_id, name, domain, path) DO UPDATE SET
+                 secure = excluded.secure,
+                 http_only = excluded.http_only,
+                 same_site = excluded.same_site,
+                 expires_at_epoch_seconds = excluded.expires_at_epoch_seconds,
+                 session = excluded.session,
+                 has_value = excluded.has_value,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![
+                id.to_string(),
+                draft.workspace_id.to_string(),
+                draft.name.trim(),
+                normalize_cookie_domain(&draft.domain),
+                draft.path.as_str(),
+                bool_to_i64(draft.secure),
+                bool_to_i64(draft.http_only),
+                draft.same_site.map(cookie_same_site_to_sql),
+                draft.expires_at_epoch_seconds,
+                bool_to_i64(session),
+                bool_to_i64(has_value),
+            ],
+        )
+        .map_err(map_request_sqlite_error)?;
+
+        let cookie = load_workspace_cookie_by_scope(
+            &tx,
+            draft.workspace_id,
+            draft.name.trim(),
+            &normalize_cookie_domain(&draft.domain),
+            &draft.path,
+        )?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(cookie)
+    }
+
+    fn delete_cookie(
+        &mut self,
+        workspace_id: WorkspaceId,
+        cookie_id: CookieId,
+    ) -> Result<(), RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        let changed = tx
+            .execute(
+                "DELETE FROM workspace_cookies WHERE workspace_id = ?1 AND id = ?2",
+                params![workspace_id.to_string(), cookie_id.to_string()],
+            )
+            .map_err(map_request_sqlite_error)?;
+        if changed == 0 {
+            return Err(RequestError::NotFound);
+        }
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(())
+    }
+
+    fn clear_cookies(&mut self, workspace_id: WorkspaceId) -> Result<(), RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        tx.execute(
+            "DELETE FROM workspace_cookies WHERE workspace_id = ?1",
+            params![workspace_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(())
+    }
+
+    fn cleanup_expired_cookies(
+        &mut self,
+        workspace_id: WorkspaceId,
+        now_epoch_seconds: i64,
+    ) -> Result<Vec<CookieId>, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        let removed = load_expired_cookie_ids(&tx, workspace_id, now_epoch_seconds)?;
+        tx.execute(
+            "DELETE FROM workspace_cookies
+             WHERE workspace_id = ?1
+               AND expires_at_epoch_seconds IS NOT NULL
+               AND expires_at_epoch_seconds <= ?2",
+            params![workspace_id.to_string(), now_epoch_seconds],
+        )
+        .map_err(map_request_sqlite_error)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(removed)
+    }
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), WorkspaceError> {
@@ -1121,6 +1291,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
         tx.commit().map_err(WorkspaceError::persistence)?;
     }
 
+    Ok(())
+}
+
+fn clear_session_cookie_metadata(connection: &Connection) -> Result<(), WorkspaceError> {
+    connection
+        .execute(
+            "DELETE FROM workspace_cookies
+             WHERE session = 1",
+            [],
+        )
+        .map_err(WorkspaceError::persistence)?;
     Ok(())
 }
 
@@ -2276,6 +2457,73 @@ fn load_request_snapshot(
     })
 }
 
+fn load_workspace_cookies(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<WorkspaceCookie>, RequestError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, workspace_id, name, domain, path, secure, http_only, same_site,
+                    expires_at_epoch_seconds, session, has_value
+             FROM workspace_cookies
+             WHERE workspace_id = ?1
+             ORDER BY domain, path, name",
+        )
+        .map_err(RequestError::persistence)?;
+    let cookies = statement
+        .query_map(params![workspace_id.to_string()], workspace_cookie_from_row)
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+    Ok(cookies)
+}
+
+fn load_workspace_cookie_by_scope(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    name: &str,
+    domain: &str,
+    path: &str,
+) -> Result<WorkspaceCookie, RequestError> {
+    connection
+        .query_row(
+            "SELECT id, workspace_id, name, domain, path, secure, http_only, same_site,
+                    expires_at_epoch_seconds, session, has_value
+             FROM workspace_cookies
+             WHERE workspace_id = ?1 AND name = ?2 AND domain = ?3 AND path = ?4",
+            params![workspace_id.to_string(), name, domain, path],
+            workspace_cookie_from_row,
+        )
+        .optional()
+        .map_err(RequestError::persistence)?
+        .ok_or(RequestError::NotFound)
+}
+
+fn load_expired_cookie_ids(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    now_epoch_seconds: i64,
+) -> Result<Vec<CookieId>, RequestError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id
+             FROM workspace_cookies
+             WHERE workspace_id = ?1
+               AND expires_at_epoch_seconds IS NOT NULL
+               AND expires_at_epoch_seconds <= ?2",
+        )
+        .map_err(RequestError::persistence)?;
+    let ids = statement
+        .query_map(
+            params![workspace_id.to_string(), now_epoch_seconds],
+            cookie_id_from_row,
+        )
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+    Ok(ids)
+}
+
 fn load_collection_folders(
     connection: &Connection,
     workspace_id: WorkspaceId,
@@ -2669,6 +2917,23 @@ fn validate_collection_name(name: &str) -> Result<(), RequestError> {
     Ok(())
 }
 
+fn validate_cookie_metadata(draft: &CookieDraft) -> Result<(), RequestError> {
+    if draft.name.trim().is_empty() {
+        return Err(RequestError::InvalidInput(
+            "cookie.name.required".to_owned(),
+        ));
+    }
+    if draft.domain.trim().is_empty() {
+        return Err(RequestError::InvalidInput(
+            "cookie.domain.required".to_owned(),
+        ));
+    }
+    if !draft.path.starts_with('/') {
+        return Err(RequestError::InvalidInput("cookie.path.invalid".to_owned()));
+    }
+    Ok(())
+}
+
 fn draft_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestDraft> {
     Ok(RequestDraft {
         id: request_draft_id_from_row(row)?,
@@ -2683,6 +2948,26 @@ fn draft_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestDraft> {
             headers: Vec::new(),
         },
         is_dirty: row.get::<_, i64>(7)? != 0,
+    })
+}
+
+fn workspace_cookie_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceCookie> {
+    let same_site: Option<String> = row.get(7)?;
+    Ok(WorkspaceCookie {
+        id: cookie_id_from_row(row)?,
+        workspace_id: workspace_id_from_row_index(row, 1)?,
+        name: row.get(2)?,
+        domain: row.get(3)?,
+        path: row.get(4)?,
+        secure: row.get::<_, i64>(5)? != 0,
+        http_only: row.get::<_, i64>(6)? != 0,
+        same_site: same_site
+            .as_deref()
+            .map(cookie_same_site_from_sql)
+            .transpose()?,
+        expires_at_epoch_seconds: row.get(8)?,
+        session: row.get::<_, i64>(9)? != 0,
+        has_value: row.get::<_, i64>(10)? != 0,
     })
 }
 
@@ -2870,6 +3155,13 @@ fn execution_record_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Exe
     })
 }
 
+fn cookie_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CookieId> {
+    let id: String = row.get(0)?;
+    CookieId::from_str(&id).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })
+}
+
 fn optional_saved_request_id_from_row(
     row: &rusqlite::Row<'_>,
     index: usize,
@@ -2912,6 +3204,31 @@ fn bool_to_i64(value: bool) -> i64 {
     }
 }
 
+fn normalize_cookie_domain(domain: &str) -> String {
+    domain.trim().trim_start_matches('.').to_ascii_lowercase()
+}
+
+fn cookie_same_site_to_sql(value: CookieSameSite) -> &'static str {
+    match value {
+        CookieSameSite::Strict => "strict",
+        CookieSameSite::Lax => "lax",
+        CookieSameSite::None => "none",
+    }
+}
+
+fn cookie_same_site_from_sql(value: &str) -> rusqlite::Result<CookieSameSite> {
+    match value {
+        "strict" => Ok(CookieSameSite::Strict),
+        "lax" => Ok(CookieSameSite::Lax),
+        "none" => Ok(CookieSameSite::None),
+        _ => Err(rusqlite::Error::FromSqlConversionFailure(
+            7,
+            rusqlite::types::Type::Text,
+            "invalid cookie SameSite value".into(),
+        )),
+    }
+}
+
 fn map_request_sqlite_error(error: rusqlite::Error) -> RequestError {
     match &error {
         rusqlite::Error::SqliteFailure(failure, _)
@@ -2932,7 +3249,8 @@ mod tests {
         application::request::{RequestRepository, RequestService},
         application::workspace::WorkspaceRepository,
         domain::request::{
-            EnvironmentId, OrderedField, RequestContent, RequestDraftId, VariableValue,
+            CookieDraft, CookieSameSite, EnvironmentId, OrderedField, RequestContent,
+            RequestDraftId, VariableValue,
         },
     };
 
@@ -3534,6 +3852,118 @@ mod tests {
     }
 
     #[test]
+    fn cookie_metadata_is_workspace_scoped_and_values_are_not_persisted() {
+        let db = NamedTempFile::new().expect("temporary database");
+        let (first_workspace_id, second_workspace_id) = {
+            let mut repository = SqliteWorkspaceRepository::open(db.path()).expect("open database");
+            let first_workspace_id = repository
+                .initialize()
+                .expect("initialize")
+                .selected_workspace_id;
+            let second_workspace_id = repository
+                .create_workspace(WorkspaceName::new("Second").expect("valid name"))
+                .expect("create second workspace")
+                .selected_workspace_id;
+            let mut service = RequestService::new(repository);
+            service
+                .upsert_cookie(cookie_draft(
+                    first_workspace_id,
+                    "sid",
+                    "first-cookie-marker",
+                    "example.test",
+                    "/",
+                    Some(1_900_000_000),
+                ))
+                .expect("store first cookie");
+            service
+                .upsert_cookie(cookie_draft(
+                    second_workspace_id,
+                    "sid",
+                    "second-cookie-marker",
+                    "example.test",
+                    "/",
+                    Some(1_900_000_000),
+                ))
+                .expect("store second cookie");
+            (first_workspace_id, second_workspace_id)
+        };
+
+        let repository = SqliteWorkspaceRepository::open(db.path()).expect("reopen database");
+        let mut service = RequestService::new(repository);
+        let first = service
+            .list_cookies(first_workspace_id)
+            .expect("list first workspace cookies");
+        let second = service
+            .list_cookies(second_workspace_id)
+            .expect("list second workspace cookies");
+
+        assert_eq!(first.cookies.len(), 1);
+        assert_eq!(second.cookies.len(), 1);
+        assert_eq!(first.cookies[0].workspace_id, first_workspace_id);
+        assert_eq!(second.cookies[0].workspace_id, second_workspace_id);
+        assert!(!first.cookies[0].has_value);
+        assert!(service
+            .reveal_cookie_value(first_workspace_id, first.cookies[0].id)
+            .is_err());
+
+        let connection = Connection::open(db.path()).expect("inspect database");
+        let leaked: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM workspace_cookies
+                 WHERE name LIKE '%cookie-marker%'
+                    OR domain LIKE '%cookie-marker%'
+                    OR path LIKE '%cookie-marker%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect cookies");
+        assert_eq!(leaked, 0);
+    }
+
+    #[test]
+    fn session_cookies_disappear_on_restart_while_persistent_metadata_remains() {
+        let db = NamedTempFile::new().expect("temporary database");
+        let workspace_id = {
+            let mut repository = SqliteWorkspaceRepository::open(db.path()).expect("open database");
+            let workspace_id = repository
+                .initialize()
+                .expect("initialize")
+                .selected_workspace_id;
+            let mut service = RequestService::new(repository);
+            service
+                .upsert_cookie(cookie_draft(
+                    workspace_id,
+                    "session",
+                    "session-value",
+                    "example.test",
+                    "/",
+                    None,
+                ))
+                .expect("store session cookie");
+            service
+                .upsert_cookie(cookie_draft(
+                    workspace_id,
+                    "persistent",
+                    "persistent-value",
+                    "example.test",
+                    "/",
+                    Some(1_900_000_000),
+                ))
+                .expect("store persistent cookie");
+            workspace_id
+        };
+
+        let repository = SqliteWorkspaceRepository::open(db.path()).expect("reopen database");
+        let mut service = RequestService::new(repository);
+        let snapshot = service.list_cookies(workspace_id).expect("list cookies");
+
+        assert_eq!(snapshot.cookies.len(), 1);
+        assert_eq!(snapshot.cookies[0].name, "persistent");
+        assert!(!snapshot.cookies[0].session);
+        assert!(!snapshot.cookies[0].has_value);
+    }
+
+    #[test]
     fn opening_execution_history_as_draft_does_not_mutate_collections() {
         let mut repository = repository();
         let workspace_id = repository
@@ -3863,6 +4293,28 @@ mod tests {
             body_truncated: false,
             error: None,
             duration_ms: Some(12),
+        }
+    }
+
+    fn cookie_draft(
+        workspace_id: WorkspaceId,
+        name: &str,
+        value: &str,
+        domain: &str,
+        path: &str,
+        expires_at_epoch_seconds: Option<i64>,
+    ) -> CookieDraft {
+        CookieDraft {
+            id: None,
+            workspace_id,
+            name: name.to_owned(),
+            value: value.to_owned(),
+            domain: domain.to_owned(),
+            path: path.to_owned(),
+            secure: false,
+            http_only: true,
+            same_site: Some(CookieSameSite::Lax),
+            expires_at_epoch_seconds,
         }
     }
 }
