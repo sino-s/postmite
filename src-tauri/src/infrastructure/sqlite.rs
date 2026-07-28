@@ -11,8 +11,9 @@ use crate::{
     },
     domain::{
         request::{
-            CollectionFolder, CollectionId, OrderedField, RequestContent, RequestDraft,
-            RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId,
+            CollectionFolder, CollectionId, CollectionVariable, Environment, EnvironmentId,
+            EnvironmentVariable, OrderedField, RequestContent, RequestDraft, RequestDraftId,
+            RequestTab, RequestTabId, SavedRequest, SavedRequestId, Variable, VariableValue,
         },
         workspace::{Workspace, WorkspaceId, WorkspaceName, DEFAULT_WORKSPACE_NAME},
     },
@@ -164,6 +165,61 @@ CREATE INDEX collections_workspace_parent_position
     ON collections(workspace_id, parent_collection_id, position, created_at, id);
 CREATE INDEX saved_requests_workspace_collection_position
     ON saved_requests(workspace_id, collection_id, position, created_at, id);
+"#,
+    },
+    Migration {
+        version: 5,
+        name: "create_environment_variable_tables",
+        sql: r#"
+CREATE TABLE environments (
+    id TEXT PRIMARY KEY CHECK (length(id) > 0),
+    workspace_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK (length(name) > 0),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (id, workspace_id),
+    UNIQUE (workspace_id, name),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE TABLE selected_environments (
+    workspace_id TEXT PRIMARY KEY,
+    environment_id TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+    FOREIGN KEY (environment_id, workspace_id) REFERENCES environments(id, workspace_id)
+        ON DELETE SET NULL
+);
+
+CREATE TABLE collection_variables (
+    workspace_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK (length(name) > 0),
+    plain_value TEXT,
+    secret_ref TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (workspace_id, name),
+    CHECK ((plain_value IS NOT NULL AND secret_ref IS NULL) OR (plain_value IS NULL AND secret_ref IS NOT NULL)),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE TABLE environment_variables (
+    environment_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK (length(name) > 0),
+    plain_value TEXT,
+    secret_ref TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (environment_id, name),
+    CHECK ((plain_value IS NOT NULL AND secret_ref IS NULL) OR (plain_value IS NULL AND secret_ref IS NOT NULL)),
+    FOREIGN KEY (environment_id, workspace_id) REFERENCES environments(id, workspace_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX environments_workspace_position
+    ON environments(workspace_id, position, created_at, id);
+CREATE INDEX environment_variables_workspace
+    ON environment_variables(workspace_id, environment_id, name);
 "#,
     },
 ];
@@ -398,6 +454,37 @@ impl RequestRepository for SqliteWorkspaceRepository {
                 parent_collection_id.map(|id| id.to_string()),
                 name.trim(),
                 position,
+            ],
+        )
+        .map_err(map_request_sqlite_error)?;
+
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn select_environment(
+        &mut self,
+        workspace_id: WorkspaceId,
+        environment_id: Option<EnvironmentId>,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        if let Some(environment_id) = environment_id {
+            ensure_environment_in_workspace(&tx, workspace_id, environment_id)?;
+        }
+        tx.execute(
+            "INSERT INTO selected_environments (workspace_id, environment_id)
+             VALUES (?1, ?2)
+             ON CONFLICT(workspace_id) DO UPDATE SET
+                 environment_id = excluded.environment_id,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![
+                workspace_id.to_string(),
+                environment_id.map(|id| id.to_string())
             ],
         )
         .map_err(map_request_sqlite_error)?;
@@ -1032,6 +1119,23 @@ fn ensure_collection_parent(
         }
         None => Ok(()),
     }
+}
+
+fn ensure_environment_in_workspace(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    environment_id: EnvironmentId,
+) -> Result<(), RequestError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM environments WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace_id.to_string(), environment_id.to_string()],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(RequestError::persistence)?;
+
+    exists.ok_or(RequestError::NotFound)
 }
 
 fn insert_saved_request(
@@ -1791,6 +1895,9 @@ fn load_request_snapshot(
     Ok(RequestWorkspaceSnapshot {
         workspace_id,
         collection_folders: load_collection_folders(connection, workspace_id)?,
+        environments: load_environments(connection, workspace_id)?,
+        collection_variables: load_collection_variables(connection, workspace_id)?,
+        environment_variables: load_environment_variables(connection, workspace_id)?,
         saved_requests: load_saved_requests(connection, workspace_id)?,
         drafts: load_open_drafts(connection, workspace_id)?,
         tabs: load_tabs(connection, workspace_id)?,
@@ -1836,6 +1943,102 @@ fn load_collection_folder(
         .optional()
         .map_err(RequestError::persistence)?
         .ok_or(RequestError::NotFound)
+}
+
+fn load_environments(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<Environment>, RequestError> {
+    let selected_id: Option<String> = connection
+        .query_row(
+            "SELECT environment_id FROM selected_environments WHERE workspace_id = ?1",
+            params![workspace_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(RequestError::persistence)?
+        .flatten();
+    let mut statement = connection
+        .prepare(
+            "SELECT id, workspace_id, name, position
+             FROM environments
+             WHERE workspace_id = ?1
+             ORDER BY position, created_at, id",
+        )
+        .map_err(RequestError::persistence)?;
+    let environments = statement
+        .query_map(params![workspace_id.to_string()], |row| {
+            let id = environment_id_from_row(row)?;
+            let position: i64 = row.get(3)?;
+            Ok(Environment {
+                id,
+                workspace_id: workspace_id_from_row_index(row, 1)?,
+                name: row.get(2)?,
+                position: u32::try_from(position).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        3,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?,
+                is_selected: selected_id.as_deref() == Some(&id.to_string()),
+            })
+        })
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+    Ok(environments)
+}
+
+fn load_collection_variables(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<CollectionVariable>, RequestError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT workspace_id, name, plain_value, secret_ref
+             FROM collection_variables
+             WHERE workspace_id = ?1
+             ORDER BY name",
+        )
+        .map_err(RequestError::persistence)?;
+    let variables = statement
+        .query_map(params![workspace_id.to_string()], |row| {
+            Ok(CollectionVariable {
+                workspace_id: workspace_id_from_row_index(row, 0)?,
+                variable: variable_from_row(row, 1, 2, 3)?,
+            })
+        })
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+    Ok(variables)
+}
+
+fn load_environment_variables(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<EnvironmentVariable>, RequestError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT environment_id, workspace_id, name, plain_value, secret_ref
+             FROM environment_variables
+             WHERE workspace_id = ?1
+             ORDER BY environment_id, name",
+        )
+        .map_err(RequestError::persistence)?;
+    let variables = statement
+        .query_map(params![workspace_id.to_string()], |row| {
+            Ok(EnvironmentVariable {
+                environment_id: environment_id_from_row(row)?,
+                workspace_id: workspace_id_from_row_index(row, 1)?,
+                variable: variable_from_row(row, 2, 3, 4)?,
+            })
+        })
+        .map_err(RequestError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RequestError::persistence)?;
+    Ok(variables)
 }
 
 fn load_child_collections(
@@ -2175,6 +2378,47 @@ fn collection_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Collectio
     })
 }
 
+fn environment_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EnvironmentId> {
+    environment_id_from_row_index(row, 0)
+}
+
+fn environment_id_from_row_index(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<EnvironmentId> {
+    let id: String = row.get(index)?;
+    EnvironmentId::from_str(&id).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
+
+fn variable_from_row(
+    row: &rusqlite::Row<'_>,
+    name_index: usize,
+    plain_value_index: usize,
+    secret_ref_index: usize,
+) -> rusqlite::Result<Variable> {
+    let name: String = row.get(name_index)?;
+    let plain_value: Option<String> = row.get(plain_value_index)?;
+    let secret_ref: Option<String> = row.get(secret_ref_index)?;
+    let value = match (plain_value, secret_ref) {
+        (Some(value), None) => VariableValue::Plain(value),
+        (None, Some(reference)) => VariableValue::SecretReference(reference),
+        _ => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                plain_value_index,
+                rusqlite::types::Type::Text,
+                "variable value must contain exactly one value kind".into(),
+            ));
+        }
+    };
+    Ok(Variable { name, value })
+}
+
 fn request_draft_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestDraftId> {
     request_draft_id_from_row_index(row, 0)
 }
@@ -2261,7 +2505,9 @@ mod tests {
     use crate::{
         application::request::{RequestRepository, RequestService},
         application::workspace::WorkspaceRepository,
-        domain::request::{OrderedField, RequestContent, RequestDraftId},
+        domain::request::{
+            EnvironmentId, OrderedField, RequestContent, RequestDraftId, VariableValue,
+        },
     };
 
     fn repository() -> SqliteWorkspaceRepository {
@@ -2585,6 +2831,89 @@ mod tests {
                 .collection_id,
             None
         );
+    }
+
+    #[test]
+    fn environment_selection_and_protected_values_round_trip_without_secret_value() {
+        let mut repository = repository();
+        let workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        let environment_id = EnvironmentId::new();
+        repository
+            .connection()
+            .execute(
+                "INSERT INTO environments (id, workspace_id, name, position)
+                 VALUES (?1, ?2, 'Production', 0)",
+                params![environment_id.to_string(), workspace_id.to_string()],
+            )
+            .expect("insert environment");
+        repository
+            .connection()
+            .execute(
+                "INSERT INTO collection_variables (workspace_id, name, plain_value, secret_ref)
+                 VALUES (?1, 'baseUrl', 'https://collection.example.test', NULL)",
+                params![workspace_id.to_string()],
+            )
+            .expect("insert collection variable");
+        repository
+            .connection()
+            .execute(
+                "INSERT INTO environment_variables
+                    (environment_id, workspace_id, name, plain_value, secret_ref)
+                 VALUES (?1, ?2, 'token', NULL, 'secret://token-prod')",
+                params![environment_id.to_string(), workspace_id.to_string()],
+            )
+            .expect("insert secret reference");
+
+        let snapshot = repository
+            .select_environment(workspace_id, Some(environment_id))
+            .expect("select environment");
+
+        assert!(snapshot.environments[0].is_selected);
+        assert_eq!(snapshot.collection_variables[0].variable.name, "baseUrl");
+        assert!(matches!(
+            snapshot.environment_variables[0].variable.value,
+            VariableValue::SecretReference(ref reference) if reference == "secret://token-prod"
+        ));
+        let leaked: i64 = repository
+            .connection()
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM environment_variables
+                 WHERE plain_value LIKE '%token-prod%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect protected value");
+        assert_eq!(leaked, 0);
+    }
+
+    #[test]
+    fn selected_environment_rejects_cross_workspace_environment() {
+        let mut repository = repository();
+        let first_workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        let second_workspace_id = repository
+            .create_workspace(WorkspaceName::new("Second").expect("valid name"))
+            .expect("create workspace")
+            .selected_workspace_id;
+        let environment_id = EnvironmentId::new();
+        repository
+            .connection()
+            .execute(
+                "INSERT INTO environments (id, workspace_id, name, position)
+                 VALUES (?1, ?2, 'Second Env', 0)",
+                params![environment_id.to_string(), second_workspace_id.to_string()],
+            )
+            .expect("insert environment");
+
+        let result = repository.select_environment(first_workspace_id, Some(environment_id));
+
+        assert!(matches!(result, Err(RequestError::NotFound)));
     }
 
     #[test]

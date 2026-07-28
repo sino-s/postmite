@@ -18,7 +18,9 @@ const requestIpcMock = vi.hoisted(() => ({
   openSavedRequestTab: vi.fn(),
   openUnsavedRequestTab: vi.fn(),
   renameCollectionFolder: vi.fn(),
+  resolveRequestContent: vi.fn(),
   saveRequestDraft: vi.fn(),
+  selectEnvironment: vi.fn(),
   updateRequestDraft: vi.fn(),
 }));
 
@@ -100,6 +102,9 @@ function requestSnapshot(workspaceId: string): RequestWorkspaceSnapshotDto {
   return {
     workspaceId,
     collectionFolders: [],
+    environments: [],
+    collectionVariables: [],
+    environmentVariables: [],
     savedRequests: [],
     drafts: [],
     tabs: [],

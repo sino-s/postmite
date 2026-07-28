@@ -29,8 +29,10 @@ import {
   openSavedRequestTab,
   openUnsavedRequestTab,
   requestWorkspaceQuery,
+  resolveRequestContent,
   renameCollectionFolder,
   saveRequestDraft,
+  selectEnvironment,
   updateRequestDraft,
 } from "../../shared/api/requests";
 import {
@@ -49,6 +51,8 @@ import type { ResponseExecutionState } from "../../shared/api/execution";
 import type {
   OrderedFieldDto,
   CollectionFolderDto,
+  EnvironmentDto,
+  ResolvedRequestContentDto,
   RequestContentDto,
   RequestDraftDto,
   SavedRequestDto,
@@ -106,9 +110,26 @@ export function RequestEditor({
       : null;
   const activeContent =
     activeDraft ? overrides[activeDraft.id] ?? activeDraft.content : null;
+  const selectedEnvironment =
+    snapshot?.environments.find((environment) => environment.isSelected) ?? null;
   const activeExecution = activeDraft ? executions[activeDraft.id] ?? null : null;
   const activeExecutionRunning =
     activeExecution !== null && !isTerminalResponseExecution(activeExecution);
+  const resolution = useQuery({
+    queryKey: [
+      "requestResolution",
+      selectedWorkspaceId,
+      activeDraft?.id ?? null,
+      selectedEnvironment?.id ?? null,
+      activeContent,
+    ],
+    queryFn: () =>
+      resolveRequestContent({
+        workspaceId: selectedWorkspaceId ?? "",
+        content: activeContent ?? emptyRequestContent(),
+      }),
+    enabled: Boolean(selectedWorkspaceId && activeDraft && activeContent),
+  });
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -161,6 +182,16 @@ export function RequestEditor({
       workspaceId: selectedWorkspaceId,
       parentCollectionId,
       name,
+    });
+  }
+
+  async function handleSelectEnvironment(environmentId: string | null) {
+    if (!selectedWorkspaceId) {
+      return;
+    }
+    await selectEnvironment(queryClient, {
+      workspaceId: selectedWorkspaceId,
+      environmentId,
     });
   }
 
@@ -405,6 +436,7 @@ export function RequestEditor({
 
       <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)]">
         <CollectionsSidebar
+          environments={snapshot?.environments ?? []}
           folders={snapshot?.collectionFolders ?? []}
           onCreateFolder={(parentCollectionId) =>
             void handleCreateCollectionFolder(parentCollectionId)
@@ -421,6 +453,9 @@ export function RequestEditor({
           }
           onOpenRequest={(request) => void handleOpenSavedRequest(request)}
           onRenameFolder={(folder) => void handleRenameCollectionFolder(folder)}
+          onSelectEnvironment={(environmentId) =>
+            void handleSelectEnvironment(environmentId)
+          }
           requests={snapshot?.savedRequests ?? []}
         />
         <div className="flex min-h-0 flex-col">
@@ -480,7 +515,13 @@ export function RequestEditor({
                   value={activeContent.body}
                 />
               </div>
-              <ResponsePanel execution={activeExecution} />
+              <div className="grid gap-4 lg:grid-cols-[minmax(320px,0.55fr)_minmax(0,1fr)]">
+                <ResolutionPanel
+                  resolution={resolution.data ?? null}
+                  resolving={resolution.isFetching}
+                />
+                <ResponsePanel execution={activeExecution} />
+              </div>
             </section>
           ) : (
             <section className="flex flex-1 items-center justify-center p-6">
@@ -509,6 +550,7 @@ type TabStripProps = {
 };
 
 type CollectionsSidebarProps = {
+  environments: EnvironmentDto[];
   folders: CollectionFolderDto[];
   onCreateFolder: (parentCollectionId: string | null) => void;
   onDeleteFolder: (folder: CollectionFolderDto) => void;
@@ -519,6 +561,7 @@ type CollectionsSidebarProps = {
   onMoveRequest: (request: SavedRequestDto, direction: -1 | 1) => void;
   onOpenRequest: (request: SavedRequestDto) => void;
   onRenameFolder: (folder: CollectionFolderDto) => void;
+  onSelectEnvironment: (environmentId: string | null) => void;
   requests: SavedRequestDto[];
 };
 
@@ -537,6 +580,7 @@ type TreeRow =
     };
 
 function CollectionsSidebar({
+  environments,
   folders,
   onCreateFolder,
   onDeleteFolder,
@@ -547,6 +591,7 @@ function CollectionsSidebar({
   onMoveRequest,
   onOpenRequest,
   onRenameFolder,
+  onSelectEnvironment,
   requests,
 }: CollectionsSidebarProps) {
   const rows = useMemo(
@@ -597,6 +642,29 @@ function CollectionsSidebar({
         >
           <FolderPlus aria-hidden="true" size={16} />
         </button>
+      </div>
+      <div className="border-b border-slate-300 px-3 py-3">
+        <label className="mb-1 block text-xs font-semibold text-slate-600" htmlFor="environment-select">
+          Environment
+        </label>
+        <select
+          className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          id="environment-select"
+          onChange={(event) =>
+            onSelectEnvironment(event.currentTarget.value || null)
+          }
+          value={environments.find((environment) => environment.isSelected)?.id ?? ""}
+        >
+          <option value="">No environment</option>
+          {environments
+            .slice()
+            .sort(compareTreeItems)
+            .map((environment) => (
+              <option key={environment.id} value={environment.id}>
+                {environment.name}
+              </option>
+            ))}
+        </select>
       </div>
       <div
         aria-label="Collection tree"
@@ -657,6 +725,70 @@ function CollectionsSidebar({
         ) : null}
       </div>
     </aside>
+  );
+}
+
+type ResolutionPanelProps = {
+  resolution: ResolvedRequestContentDto | null;
+  resolving: boolean;
+};
+
+function ResolutionPanel({ resolution, resolving }: ResolutionPanelProps) {
+  const references = resolution?.references ?? [];
+  const errors = resolution?.errors ?? [];
+
+  return (
+    <section
+      aria-label="Variable resolution"
+      className="min-h-40 rounded-md border border-slate-300 bg-white p-3 text-sm"
+    >
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold">Variables</h2>
+        {resolving ? <span className="text-xs text-slate-500">Resolving</span> : null}
+      </div>
+      {errors.length > 0 ? (
+        <div className="mb-3 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+          {errors.map((error) => (
+            <p key={`${error.name}-${error.kind}`}>
+              {error.name}: {formatResolutionError(error.kind)}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      <div className="overflow-x-auto rounded-md border border-slate-200">
+        <table className="w-full min-w-[360px] table-fixed border-collapse text-left text-xs">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
+              <th className="w-32 px-2 py-2 font-semibold">Name</th>
+              <th className="w-28 px-2 py-2 font-semibold">Source</th>
+              <th className="px-2 py-2 font-semibold">Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {references.map((reference) => (
+              <tr className="border-b border-slate-100" key={reference.name}>
+                <td className="break-words px-2 py-2 font-medium text-slate-700">
+                  {reference.name}
+                </td>
+                <td className="px-2 py-2 text-slate-600">
+                  {formatVariableSource(reference.source)}
+                </td>
+                <td className="break-words px-2 py-2 text-slate-600">
+                  {reference.value.value}
+                </td>
+              </tr>
+            ))}
+            {references.length === 0 ? (
+              <tr>
+                <td className="px-2 py-5 text-center text-slate-500" colSpan={3}>
+                  No variables resolved
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -1186,4 +1318,23 @@ function formatBodyPreview(value: string) {
   } catch {
     return value;
   }
+}
+
+function emptyRequestContent(): RequestContentDto {
+  return {
+    name: "Untitled Request",
+    method: "GET",
+    url: "",
+    body: "",
+    query: [],
+    headers: [],
+  };
+}
+
+function formatVariableSource(source: string) {
+  return source === "ENVIRONMENT" ? "Environment" : "Collection";
+}
+
+function formatResolutionError(kind: string) {
+  return kind === "CYCLE" ? "Cyclic reference" : "Missing reference";
 }

@@ -35,6 +35,35 @@ impl FromStr for CollectionId {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct EnvironmentId(Uuid);
+
+impl EnvironmentId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for EnvironmentId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for EnvironmentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for EnvironmentId {
+    type Err = uuid::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(value)?))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct SavedRequestId(Uuid);
 
 impl SavedRequestId {
@@ -128,6 +157,40 @@ pub struct CollectionFolder {
     pub parent_collection_id: Option<CollectionId>,
     pub name: String,
     pub position: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Environment {
+    pub id: EnvironmentId,
+    pub workspace_id: WorkspaceId,
+    pub name: String,
+    pub position: u32,
+    pub is_selected: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Variable {
+    pub name: String,
+    pub value: VariableValue,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum VariableValue {
+    Plain(String),
+    SecretReference(String),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CollectionVariable {
+    pub workspace_id: WorkspaceId,
+    pub variable: Variable,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EnvironmentVariable {
+    pub environment_id: EnvironmentId,
+    pub workspace_id: WorkspaceId,
+    pub variable: Variable,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
