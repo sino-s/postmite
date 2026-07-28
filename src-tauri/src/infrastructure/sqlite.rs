@@ -20,8 +20,9 @@ use crate::{
             BodyFilePath, BodyFileReference, CollectionFolder, CollectionId, CollectionVariable,
             CookieDraft, CookieId, CookieSameSite, Environment, EnvironmentId, EnvironmentVariable,
             ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse, MultipartPart,
-            OrderedField, RequestBody, RequestContent, RequestDraft, RequestDraftId, RequestTab,
-            RequestTabId, SavedRequest, SavedRequestId, Variable, VariableValue, WorkspaceCookie,
+            OrderedField, RedirectPolicy, RequestAuth, RequestBody, RequestContent, RequestDraft,
+            RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId, TlsPolicy,
+            Variable, VariableValue, WorkspaceCookie,
         },
         workspace::{Workspace, WorkspaceId, WorkspaceName, DEFAULT_WORKSPACE_NAME},
     },
@@ -327,6 +328,23 @@ CREATE INDEX workspace_cookies_workspace_scope
         name: "add_workspace_base_directory",
         sql: r#"
 ALTER TABLE workspaces ADD COLUMN base_directory TEXT;
+"#,
+    },
+    Migration {
+        version: 9,
+        name: "add_request_security_policy",
+        sql: r#"
+ALTER TABLE saved_requests ADD COLUMN auth TEXT NOT NULL DEFAULT '{"type":"NONE"}';
+ALTER TABLE saved_requests ADD COLUMN redirect_policy TEXT NOT NULL DEFAULT '{"enabled":true,"maxRedirects":10}';
+ALTER TABLE saved_requests ADD COLUMN tls_policy TEXT NOT NULL DEFAULT '{"verify":true,"customCaReference":null,"clientCertificateReference":null,"clientKeyReference":null}';
+
+ALTER TABLE request_drafts ADD COLUMN auth TEXT NOT NULL DEFAULT '{"type":"NONE"}';
+ALTER TABLE request_drafts ADD COLUMN redirect_policy TEXT NOT NULL DEFAULT '{"enabled":true,"maxRedirects":10}';
+ALTER TABLE request_drafts ADD COLUMN tls_policy TEXT NOT NULL DEFAULT '{"verify":true,"customCaReference":null,"clientCertificateReference":null,"clientKeyReference":null}';
+
+ALTER TABLE execution_records ADD COLUMN auth TEXT NOT NULL DEFAULT '{"type":"NONE"}';
+ALTER TABLE execution_records ADD COLUMN redirect_policy TEXT NOT NULL DEFAULT '{"enabled":true,"maxRedirects":10}';
+ALTER TABLE execution_records ADD COLUMN tls_policy TEXT NOT NULL DEFAULT '{"verify":true,"customCaReference":null,"clientCertificateReference":null,"clientKeyReference":null}';
 "#,
     },
 ];
@@ -1586,8 +1604,9 @@ fn insert_saved_request_at(
     ensure_collection_parent(tx, workspace_id, collection_id)?;
     tx.execute(
         "INSERT INTO saved_requests
-            (id, workspace_id, collection_id, name, method, url, body, position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (id, workspace_id, collection_id, name, method, url, body, auth, redirect_policy,
+             tls_policy, position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             saved_request_id.to_string(),
             workspace_id.to_string(),
@@ -1596,6 +1615,9 @@ fn insert_saved_request_at(
             content.method.as_str(),
             content.url.as_str(),
             request_body_to_sql(&content.body)?,
+            request_auth_to_sql(&content.auth)?,
+            redirect_policy_to_sql(&content.redirect)?,
+            tls_policy_to_sql(&content.tls)?,
             i64::from(position),
         ],
     )
@@ -1624,14 +1646,18 @@ fn replace_saved_request_content(
     validate_request_content(content)?;
     tx.execute(
         "UPDATE saved_requests
-         SET name = ?1, method = ?2, url = ?3, body = ?4,
+         SET name = ?1, method = ?2, url = ?3, body = ?4, auth = ?5,
+             redirect_policy = ?6, tls_policy = ?7,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?5",
+         WHERE id = ?8",
         params![
             content.name.as_str(),
             content.method.as_str(),
             content.url.as_str(),
             request_body_to_sql(&content.body)?,
+            request_auth_to_sql(&content.auth)?,
+            redirect_policy_to_sql(&content.redirect)?,
+            tls_policy_to_sql(&content.tls)?,
             saved_request_id.to_string()
         ],
     )
@@ -1663,8 +1689,9 @@ fn insert_draft(
     validate_request_content(content)?;
     tx.execute(
         "INSERT INTO request_drafts
-            (id, workspace_id, saved_request_id, name, method, url, body, is_dirty)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (id, workspace_id, saved_request_id, name, method, url, body, auth,
+             redirect_policy, tls_policy, is_dirty)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             draft_id.to_string(),
             workspace_id.to_string(),
@@ -1673,6 +1700,9 @@ fn insert_draft(
             content.method.as_str(),
             content.url.as_str(),
             request_body_to_sql(&content.body)?,
+            request_auth_to_sql(&content.auth)?,
+            redirect_policy_to_sql(&content.redirect)?,
+            tls_policy_to_sql(&content.tls)?,
             bool_to_i64(is_dirty),
         ],
     )
@@ -1703,14 +1733,18 @@ fn replace_draft_content(
     let changed = tx
         .execute(
             "UPDATE request_drafts
-             SET name = ?1, method = ?2, url = ?3, body = ?4, is_dirty = ?5,
+             SET name = ?1, method = ?2, url = ?3, body = ?4, auth = ?5,
+                 redirect_policy = ?6, tls_policy = ?7, is_dirty = ?8,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE id = ?6",
+             WHERE id = ?9",
             params![
                 content.name.as_str(),
                 content.method.as_str(),
                 content.url.as_str(),
                 request_body_to_sql(&content.body)?,
+                request_auth_to_sql(&content.auth)?,
+                redirect_policy_to_sql(&content.redirect)?,
+                tls_policy_to_sql(&content.tls)?,
                 bool_to_i64(is_dirty),
                 draft_id.to_string()
             ],
@@ -2314,9 +2348,9 @@ fn insert_execution_record(
     tx.execute(
         "INSERT INTO execution_records
             (id, workspace_id, created_at_epoch_seconds, pinned, name, method, url, body,
-             response_status, response_body_preview, response_body_truncated,
+             auth, redirect_policy, tls_policy, response_status, response_body_preview, response_body_truncated,
              response_error, response_duration_ms)
-         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             record_id.to_string(),
             draft.workspace_id.to_string(),
@@ -2325,6 +2359,9 @@ fn insert_execution_record(
             draft.content.method.as_str(),
             draft.content.url.as_str(),
             request_body_to_sql(&draft.content.body)?,
+            request_auth_to_sql(&draft.content.auth)?,
+            redirect_policy_to_sql(&draft.content.redirect)?,
+            tls_policy_to_sql(&draft.content.tls)?,
             draft.response.status.map(i64::from),
             draft.response.body_preview.as_str(),
             bool_to_i64(draft.response.body_truncated),
@@ -2450,7 +2487,8 @@ fn load_execution_records(
     let mut statement = connection
         .prepare(
             "SELECT id, workspace_id, created_at_epoch_seconds, pinned, name, method, url, body,
-                    response_status, response_body_preview, response_body_truncated,
+                    auth, redirect_policy, tls_policy, response_status,
+                    response_body_preview, response_body_truncated,
                     response_error, response_duration_ms
              FROM execution_records
              WHERE workspace_id = ?1
@@ -2749,8 +2787,8 @@ fn load_saved_requests(
 ) -> Result<Vec<SavedRequest>, RequestError> {
     let mut statement = connection
         .prepare(
-            "SELECT id, workspace_id, collection_id, name, method, url, body
-             , position
+            "SELECT id, workspace_id, collection_id, name, method, url, body,
+                    auth, redirect_policy, tls_policy, position
              FROM saved_requests
              WHERE workspace_id = ?1
              ORDER BY collection_id, position, created_at, id",
@@ -2772,6 +2810,27 @@ fn load_saved_requests(
                         Box::new(error),
                     )
                 })?,
+                auth: request_auth_from_sql(row.get(7)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        7,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+                redirect: redirect_policy_from_sql(row.get(8)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        8,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+                tls: tls_policy_from_sql(row.get(9)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        9,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
                 query: Vec::new(),
                 headers: Vec::new(),
             };
@@ -2779,9 +2838,9 @@ fn load_saved_requests(
                 id,
                 workspace_id: row_workspace_id,
                 collection_id,
-                position: u32::try_from(row.get::<_, i64>(7)?).map_err(|error| {
+                position: u32::try_from(row.get::<_, i64>(10)?).map_err(|error| {
                     rusqlite::Error::FromSqlConversionFailure(
-                        7,
+                        10,
                         rusqlite::types::Type::Integer,
                         Box::new(error),
                     )
@@ -2840,7 +2899,8 @@ fn load_open_drafts(
 ) -> Result<Vec<RequestDraft>, RequestError> {
     let mut statement = connection
         .prepare(
-            "SELECT DISTINCT d.id, d.workspace_id, d.saved_request_id, d.name, d.method, d.url, d.body, d.is_dirty
+            "SELECT DISTINCT d.id, d.workspace_id, d.saved_request_id, d.name, d.method, d.url,
+                    d.body, d.auth, d.redirect_policy, d.tls_policy, d.is_dirty
              FROM request_drafts d
              INNER JOIN request_tabs t ON t.draft_id = d.id
              WHERE d.workspace_id = ?1
@@ -2879,7 +2939,8 @@ fn load_draft(
 ) -> Result<RequestDraft, RequestError> {
     let mut draft = connection
         .query_row(
-            "SELECT id, workspace_id, saved_request_id, name, method, url, body, is_dirty
+            "SELECT id, workspace_id, saved_request_id, name, method, url, body,
+                    auth, redirect_policy, tls_policy, is_dirty
              FROM request_drafts
              WHERE workspace_id = ?1 AND id = ?2",
             params![workspace_id.to_string(), draft_id.to_string()],
@@ -2986,6 +3047,42 @@ fn request_body_from_sql(value: String) -> Result<RequestBody, serde_json::Error
     }
 }
 
+fn request_auth_to_sql(auth: &RequestAuth) -> Result<String, RequestError> {
+    serde_json::to_string(auth).map_err(RequestError::persistence)
+}
+
+fn request_auth_from_sql(value: String) -> Result<RequestAuth, serde_json::Error> {
+    if value.trim().is_empty() {
+        Ok(RequestAuth::default())
+    } else {
+        serde_json::from_str(&value)
+    }
+}
+
+fn redirect_policy_to_sql(policy: &RedirectPolicy) -> Result<String, RequestError> {
+    serde_json::to_string(policy).map_err(RequestError::persistence)
+}
+
+fn redirect_policy_from_sql(value: String) -> Result<RedirectPolicy, serde_json::Error> {
+    if value.trim().is_empty() {
+        Ok(RedirectPolicy::default())
+    } else {
+        serde_json::from_str(&value)
+    }
+}
+
+fn tls_policy_to_sql(policy: &TlsPolicy) -> Result<String, RequestError> {
+    serde_json::to_string(policy).map_err(RequestError::persistence)
+}
+
+fn tls_policy_from_sql(value: String) -> Result<TlsPolicy, serde_json::Error> {
+    if value.trim().is_empty() {
+        Ok(TlsPolicy::default())
+    } else {
+        serde_json::from_str(&value)
+    }
+}
+
 fn replace_body_file_reference(
     body: &mut RequestBody,
     from_path: &str,
@@ -3060,10 +3157,31 @@ fn draft_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestDraft> {
                     Box::new(error),
                 )
             })?,
+            auth: request_auth_from_sql(row.get(7)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    7,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+            redirect: redirect_policy_from_sql(row.get(8)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    8,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+            tls: tls_policy_from_sql(row.get(9)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
             query: Vec::new(),
             headers: Vec::new(),
         },
-        is_dirty: row.get::<_, i64>(7)? != 0,
+        is_dirty: row.get::<_, i64>(10)? != 0,
     })
 }
 
@@ -3088,8 +3206,8 @@ fn workspace_cookie_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Worksp
 }
 
 fn execution_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRecord> {
-    let status: Option<i64> = row.get(8)?;
-    let duration_ms: Option<i64> = row.get(12)?;
+    let status: Option<i64> = row.get(11)?;
+    let duration_ms: Option<i64> = row.get(15)?;
     Ok(ExecutionRecord {
         id: execution_record_id_from_row(row)?,
         workspace_id: workspace_id_from_row_index(row, 1)?,
@@ -3106,6 +3224,27 @@ fn execution_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Execut
                     Box::new(error),
                 )
             })?,
+            auth: request_auth_from_sql(row.get(8)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    8,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+            redirect: redirect_policy_from_sql(row.get(9)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+            tls: tls_policy_from_sql(row.get(10)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    10,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
             query: Vec::new(),
             headers: Vec::new(),
         },
@@ -3114,7 +3253,7 @@ fn execution_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Execut
                 .map(|value| {
                     u16::try_from(value).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            8,
+                            11,
                             rusqlite::types::Type::Integer,
                             Box::new(error),
                         )
@@ -3122,14 +3261,14 @@ fn execution_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Execut
                 })
                 .transpose()?,
             headers: Vec::new(),
-            body_preview: row.get(9)?,
-            body_truncated: row.get::<_, i64>(10)? != 0,
-            error: row.get(11)?,
+            body_preview: row.get(12)?,
+            body_truncated: row.get::<_, i64>(13)? != 0,
+            error: row.get(14)?,
             duration_ms: duration_ms
                 .map(|value| {
                     u64::try_from(value).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            12,
+                            15,
                             rusqlite::types::Type::Integer,
                             Box::new(error),
                         )
@@ -3806,6 +3945,7 @@ mod tests {
                             name: "Authorization".to_owned(),
                             value: "Bearer plain-token-marker".to_owned(),
                         }],
+                        ..RequestContent::blank()
                     },
                     history_response(Some(200)),
                     1_800_000_000,
@@ -4294,6 +4434,7 @@ mod tests {
                     value: String::new(),
                 },
             ],
+            ..RequestContent::blank()
         };
 
         let snapshot = repository
@@ -4451,6 +4592,7 @@ mod tests {
             body: RequestBody::None,
             query: Vec::new(),
             headers: Vec::new(),
+            ..RequestContent::blank()
         }
     }
 

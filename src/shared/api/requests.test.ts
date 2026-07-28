@@ -139,6 +139,14 @@ describe("request query API", () => {
         body: { type: "NONE" },
         query: [],
         headers: [],
+        auth: { type: "NONE" },
+        redirect: { enabled: true, maxRedirects: 10 },
+        tls: {
+          verify: true,
+          customCaReference: null,
+          clientCertificateReference: null,
+          clientKeyReference: null,
+        },
       },
     });
 

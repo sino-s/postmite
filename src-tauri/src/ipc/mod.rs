@@ -21,19 +21,21 @@ use crate::{
         ExecutionId, ExecutionRequest, StartExecutionResult,
     },
     application::request::{
-        CloseTabDecision, CollectionLocation, CookieJarSnapshot, ExecutionHistorySnapshot,
-        RequestError, RequestRepository, RequestService, RequestWorkspaceSnapshot, ResolvedField,
-        ResolvedRequestContent, ResolvedValue, ResolvedVariableReference, VariableResolutionError,
-        VariableResolutionErrorKind, VariableSource, REDACTED_VALUE,
+        materialize_request_auth, CloseTabDecision, CollectionLocation, CookieJarSnapshot,
+        ExecutionHistorySnapshot, RequestError, RequestRepository, RequestService,
+        RequestWorkspaceSnapshot, ResolvedField, ResolvedRequestContent, ResolvedValue,
+        ResolvedVariableReference, VariableResolutionError, VariableResolutionErrorKind,
+        VariableSource, REDACTED_VALUE,
     },
     application::workspace::{WorkspaceError, WorkspaceService, WorkspaceSnapshot},
     domain::{
         request::{
-            BodyFilePath, BodyFileReference, CollectionFolder, CollectionId, CollectionVariable,
-            CookieDraft, CookieId, CookieSameSite, Environment, EnvironmentId, EnvironmentVariable,
-            ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse, MultipartPart,
-            OrderedField, RequestBody, RequestContent, RequestDraft, RequestDraftId, RequestTab,
-            RequestTabId, SavedRequest, SavedRequestId, Variable, VariableValue, WorkspaceCookie,
+            ApiKeyPlacement, BodyFilePath, BodyFileReference, CollectionFolder, CollectionId,
+            CollectionVariable, CookieDraft, CookieId, CookieSameSite, Environment, EnvironmentId,
+            EnvironmentVariable, ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse,
+            MultipartPart, OrderedField, RedirectPolicy, RequestAuth, RequestBody, RequestContent,
+            RequestDraft, RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId,
+            TlsPolicy, Variable, VariableValue, WorkspaceCookie,
         },
         workspace::{WorkspaceId, WorkspaceNameError},
     },
@@ -139,6 +141,54 @@ pub struct RequestContentDto {
     pub body: RequestBodyDto,
     pub query: Vec<OrderedFieldDto>,
     pub headers: Vec<OrderedFieldDto>,
+    pub auth: RequestAuthDto,
+    pub redirect: RedirectPolicyDto,
+    pub tls: TlsPolicyDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum RequestAuthDto {
+    None,
+    Basic {
+        username: String,
+        password: String,
+    },
+    Bearer {
+        token: String,
+    },
+    ApiKey {
+        placement: ApiKeyPlacementDto,
+        name: String,
+        value: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ApiKeyPlacementDto {
+    Header,
+    Query,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RedirectPolicyDto {
+    pub enabled: bool,
+    pub max_redirects: u8,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsPolicyDto {
+    pub verify: bool,
+    pub custom_ca_reference: Option<String>,
+    pub client_certificate_reference: Option<String>,
+    pub client_key_reference: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -436,6 +486,7 @@ pub struct ResolvedRequestContentDto {
     pub body: ResolvedValueDto,
     pub query: Vec<ResolvedFieldDto>,
     pub headers: Vec<ResolvedFieldDto>,
+    pub unsafe_tls_visible: bool,
     pub references: Vec<ResolvedVariableReferenceDto>,
     pub errors: Vec<VariableResolutionErrorDto>,
 }
@@ -636,6 +687,12 @@ pub enum ExecutionEventKindDto {
     Started {
         method: String,
         url: String,
+        tls_verification: bool,
+    },
+    Redirected {
+        from: String,
+        to: String,
+        status: u16,
     },
     UploadProgress {
         sent_bytes: u64,
@@ -1585,8 +1642,12 @@ pub fn handle_start_request_execution(
     };
     let content = {
         let mut requests = state.requests.lock().map_err(map_poison_error)?;
+        let snapshot = requests
+            .list_request_workspace(workspace_id)
+            .map_err(|error| IpcError::from(BoundaryError::Request(error)))?;
+        let content = materialize_request_auth(&snapshot, RequestContent::from(input.content));
         requests
-            .attach_matching_cookies(workspace_id, RequestContent::from(input.content))
+            .attach_matching_cookies(workspace_id, content)
             .map_err(|error| IpcError::from(BoundaryError::Request(error)))?
     };
     let request = ExecutionRequest {
@@ -1862,6 +1923,10 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         RelinkBodyFilesInput::export_to_string(&cfg)?,
         MultipartPartDto::export_to_string(&cfg)?,
         RequestBodyDto::export_to_string(&cfg)?,
+        ApiKeyPlacementDto::export_to_string(&cfg)?,
+        RequestAuthDto::export_to_string(&cfg)?,
+        RedirectPolicyDto::export_to_string(&cfg)?,
+        TlsPolicyDto::export_to_string(&cfg)?,
         RequestContentDto::export_to_string(&cfg)?,
         SavedRequestDto::export_to_string(&cfg)?,
         CollectionFolderDto::export_to_string(&cfg)?,
@@ -2409,6 +2474,7 @@ impl From<ResolvedRequestContent> for ResolvedRequestContentDto {
                 .into_iter()
                 .map(ResolvedFieldDto::from)
                 .collect(),
+            unsafe_tls_visible: content.unsafe_tls_visible,
             references: content
                 .references
                 .into_iter()
@@ -2523,6 +2589,9 @@ impl From<RequestContent> for RequestContentDto {
                 .into_iter()
                 .map(OrderedFieldDto::from)
                 .collect(),
+            auth: RequestAuthDto::from(content.auth),
+            redirect: RedirectPolicyDto::from(content.redirect),
+            tls: TlsPolicyDto::from(content.tls),
         }
     }
 }
@@ -2540,6 +2609,105 @@ impl From<RequestContentDto> for RequestContent {
                 .into_iter()
                 .map(OrderedField::from)
                 .collect(),
+            auth: RequestAuth::from(content.auth),
+            redirect: RedirectPolicy::from(content.redirect),
+            tls: TlsPolicy::from(content.tls),
+        }
+    }
+}
+
+impl From<RequestAuth> for RequestAuthDto {
+    fn from(auth: RequestAuth) -> Self {
+        match auth {
+            RequestAuth::None => Self::None,
+            RequestAuth::Basic { username, password } => Self::Basic { username, password },
+            RequestAuth::Bearer { token } => Self::Bearer { token },
+            RequestAuth::ApiKey {
+                placement,
+                name,
+                value,
+            } => Self::ApiKey {
+                placement: ApiKeyPlacementDto::from(placement),
+                name,
+                value,
+            },
+        }
+    }
+}
+
+impl From<RequestAuthDto> for RequestAuth {
+    fn from(auth: RequestAuthDto) -> Self {
+        match auth {
+            RequestAuthDto::None => Self::None,
+            RequestAuthDto::Basic { username, password } => Self::Basic { username, password },
+            RequestAuthDto::Bearer { token } => Self::Bearer { token },
+            RequestAuthDto::ApiKey {
+                placement,
+                name,
+                value,
+            } => Self::ApiKey {
+                placement: ApiKeyPlacement::from(placement),
+                name,
+                value,
+            },
+        }
+    }
+}
+
+impl From<ApiKeyPlacement> for ApiKeyPlacementDto {
+    fn from(placement: ApiKeyPlacement) -> Self {
+        match placement {
+            ApiKeyPlacement::Header => Self::Header,
+            ApiKeyPlacement::Query => Self::Query,
+        }
+    }
+}
+
+impl From<ApiKeyPlacementDto> for ApiKeyPlacement {
+    fn from(placement: ApiKeyPlacementDto) -> Self {
+        match placement {
+            ApiKeyPlacementDto::Header => Self::Header,
+            ApiKeyPlacementDto::Query => Self::Query,
+        }
+    }
+}
+
+impl From<RedirectPolicy> for RedirectPolicyDto {
+    fn from(policy: RedirectPolicy) -> Self {
+        Self {
+            enabled: policy.enabled,
+            max_redirects: policy.max_redirects,
+        }
+    }
+}
+
+impl From<RedirectPolicyDto> for RedirectPolicy {
+    fn from(policy: RedirectPolicyDto) -> Self {
+        Self {
+            enabled: policy.enabled,
+            max_redirects: policy.max_redirects,
+        }
+    }
+}
+
+impl From<TlsPolicy> for TlsPolicyDto {
+    fn from(policy: TlsPolicy) -> Self {
+        Self {
+            verify: policy.verify,
+            custom_ca_reference: policy.custom_ca_reference,
+            client_certificate_reference: policy.client_certificate_reference,
+            client_key_reference: policy.client_key_reference,
+        }
+    }
+}
+
+impl From<TlsPolicyDto> for TlsPolicy {
+    fn from(policy: TlsPolicyDto) -> Self {
+        Self {
+            verify: policy.verify,
+            custom_ca_reference: policy.custom_ca_reference,
+            client_certificate_reference: policy.client_certificate_reference,
+            client_key_reference: policy.client_key_reference,
         }
     }
 }
@@ -2742,7 +2910,18 @@ impl From<ExecutionEvent> for ExecutionEventDto {
 impl From<ExecutionEventKind> for ExecutionEventKindDto {
     fn from(kind: ExecutionEventKind) -> Self {
         match kind {
-            ExecutionEventKind::Started { method, url } => Self::Started { method, url },
+            ExecutionEventKind::Started {
+                method,
+                url,
+                tls_verification,
+            } => Self::Started {
+                method,
+                url,
+                tls_verification,
+            },
+            ExecutionEventKind::Redirected { from, to, status } => {
+                Self::Redirected { from, to, status }
+            }
             ExecutionEventKind::UploadProgress {
                 sent_bytes,
                 total_bytes,

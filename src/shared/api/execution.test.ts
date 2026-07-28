@@ -47,6 +47,14 @@ describe("request execution API", () => {
           body: { type: "NONE" },
           query: [],
           headers: [],
+          auth: { type: "NONE" },
+          redirect: { enabled: true, maxRedirects: 10 },
+          tls: {
+            verify: true,
+            customCaReference: null,
+            clientCertificateReference: null,
+            clientKeyReference: null,
+          },
         },
       }),
     ).resolves.toEqual({
@@ -64,6 +72,14 @@ describe("request execution API", () => {
         body: { type: "NONE" },
         query: [],
         headers: [],
+        auth: { type: "NONE" },
+        redirect: { enabled: true, maxRedirects: 10 },
+        tls: {
+          verify: true,
+          customCaReference: null,
+          clientCertificateReference: null,
+          clientKeyReference: null,
+        },
       },
     });
   });
@@ -157,6 +173,55 @@ describe("request execution API", () => {
     });
   });
 
+  it("keeps TLS visibility and redirect chain in response state", () => {
+    const queued = createQueuedResponseExecutionState({
+      draftId: "draft-1",
+      executionId: "execution-1",
+      nowMs: 100,
+    });
+    const started = reduceResponseExecutionStates(
+      { "draft-1": queued },
+      {
+        executionId: "execution-1",
+        sequence: 1n,
+        kind: {
+          type: "STARTED",
+          method: "POST",
+          url: "https://example.test/login",
+          tlsVerification: false,
+        },
+      },
+      110,
+    );
+    const redirected = reduceResponseExecutionStates(
+      started,
+      {
+        executionId: "execution-1",
+        sequence: 2n,
+        kind: {
+          type: "REDIRECTED",
+          from: "https://example.test/login",
+          to: "https://example.test/session",
+          status: 303,
+        },
+      },
+      120,
+    );
+
+    expect(redirected["draft-1"]).toMatchObject({
+      method: "POST",
+      url: "https://example.test/login",
+      tlsVerification: false,
+      redirects: [
+        {
+          from: "https://example.test/login",
+          to: "https://example.test/session",
+          status: 303,
+        },
+      ],
+    });
+  });
+
   it("ignores response events for another execution or stale sequence", () => {
     const queued = createQueuedResponseExecutionState({
       draftId: "draft-1",
@@ -197,7 +262,24 @@ function event(
     return {
       executionId,
       sequence,
-      kind: { type, method: "GET", url: "http://127.0.0.1" },
+      kind: {
+        type,
+        method: "GET",
+        url: "http://127.0.0.1",
+        tlsVerification: true,
+      },
+    };
+  }
+  if (type === "REDIRECTED") {
+    return {
+      executionId,
+      sequence,
+      kind: {
+        type,
+        from: "http://127.0.0.1",
+        to: "http://127.0.0.1/next",
+        status: 302,
+      },
     };
   }
   if (type === "RESPONSE_HEADERS") {
