@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -27,7 +27,7 @@ use crate::{
     application::execution::{
         ExecutionCoordinator, ExecutionEvent, ExecutionEventKind, ExecutionHeader, ExecutionId,
         ExecutionProxyMetadata, ExecutionRequest, ExecutionTimeoutMetadata,
-        MAX_RESPONSE_PREVIEW_BYTES,
+        ExecutionTimingMetadata, MAX_RESPONSE_PREVIEW_BYTES,
     },
     domain::request::{
         BodyFilePath, BodyFileReference, MultipartPart, OrderedField, ProxySource, RequestBody,
@@ -67,6 +67,7 @@ pub async fn run_http_execution(
                 body_truncated: completed.body_truncated,
                 decoded_bytes: completed.decoded_bytes,
                 wire_bytes: completed.wire_bytes,
+                timing: completed.timing,
             },
         ),
         Err(HttpExecutionError::Cancelled) => emit(
@@ -94,6 +95,7 @@ async fn execute_http(
     coordinator: Arc<ExecutionCoordinator>,
     sink: Arc<dyn Fn(ExecutionEvent) + Send + Sync + 'static>,
 ) -> Result<CompletedHttpExecution, HttpExecutionError> {
+    let started_at = Instant::now();
     let mut method = Method::from_bytes(content.method.as_bytes())
         .map_err(|_| HttpExecutionError::InvalidInput("method.invalid"))?;
     let mut url = resolve_url(content)?;
@@ -115,6 +117,7 @@ async fn execute_http(
             tls_verification: content.tls.verify,
             proxy: proxy_metadata(content, &url),
             timeouts: timeout_metadata(&content.transport.timeouts),
+            queued_ms: coordinator.queued_ms(execution_id),
         },
     );
 
@@ -127,7 +130,7 @@ async fn execute_http(
     let mut redirect_count = 0_u8;
     let mut include_body = true;
     let empty_body = RequestBody::None;
-    let response = loop {
+    let (response, first_byte_ms) = loop {
         let request_body = if include_body {
             &content.body
         } else {
@@ -153,6 +156,7 @@ async fn execute_http(
             Arc::clone(&sink),
         );
 
+        let send_started_at = Instant::now();
         let response = tokio::select! {
             _ = cancellation.cancelled() => return Err(HttpExecutionError::Cancelled),
             result = builder.send() => match result {
@@ -172,15 +176,16 @@ async fn execute_http(
                 Err(_) => return Err(HttpExecutionError::Response),
             },
         };
+        let first_byte_ms = send_started_at.elapsed().as_millis() as u64;
 
         if !response.status().is_redirection() {
-            break response;
+            break (response, first_byte_ms);
         }
         if redirect_count >= max_redirects {
-            break response;
+            break (response, first_byte_ms);
         }
         let Some(next_url) = redirect_target(response.url(), response.headers())? else {
-            break response;
+            break (response, first_byte_ms);
         };
         let status = response.status();
         let from = url.to_string();
@@ -225,6 +230,7 @@ async fn execute_http(
     let mut stream = response.bytes_stream();
     let mut raw_body = Vec::new();
     let mut received_bytes = 0_u64;
+    let download_started_at = Instant::now();
 
     loop {
         let chunk = tokio::select! {
@@ -270,6 +276,15 @@ async fn execute_http(
         body_truncated,
         decoded_bytes,
         wire_bytes: wire_bytes.or(Some(received_bytes)),
+        timing: ExecutionTimingMetadata {
+            queued_ms: coordinator.queued_ms(execution_id),
+            dns_ms: None,
+            connect_ms: None,
+            tls_ms: None,
+            first_byte_ms: Some(first_byte_ms),
+            download_ms: Some(download_started_at.elapsed().as_millis() as u64),
+            total_ms: started_at.elapsed().as_millis() as u64,
+        },
     })
 }
 
@@ -955,6 +970,7 @@ struct CompletedHttpExecution {
     body_truncated: bool,
     decoded_bytes: u64,
     wire_bytes: Option<u64>,
+    timing: ExecutionTimingMetadata,
 }
 
 #[derive(Debug)]
@@ -1356,6 +1372,51 @@ mod tests {
                 "missing decoded completion for {encoding}: {events:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn eight_concurrent_responses_complete_with_timing_metadata() {
+        let server = start_multi_response_fixture(8).await;
+        let coordinator = Arc::new(ExecutionCoordinator::new());
+        let events = Arc::new(Mutex::new(Vec::new()));
+
+        for index in 0..8 {
+            coordinator
+                .start(
+                    ExecutionRequest {
+                        draft_id: RequestDraftId::new(),
+                        workspace_base_directory: None,
+                        content: RequestContent {
+                            url: server.url(&format!("/concurrent/{index}")),
+                            ..RequestContent::blank()
+                        },
+                    },
+                    event_sink(&events),
+                    run_http_execution,
+                )
+                .expect("start concurrent execution");
+        }
+
+        wait_until(&events, |events| {
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, ExecutionEventKind::Completed { .. }))
+                .count()
+                == 8
+        })
+        .await;
+        let events = events.lock().expect("lock events").clone();
+        let completions = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                ExecutionEventKind::Completed { timing, .. } => Some(timing),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(completions.len(), 8);
+        assert!(completions
+            .iter()
+            .all(|timing| timing.first_byte_ms.is_some() && timing.download_ms.is_some()));
     }
 
     #[tokio::test]
@@ -2015,6 +2076,39 @@ mod tests {
 
         ready_rx.recv().await.expect("fixture ready");
         (FixtureServer { address }, captured_rx)
+    }
+
+    async fn start_multi_response_fixture(expected_requests: usize) -> FixtureServer {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind multi fixture");
+        let address = listener
+            .local_addr()
+            .expect("multi fixture address")
+            .to_string();
+        let (ready_tx, mut ready_rx) = mpsc::channel(1);
+
+        tokio::spawn(async move {
+            ready_tx
+                .send(())
+                .await
+                .expect("signal multi fixture readiness");
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().await.expect("accept multi request");
+                tokio::spawn(async move {
+                    let _ = read_http_request(&mut stream).await;
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nok",
+                        )
+                        .await
+                        .expect("write multi response");
+                });
+            }
+        });
+
+        ready_rx.recv().await.expect("multi fixture ready");
+        FixtureServer { address }
     }
 
     struct ProxyFixture {

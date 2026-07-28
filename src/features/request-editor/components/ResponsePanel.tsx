@@ -42,6 +42,9 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
         {execution.protocol ? (
           <span className="text-slate-600">{execution.protocol}</span>
         ) : null}
+        <span className="text-slate-600">
+          Timing {formatTiming(execution)}
+        </span>
         {execution.downloadProgress ? (
           <span className="text-slate-600">
             Received {execution.downloadProgress.receivedBytes.toString()} bytes
@@ -143,4 +146,22 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
       </div>
     </section>
   );
+}
+
+function formatTiming(execution: ResponseExecutionState) {
+  const timing = execution.timing;
+  const timingParts: Array<[string, bigint | null]> = [
+    ["queue", timing.queuedMs],
+    ["dns", timing.dnsMs],
+    ["connect", timing.connectMs],
+    ["tls", timing.tlsMs],
+    ["first byte", timing.firstByteMs],
+    ["download", timing.downloadMs],
+    ["total", timing.totalMs],
+  ];
+  const parts = timingParts
+    .filter((entry): entry is [string, bigint] => entry[1] !== null)
+    .map(([label, value]) => `${label} ${value.toString()} ms`);
+
+  return parts.length > 0 ? parts.join(" / ") : "pending";
 }
