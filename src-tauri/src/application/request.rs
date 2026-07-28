@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use cookie::{Cookie, Expiration, SameSite};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -7,11 +8,11 @@ use thiserror::Error;
 
 use crate::domain::{
     request::{
-        BodyFileReference, CollectionFolder, CollectionId, CollectionVariable, CookieDraft,
-        CookieId, CookieSameSite, Environment, EnvironmentId, EnvironmentVariable, ExecutionRecord,
-        ExecutionRecordId, ExecutionRecordResponse, MultipartPart, OrderedField, RequestBody,
-        RequestContent, RequestDraft, RequestDraftId, RequestTab, RequestTabId, SavedRequest,
-        SavedRequestId, VariableValue, WorkspaceCookie,
+        ApiKeyPlacement, BodyFileReference, CollectionFolder, CollectionId, CollectionVariable,
+        CookieDraft, CookieId, CookieSameSite, Environment, EnvironmentId, EnvironmentVariable,
+        ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse, MultipartPart, OrderedField,
+        RequestAuth, RequestBody, RequestContent, RequestDraft, RequestDraftId, RequestTab,
+        RequestTabId, SavedRequest, SavedRequestId, VariableValue, WorkspaceCookie,
     },
     workspace::WorkspaceId,
 };
@@ -658,6 +659,7 @@ pub struct ResolvedRequestContent {
     pub body_kind: ResolvedRequestBody,
     pub query: Vec<ResolvedField>,
     pub headers: Vec<ResolvedField>,
+    pub unsafe_tls_visible: bool,
     pub references: Vec<ResolvedVariableReference>,
     pub errors: Vec<VariableResolutionError>,
 }
@@ -744,7 +746,7 @@ pub fn resolve_request_content(
     let url = resolve_text(&content.url, &scope, &mut state);
     let body_kind = resolve_request_body(&content.body, &scope, &mut state);
     let body = resolved_body_preview(&body_kind);
-    let query = content
+    let mut query = content
         .query
         .iter()
         .map(|field| ResolvedField {
@@ -754,7 +756,7 @@ pub fn resolve_request_content(
             value: resolve_text(&field.value, &scope, &mut state),
         })
         .collect();
-    let headers = content
+    let mut headers = content
         .headers
         .iter()
         .map(|field| ResolvedField {
@@ -764,6 +766,7 @@ pub fn resolve_request_content(
             value: resolve_text(&field.value, &scope, &mut state),
         })
         .collect();
+    apply_resolved_auth(&content.auth, &scope, &mut state, &mut query, &mut headers);
 
     let mut references = state.references.into_values().collect::<Vec<_>>();
     references.sort_by(|left, right| left.name.cmp(&right.name));
@@ -780,6 +783,7 @@ pub fn resolve_request_content(
         body_kind,
         query,
         headers,
+        unsafe_tls_visible: !content.tls.verify,
         references,
         errors,
     }
@@ -823,6 +827,214 @@ pub fn redact_request_content(
                 }
             })
             .collect(),
+        auth: redact_request_auth(content.auth),
+        redirect: content.redirect,
+        tls: content.tls,
+    }
+}
+
+pub fn materialize_request_auth(
+    snapshot: &RequestWorkspaceSnapshot,
+    mut content: RequestContent,
+) -> RequestContent {
+    let resolved = resolve_request_content(snapshot, &content);
+    content.url = resolved.url.value;
+    content.body = materialize_request_body(content.body, &resolved.body_kind);
+    content.query = resolved_fields_to_ordered(resolved.query);
+    content.headers = resolved_fields_to_ordered(resolved.headers);
+    content.auth = RequestAuth::None;
+    content
+}
+
+fn materialize_request_body(body: RequestBody, resolved: &ResolvedRequestBody) -> RequestBody {
+    match (body, resolved) {
+        (RequestBody::Raw { .. }, ResolvedRequestBody::Raw { content }) => RequestBody::Raw {
+            content: content.value.clone(),
+        },
+        (
+            RequestBody::UrlEncoded { fields },
+            ResolvedRequestBody::UrlEncoded {
+                fields: resolved_fields,
+            },
+        ) => RequestBody::UrlEncoded {
+            fields: fields
+                .into_iter()
+                .zip(resolved_fields.iter())
+                .map(|(field, resolved)| OrderedField {
+                    enabled: field.enabled,
+                    order: field.order,
+                    name: resolved.name.value.clone(),
+                    value: resolved.value.value.clone(),
+                })
+                .collect(),
+        },
+        (RequestBody::Multipart { parts }, ResolvedRequestBody::Multipart { parts: resolved }) => {
+            RequestBody::Multipart {
+                parts: parts
+                    .into_iter()
+                    .zip(resolved.iter())
+                    .map(|(part, resolved)| match (part, resolved) {
+                        (
+                            MultipartPart::Field { enabled, order, .. },
+                            ResolvedMultipartPart::Field { name, value, .. },
+                        ) => MultipartPart::Field {
+                            enabled,
+                            order,
+                            name: name.value.clone(),
+                            value: value.value.clone(),
+                        },
+                        (
+                            MultipartPart::File {
+                                enabled,
+                                order,
+                                file,
+                                ..
+                            },
+                            ResolvedMultipartPart::File { name, .. },
+                        ) => MultipartPart::File {
+                            enabled,
+                            order,
+                            name: name.value.clone(),
+                            file,
+                        },
+                        (part, _) => part,
+                    })
+                    .collect(),
+            }
+        }
+        (body, _) => body,
+    }
+}
+
+fn resolved_fields_to_ordered(fields: Vec<ResolvedField>) -> Vec<OrderedField> {
+    fields
+        .into_iter()
+        .map(|field| OrderedField {
+            enabled: field.enabled,
+            order: field.order,
+            name: field.name.value,
+            value: field.value.value,
+        })
+        .collect()
+}
+
+fn apply_resolved_auth(
+    auth: &RequestAuth,
+    scope: &VariableScope,
+    state: &mut ResolutionState,
+    query: &mut Vec<ResolvedField>,
+    headers: &mut Vec<ResolvedField>,
+) {
+    match auth {
+        RequestAuth::None => {}
+        RequestAuth::Basic { username, password } => {
+            let username = resolve_text(username, scope, state);
+            let password = resolve_text(password, scope, state);
+            let contains_secret = username.contains_secret || password.contains_secret;
+            let value = if contains_secret {
+                REDACTED_VALUE.to_owned()
+            } else {
+                format!(
+                    "Basic {}",
+                    BASE64_STANDARD.encode(format!("{}:{}", username.value, password.value))
+                )
+            };
+            headers.push(resolved_auth_field(
+                headers,
+                "Authorization",
+                ResolvedValue {
+                    value,
+                    contains_secret,
+                },
+            ));
+        }
+        RequestAuth::Bearer { token } => {
+            let token = resolve_text(token, scope, state);
+            headers.push(resolved_auth_field(
+                headers,
+                "Authorization",
+                ResolvedValue {
+                    value: if token.contains_secret {
+                        REDACTED_VALUE.to_owned()
+                    } else {
+                        format!("Bearer {}", token.value)
+                    },
+                    contains_secret: token.contains_secret,
+                },
+            ));
+        }
+        RequestAuth::ApiKey {
+            placement,
+            name,
+            value,
+        } => {
+            let name = resolve_text(name, scope, state);
+            let value = resolve_text(value, scope, state);
+            let field = resolved_auth_field(
+                match placement {
+                    ApiKeyPlacement::Header => headers,
+                    ApiKeyPlacement::Query => query,
+                },
+                &name.value,
+                ResolvedValue {
+                    value: if value.contains_secret {
+                        REDACTED_VALUE.to_owned()
+                    } else {
+                        value.value
+                    },
+                    contains_secret: value.contains_secret,
+                },
+            );
+            match placement {
+                ApiKeyPlacement::Header => headers.push(field),
+                ApiKeyPlacement::Query => query.push(field),
+            }
+        }
+    }
+}
+
+fn resolved_auth_field(
+    existing: &[ResolvedField],
+    name: &str,
+    value: ResolvedValue,
+) -> ResolvedField {
+    ResolvedField {
+        enabled: true,
+        order: next_resolved_field_order(existing),
+        name: ResolvedValue {
+            value: name.to_owned(),
+            contains_secret: false,
+        },
+        value,
+    }
+}
+
+fn next_resolved_field_order(fields: &[ResolvedField]) -> u32 {
+    fields
+        .iter()
+        .map(|field| field.order)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
+fn redact_request_auth(auth: RequestAuth) -> RequestAuth {
+    match auth {
+        RequestAuth::None => RequestAuth::None,
+        RequestAuth::Basic { username, .. } => RequestAuth::Basic {
+            username,
+            password: REDACTED_VALUE.to_owned(),
+        },
+        RequestAuth::Bearer { .. } => RequestAuth::Bearer {
+            token: REDACTED_VALUE.to_owned(),
+        },
+        RequestAuth::ApiKey {
+            placement, name, ..
+        } => RequestAuth::ApiKey {
+            placement,
+            name,
+            value: REDACTED_VALUE.to_owned(),
+        },
     }
 }
 
@@ -1272,7 +1484,8 @@ impl RequestError {
 mod tests {
     use super::*;
     use crate::domain::request::{
-        CollectionVariable, Environment, EnvironmentVariable, OrderedField, Variable, VariableValue,
+        CollectionVariable, Environment, EnvironmentVariable, OrderedField, RequestAuth, Variable,
+        VariableValue,
     };
 
     #[derive(Default)]
@@ -1851,6 +2064,54 @@ mod tests {
     }
 
     #[test]
+    fn resolver_applies_auth_after_variables_and_marks_unsafe_tls_visible() {
+        let workspace_id = WorkspaceId::new();
+        let environment_id = EnvironmentId::new();
+        let snapshot = RequestWorkspaceSnapshot {
+            workspace_id,
+            collection_folders: Vec::new(),
+            environments: vec![Environment {
+                id: environment_id,
+                workspace_id,
+                name: "Prod".to_owned(),
+                position: 0,
+                is_selected: true,
+            }],
+            collection_variables: Vec::new(),
+            environment_variables: vec![EnvironmentVariable {
+                environment_id,
+                workspace_id,
+                variable: Variable {
+                    name: "token".to_owned(),
+                    value: VariableValue::SecretReference("secret://token".to_owned()),
+                },
+            }],
+            saved_requests: Vec::new(),
+            drafts: Vec::new(),
+            tabs: Vec::new(),
+        };
+        let content = RequestContent {
+            auth: RequestAuth::Bearer {
+                token: "{{token}}".to_owned(),
+            },
+            tls: crate::domain::request::TlsPolicy {
+                verify: false,
+                ..Default::default()
+            },
+            ..RequestContent::blank()
+        };
+
+        let resolved = resolve_request_content(&snapshot, &content);
+
+        assert!(resolved.unsafe_tls_visible);
+        assert!(resolved.headers.iter().any(|field| {
+            field.name.value == "Authorization"
+                && field.value.value == REDACTED_VALUE
+                && field.value.contains_secret
+        }));
+    }
+
+    #[test]
     fn record_execution_redacts_authorization_cookie_and_secret_resolved_values() {
         let workspace_id = WorkspaceId::new();
         let environment_id = EnvironmentId::new();
@@ -1914,6 +2175,7 @@ mod tests {
                     value: "{{token}}".to_owned(),
                 },
             ],
+            ..RequestContent::blank()
         };
 
         service
@@ -2018,6 +2280,7 @@ mod tests {
                 value: String::new(),
             }],
             headers: Vec::new(),
+            ..RequestContent::blank()
         }
     }
 

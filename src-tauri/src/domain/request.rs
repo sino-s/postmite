@@ -267,6 +267,12 @@ pub struct RequestContent {
     pub body: RequestBody,
     pub query: Vec<OrderedField>,
     pub headers: Vec<OrderedField>,
+    #[serde(default)]
+    pub auth: RequestAuth,
+    #[serde(default)]
+    pub redirect: RedirectPolicy,
+    #[serde(default)]
+    pub tls: TlsPolicy,
 }
 
 impl RequestContent {
@@ -278,6 +284,75 @@ impl RequestContent {
             body: RequestBody::None,
             query: Vec::new(),
             headers: Vec::new(),
+            auth: RequestAuth::default(),
+            redirect: RedirectPolicy::default(),
+            tls: TlsPolicy::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum RequestAuth {
+    #[default]
+    None,
+    Basic {
+        username: String,
+        password: String,
+    },
+    Bearer {
+        token: String,
+    },
+    ApiKey {
+        placement: ApiKeyPlacement,
+        name: String,
+        value: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ApiKeyPlacement {
+    Header,
+    Query,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedirectPolicy {
+    pub enabled: bool,
+    pub max_redirects: u8,
+}
+
+impl Default for RedirectPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_redirects: 10,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsPolicy {
+    pub verify: bool,
+    pub custom_ca_reference: Option<String>,
+    pub client_certificate_reference: Option<String>,
+    pub client_key_reference: Option<String>,
+}
+
+impl Default for TlsPolicy {
+    fn default() -> Self {
+        Self {
+            verify: true,
+            custom_ca_reference: None,
+            client_certificate_reference: None,
+            client_key_reference: None,
         }
     }
 }

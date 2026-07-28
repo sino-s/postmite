@@ -298,6 +298,7 @@ describe("App request editor", () => {
         type: "STARTED",
         method: "GET",
         url: "https://example.test",
+        tlsVerification: true,
       }),
     );
     executionApiMock.emitExecutionEvent(
@@ -987,6 +988,7 @@ function emptyResolution() {
     body: { value: "", containsSecret: false },
     query: [],
     headers: [],
+    unsafeTlsVisible: false,
     references: [],
     errors: [],
   };
@@ -1003,6 +1005,14 @@ function requestContent(
     body: { type: "NONE" },
     query: queryFromUrl(url),
     headers: [],
+    auth: { type: "NONE" },
+    redirect: { enabled: true, maxRedirects: 10 },
+    tls: {
+      verify: true,
+      customCaReference: null,
+      clientCertificateReference: null,
+      clientKeyReference: null,
+    },
     ...overrides,
   };
 }

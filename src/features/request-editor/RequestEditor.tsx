@@ -649,6 +649,11 @@ export function RequestEditor({
               />
               <div className="grid min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]">
                 <section className="flex min-h-0 flex-col gap-4">
+                  <SecurityPanel
+                    content={activeContent}
+                    onChange={changeActiveDraft}
+                    resolution={resolution.data ?? null}
+                  />
                   <FieldTable
                     fields={activeContent.query}
                     legend="Params"
@@ -922,6 +927,8 @@ type ResolutionPanelProps = {
 function ResolutionPanel({ resolution, resolving }: ResolutionPanelProps) {
   const references = resolution?.references ?? [];
   const errors = resolution?.errors ?? [];
+  const headers = resolution?.headers ?? [];
+  const query = resolution?.query ?? [];
 
   return (
     <section
@@ -940,6 +947,11 @@ function ResolutionPanel({ resolution, resolving }: ResolutionPanelProps) {
             </p>
           ))}
         </div>
+      ) : null}
+      {resolution?.unsafeTlsVisible ? (
+        <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-2 py-2 text-xs font-semibold text-amber-900">
+          TLS verification is disabled for this request.
+        </p>
       ) : null}
       <div className="overflow-x-auto rounded-md border border-slate-200">
         <table className="w-full min-w-[360px] table-fixed border-collapse text-left text-xs">
@@ -974,7 +986,49 @@ function ResolutionPanel({ resolution, resolving }: ResolutionPanelProps) {
           </tbody>
         </table>
       </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <ResolvedFieldPreview fields={query} title="Final Params" />
+        <ResolvedFieldPreview fields={headers} title="Final Headers" />
+      </div>
     </section>
+  );
+}
+
+function ResolvedFieldPreview({
+  fields,
+  title,
+}: {
+  fields: ResolvedRequestContentDto["headers"];
+  title: string;
+}) {
+  const enabledFields = sortResolvedFields(fields).filter((field) => field.enabled);
+  return (
+    <div className="overflow-x-auto rounded-md border border-slate-200">
+      <div className="border-b border-slate-200 bg-slate-50 px-2 py-2 text-xs font-semibold text-slate-600">
+        {title}
+      </div>
+      <table className="w-full min-w-[260px] table-fixed border-collapse text-left text-xs">
+        <tbody>
+          {enabledFields.map((field, index) => (
+            <tr className="border-b border-slate-100" key={`${field.order}-${index}`}>
+              <td className="w-32 break-words px-2 py-2 font-medium text-slate-700">
+                {field.name.value}
+              </td>
+              <td className="break-words px-2 py-2 text-slate-600">
+                {field.value.value}
+              </td>
+            </tr>
+          ))}
+          {enabledFields.length === 0 ? (
+            <tr>
+              <td className="px-2 py-4 text-center text-slate-500" colSpan={2}>
+                None
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -1364,6 +1418,291 @@ type CookieFormValue = {
   expiresAtEpochSeconds: bigint | null;
 };
 
+type SecurityPanelProps = {
+  content: RequestContentDto;
+  onChange: (updater: (content: RequestContentDto) => RequestContentDto) => void;
+  resolution: ResolvedRequestContentDto | null;
+};
+
+function SecurityPanel({ content, onChange, resolution }: SecurityPanelProps) {
+  const authType = content.auth.type;
+  return (
+    <section
+      aria-label="Security policy"
+      className="grid gap-3 rounded-md border border-slate-300 bg-white p-3 text-sm"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-slate-950">Security</h2>
+        {!content.tls.verify || resolution?.unsafeTlsVisible ? (
+          <span className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-900">
+            TLS verification off
+          </span>
+        ) : null}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <label className="grid gap-1 text-xs font-medium text-slate-700">
+          Auth
+          <select
+            className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+            onChange={(event) => {
+              const type = event.currentTarget.value;
+              onChange((current) => ({
+                ...current,
+                auth:
+                  type === "BASIC"
+                    ? { type: "BASIC", username: "", password: "" }
+                    : type === "BEARER"
+                      ? { type: "BEARER", token: "" }
+                      : type === "API_KEY"
+                        ? {
+                            type: "API_KEY",
+                            placement: "HEADER",
+                            name: "",
+                            value: "",
+                          }
+                        : { type: "NONE" },
+              }));
+            }}
+            value={authType}
+          >
+            <option value="NONE">No Auth</option>
+            <option value="BASIC">Basic</option>
+            <option value="BEARER">Bearer</option>
+            <option value="API_KEY">API Key</option>
+          </select>
+        </label>
+        {content.auth.type === "BASIC" ? (
+          <>
+            <label className="grid gap-1 text-xs font-medium text-slate-700">
+              Username
+              <input
+                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+                onChange={(event) =>
+                  onChange((current) =>
+                    current.auth.type === "BASIC"
+                      ? {
+                          ...current,
+                          auth: {
+                            ...current.auth,
+                            username: event.currentTarget.value,
+                          },
+                        }
+                      : current,
+                  )
+                }
+                value={content.auth.username}
+              />
+            </label>
+            <label className="grid gap-1 text-xs font-medium text-slate-700">
+              Password reference
+              <input
+                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+                onChange={(event) =>
+                  onChange((current) =>
+                    current.auth.type === "BASIC"
+                      ? {
+                          ...current,
+                          auth: {
+                            ...current.auth,
+                            password: event.currentTarget.value,
+                          },
+                        }
+                      : current,
+                  )
+                }
+                value={content.auth.password}
+              />
+            </label>
+          </>
+        ) : null}
+        {content.auth.type === "BEARER" ? (
+          <label className="grid gap-1 text-xs font-medium text-slate-700 sm:col-span-2">
+            Token reference
+            <input
+              className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+              onChange={(event) =>
+                onChange((current) =>
+                  current.auth.type === "BEARER"
+                    ? {
+                        ...current,
+                        auth: { ...current.auth, token: event.currentTarget.value },
+                      }
+                    : current,
+                )
+              }
+              value={content.auth.token}
+            />
+          </label>
+        ) : null}
+        {content.auth.type === "API_KEY" ? (
+          <>
+            <label className="grid gap-1 text-xs font-medium text-slate-700">
+              Placement
+              <select
+                className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+                onChange={(event) =>
+                  onChange((current) =>
+                    current.auth.type === "API_KEY"
+                      ? {
+                          ...current,
+                          auth: {
+                            ...current.auth,
+                            placement: event.currentTarget.value as "HEADER" | "QUERY",
+                          },
+                        }
+                      : current,
+                  )
+                }
+                value={content.auth.placement}
+              >
+                <option value="HEADER">Header</option>
+                <option value="QUERY">Query</option>
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs font-medium text-slate-700">
+              Key name
+              <input
+                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+                onChange={(event) =>
+                  onChange((current) =>
+                    current.auth.type === "API_KEY"
+                      ? {
+                          ...current,
+                          auth: { ...current.auth, name: event.currentTarget.value },
+                        }
+                      : current,
+                  )
+                }
+                value={content.auth.name}
+              />
+            </label>
+            <label className="grid gap-1 text-xs font-medium text-slate-700">
+              Value reference
+              <input
+                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+                onChange={(event) =>
+                  onChange((current) =>
+                    current.auth.type === "API_KEY"
+                      ? {
+                          ...current,
+                          auth: { ...current.auth, value: event.currentTarget.value },
+                        }
+                      : current,
+                  )
+                }
+                value={content.auth.value}
+              />
+            </label>
+          </>
+        ) : null}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-[auto_140px_1fr_1fr_1fr]">
+        <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700">
+          <input
+            checked={content.redirect.enabled}
+            className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-sky-500"
+            onChange={(event) =>
+              onChange((current) => ({
+                ...current,
+                redirect: {
+                  ...current.redirect,
+                  enabled: event.currentTarget.checked,
+                },
+              }))
+            }
+            type="checkbox"
+          />
+          Redirects
+        </label>
+        <label className="grid gap-1 text-xs font-medium text-slate-700">
+          Max
+          <input
+            className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+            max={10}
+            min={0}
+            onChange={(event) =>
+              onChange((current) => ({
+                ...current,
+                redirect: {
+                  ...current.redirect,
+                  maxRedirects: Number(event.currentTarget.value),
+                },
+              }))
+            }
+            type="number"
+            value={content.redirect.maxRedirects}
+          />
+        </label>
+        <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700">
+          <input
+            checked={content.tls.verify}
+            className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-sky-500"
+            onChange={(event) =>
+              onChange((current) => ({
+                ...current,
+                tls: { ...current.tls, verify: event.currentTarget.checked },
+              }))
+            }
+            type="checkbox"
+          />
+          Verify TLS
+        </label>
+        <TlsReferenceInput
+          label="Custom CA"
+          onChange={(value) =>
+            onChange((current) => ({
+              ...current,
+              tls: { ...current.tls, customCaReference: value || null },
+            }))
+          }
+          value={content.tls.customCaReference}
+        />
+        <TlsReferenceInput
+          label="Client cert"
+          onChange={(value) =>
+            onChange((current) => ({
+              ...current,
+              tls: { ...current.tls, clientCertificateReference: value || null },
+            }))
+          }
+          value={content.tls.clientCertificateReference}
+        />
+        <TlsReferenceInput
+          label="Client key"
+          onChange={(value) =>
+            onChange((current) => ({
+              ...current,
+              tls: { ...current.tls, clientKeyReference: value || null },
+            }))
+          }
+          value={content.tls.clientKeyReference}
+        />
+      </div>
+    </section>
+  );
+}
+
+function TlsReferenceInput({
+  label,
+  onChange,
+  value,
+}: {
+  label: string;
+  onChange: (value: string) => void;
+  value: string | null;
+}) {
+  return (
+    <label className="grid gap-1 text-xs font-medium text-slate-700">
+      {label}
+      <input
+        className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+        onChange={(event) => onChange(event.currentTarget.value)}
+        value={value ?? ""}
+      />
+    </label>
+  );
+}
+
 type CookiePanelProps = {
   cookies: WorkspaceCookieDto[];
   loading: boolean;
@@ -1637,12 +1976,39 @@ function ResponsePanel({ execution }: ResponsePanelProps) {
             Sent {execution.uploadProgress.sentBytes.toString()} bytes
           </span>
         ) : null}
+        {execution.tlsVerification === false ? (
+          <span className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-900">
+            TLS verification off
+          </span>
+        ) : null}
       </div>
 
       {execution.error ? (
         <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-800">
           {execution.error}
         </p>
+      ) : null}
+
+      {execution.redirects.length > 0 ? (
+        <div className="rounded-md border border-slate-200">
+          <div className="border-b border-slate-200 bg-slate-50 px-2 py-2 text-xs font-semibold text-slate-600">
+            Redirects
+          </div>
+          <div className="max-h-28 overflow-auto">
+            {execution.redirects.map((redirect, index) => (
+              <div
+                className="grid gap-1 border-b border-slate-100 px-2 py-2 text-xs last:border-b-0"
+                key={`${redirect.status}-${redirect.from}-${index}`}
+              >
+                <span className="font-semibold text-slate-700">
+                  {redirect.status}
+                </span>
+                <span className="break-words text-slate-600">{redirect.from}</span>
+                <span className="break-words text-slate-900">{redirect.to}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       ) : null}
 
       <div className="grid min-h-0 gap-3 lg:grid-cols-[minmax(260px,0.45fr)_minmax(0,1fr)]">
@@ -2198,6 +2564,14 @@ function emptyRequestContent(): RequestContentDto {
     body: { type: "NONE" },
     query: [],
     headers: [],
+    auth: { type: "NONE" },
+    redirect: { enabled: true, maxRedirects: 10 },
+    tls: {
+      verify: true,
+      customCaReference: null,
+      clientCertificateReference: null,
+      clientKeyReference: null,
+    },
   };
 }
 
@@ -2207,4 +2581,8 @@ function formatVariableSource(source: string) {
 
 function formatResolutionError(kind: string) {
   return kind === "CYCLE" ? "Cyclic reference" : "Missing reference";
+}
+
+function sortResolvedFields(fields: ResolvedRequestContentDto["headers"]) {
+  return [...fields].sort((left, right) => left.order - right.order);
 }

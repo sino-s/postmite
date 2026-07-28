@@ -80,6 +80,12 @@ pub enum ExecutionEventKind {
     Started {
         method: String,
         url: String,
+        tls_verification: bool,
+    },
+    Redirected {
+        from: String,
+        to: String,
+        status: u16,
     },
     UploadProgress {
         sent_bytes: u64,
@@ -313,6 +319,7 @@ mod tests {
                 ExecutionEventKind::Started {
                     method: "GET".to_owned(),
                     url: "http://127.0.0.1".to_owned(),
+                    tls_verification: true,
                 },
             )
             .expect("current event");

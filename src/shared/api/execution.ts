@@ -36,6 +36,8 @@ export type ResponseExecutionState = {
   lastSequence: bigint;
   method: string | null;
   url: string | null;
+  tlsVerification: boolean | null;
+  redirects: Array<{ from: string; to: string; status: number }>;
   status: number | null;
   headers: Array<{ name: string; value: string }>;
   bodyPreview: string;
@@ -111,6 +113,8 @@ export function createQueuedResponseExecutionState({
     lastSequence: 0n,
     method: null,
     url: null,
+    tlsVerification: null,
+    redirects: [],
     status: null,
     headers: [],
     bodyPreview: "",
@@ -166,6 +170,19 @@ export function reduceResponseExecutionState(
         phase: "running",
         method: event.kind.method,
         url: event.kind.url,
+        tlsVerification: event.kind.tlsVerification,
+      };
+    case "REDIRECTED":
+      return {
+        ...base,
+        redirects: [
+          ...base.redirects,
+          {
+            from: event.kind.from,
+            to: event.kind.to,
+            status: event.kind.status,
+          },
+        ],
       };
     case "UPLOAD_PROGRESS":
       return {

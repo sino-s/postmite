@@ -57,6 +57,14 @@ describe("typed IPC adapter", () => {
           { enabled: false, order: 1, name: "tag", value: "" },
         ],
         headers: [],
+        auth: { type: "NONE" },
+        redirect: { enabled: true, maxRedirects: 10 },
+        tls: {
+          verify: true,
+          customCaReference: null,
+          clientCertificateReference: null,
+          clientKeyReference: null,
+        },
       },
     });
 
@@ -73,6 +81,14 @@ describe("typed IPC adapter", () => {
             { enabled: false, order: 1, name: "tag", value: "" },
           ],
           headers: [],
+          auth: { type: "NONE" },
+          redirect: { enabled: true, maxRedirects: 10 },
+          tls: {
+            verify: true,
+            customCaReference: null,
+            clientCertificateReference: null,
+            clientKeyReference: null,
+          },
         },
       },
     });
