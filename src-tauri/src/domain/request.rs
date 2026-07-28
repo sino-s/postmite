@@ -273,6 +273,8 @@ pub struct RequestContent {
     pub redirect: RedirectPolicy,
     #[serde(default)]
     pub tls: TlsPolicy,
+    #[serde(default)]
+    pub transport: TransportPolicy,
 }
 
 impl RequestContent {
@@ -287,6 +289,7 @@ impl RequestContent {
             auth: RequestAuth::default(),
             redirect: RedirectPolicy::default(),
             tls: TlsPolicy::default(),
+            transport: TransportPolicy::default(),
         }
     }
 }
@@ -353,6 +356,57 @@ impl Default for TlsPolicy {
             custom_ca_reference: None,
             client_certificate_reference: None,
             client_key_reference: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportPolicy {
+    pub proxy: ProxyPolicy,
+    pub timeouts: TimeoutPolicy,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyPolicy {
+    pub source: ProxySource,
+    pub url: Option<String>,
+    pub no_proxy: Vec<String>,
+}
+
+impl Default for ProxyPolicy {
+    fn default() -> Self {
+        Self {
+            source: ProxySource::ProcessEnvironment,
+            url: None,
+            no_proxy: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProxySource {
+    Disabled,
+    ProcessEnvironment,
+    Custom,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimeoutPolicy {
+    pub connect_ms: u64,
+    pub overall_ms: u64,
+    pub idle_ms: u64,
+}
+
+impl Default for TimeoutPolicy {
+    fn default() -> Self {
+        Self {
+            connect_ms: 10_000,
+            overall_ms: 300_000,
+            idle_ms: 60_000,
         }
     }
 }

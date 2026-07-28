@@ -1013,18 +1013,90 @@ function requestContent(
       clientCertificateReference: null,
       clientKeyReference: null,
     },
+    transport: defaultTransport(),
     ...overrides,
   };
 }
 
+type ExecutionEventKindInput =
+  | ({ type: "STARTED" } & Partial<Extract<ExecutionEventKindDto, { type: "STARTED" }>>)
+  | ({ type: "RESPONSE_HEADERS" } & Partial<Extract<ExecutionEventKindDto, { type: "RESPONSE_HEADERS" }>>)
+  | ({ type: "COMPLETED" } & Partial<Extract<ExecutionEventKindDto, { type: "COMPLETED" }>>)
+  | Extract<ExecutionEventKindDto, { type: "REDIRECTED" | "UPLOAD_PROGRESS" | "DOWNLOAD_PROGRESS" | "FAILED" | "CANCELLED" }>;
+
 function executionEvent(
   executionId: string,
   sequence: bigint,
-  kind: ExecutionEventKindDto,
+  kind: ExecutionEventKindInput,
 ): ExecutionEventDto {
+  const completedKind = completeExecutionEventKind(kind);
   return {
     executionId,
     sequence,
-    kind,
+    kind: completedKind,
+  };
+}
+
+function completeExecutionEventKind(kind: ExecutionEventKindInput): ExecutionEventKindDto {
+  if (kind.type === "STARTED") {
+    return {
+      method: "GET",
+      url: "https://example.test",
+      tlsVerification: true,
+      proxy: defaultProxyMetadata(),
+      timeouts: defaultTimeoutMetadata(),
+      ...kind,
+    };
+  }
+  if (kind.type === "RESPONSE_HEADERS") {
+    return {
+      status: 200,
+      headers: [],
+      protocol: "HTTP/1.1",
+      remoteAddr: "127.0.0.1:8080",
+      ...kind,
+    };
+  }
+  if (kind.type === "COMPLETED") {
+    return {
+      status: 200,
+      bodyPreview: "",
+      bodyTruncated: false,
+      decodedBytes: 0n,
+      wireBytes: null,
+      ...kind,
+    };
+  }
+  return kind;
+}
+
+function defaultTransport() {
+  return {
+    proxy: {
+      source: "PROCESS_ENVIRONMENT" as const,
+      url: null,
+      noProxy: [],
+    },
+    timeouts: {
+      connectMs: 10_000n,
+      overallMs: 300_000n,
+      idleMs: 60_000n,
+    },
+  };
+}
+
+function defaultProxyMetadata() {
+  return {
+    source: "processEnvironment",
+    selectedProxy: null,
+    bypassReason: null,
+  };
+}
+
+function defaultTimeoutMetadata() {
+  return {
+    connectMs: 10_000n,
+    overallMs: 300_000n,
+    idleMs: 60_000n,
   };
 }

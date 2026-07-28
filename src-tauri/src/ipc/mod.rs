@@ -18,7 +18,8 @@ use ts_rs::{Config, TS};
 use crate::{
     application::execution::{
         CancelExecutionResult, ExecutionError, ExecutionEvent, ExecutionEventKind, ExecutionHeader,
-        ExecutionId, ExecutionRequest, StartExecutionResult,
+        ExecutionId, ExecutionProxyMetadata, ExecutionRequest, ExecutionTimeoutMetadata,
+        StartExecutionResult,
     },
     application::request::{
         materialize_request_auth, CloseTabDecision, CollectionLocation, CookieJarSnapshot,
@@ -33,9 +34,10 @@ use crate::{
             ApiKeyPlacement, BodyFilePath, BodyFileReference, CollectionFolder, CollectionId,
             CollectionVariable, CookieDraft, CookieId, CookieSameSite, Environment, EnvironmentId,
             EnvironmentVariable, ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse,
-            MultipartPart, OrderedField, RedirectPolicy, RequestAuth, RequestBody, RequestContent,
-            RequestDraft, RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId,
-            TlsPolicy, Variable, VariableValue, WorkspaceCookie,
+            MultipartPart, OrderedField, ProxyPolicy, ProxySource, RedirectPolicy, RequestAuth,
+            RequestBody, RequestContent, RequestDraft, RequestDraftId, RequestTab, RequestTabId,
+            SavedRequest, SavedRequestId, TimeoutPolicy, TlsPolicy, TransportPolicy, Variable,
+            VariableValue, WorkspaceCookie,
         },
         workspace::{WorkspaceId, WorkspaceNameError},
     },
@@ -144,6 +146,7 @@ pub struct RequestContentDto {
     pub auth: RequestAuthDto,
     pub redirect: RedirectPolicyDto,
     pub tls: TlsPolicyDto,
+    pub transport: TransportPolicyDto,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -189,6 +192,37 @@ pub struct TlsPolicyDto {
     pub custom_ca_reference: Option<String>,
     pub client_certificate_reference: Option<String>,
     pub client_key_reference: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportPolicyDto {
+    pub proxy: ProxyPolicyDto,
+    pub timeouts: TimeoutPolicyDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyPolicyDto {
+    pub source: ProxySourceDto,
+    pub url: Option<String>,
+    pub no_proxy: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProxySourceDto {
+    Disabled,
+    ProcessEnvironment,
+    Custom,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TimeoutPolicyDto {
+    pub connect_ms: u64,
+    pub overall_ms: u64,
+    pub idle_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -688,6 +722,8 @@ pub enum ExecutionEventKindDto {
         method: String,
         url: String,
         tls_verification: bool,
+        proxy: ExecutionProxyMetadataDto,
+        timeouts: ExecutionTimeoutMetadataDto,
     },
     Redirected {
         from: String,
@@ -701,6 +737,8 @@ pub enum ExecutionEventKindDto {
     ResponseHeaders {
         status: u16,
         headers: Vec<ExecutionHeaderDto>,
+        protocol: String,
+        remote_addr: Option<String>,
     },
     DownloadProgress {
         received_bytes: u64,
@@ -710,6 +748,8 @@ pub enum ExecutionEventKindDto {
         status: u16,
         body_preview: String,
         body_truncated: bool,
+        decoded_bytes: u64,
+        wire_bytes: Option<u64>,
     },
     Failed {
         message: String,
@@ -722,6 +762,22 @@ pub enum ExecutionEventKindDto {
 pub struct ExecutionHeaderDto {
     pub name: String,
     pub value: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionProxyMetadataDto {
+    pub source: String,
+    pub selected_proxy: Option<String>,
+    pub bypass_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionTimeoutMetadataDto {
+    pub connect_ms: Option<u64>,
+    pub overall_ms: Option<u64>,
+    pub idle_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -1760,6 +1816,7 @@ impl ExecutionHistoryObserver {
                 status,
                 body_preview,
                 body_truncated,
+                ..
             } => self.record(Some(*status), body_preview.clone(), *body_truncated, None),
             ExecutionEventKind::Failed { message } => {
                 self.record(None, String::new(), false, Some(message.clone()))
@@ -1927,6 +1984,10 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         RequestAuthDto::export_to_string(&cfg)?,
         RedirectPolicyDto::export_to_string(&cfg)?,
         TlsPolicyDto::export_to_string(&cfg)?,
+        ProxySourceDto::export_to_string(&cfg)?,
+        ProxyPolicyDto::export_to_string(&cfg)?,
+        TimeoutPolicyDto::export_to_string(&cfg)?,
+        TransportPolicyDto::export_to_string(&cfg)?,
         RequestContentDto::export_to_string(&cfg)?,
         SavedRequestDto::export_to_string(&cfg)?,
         CollectionFolderDto::export_to_string(&cfg)?,
@@ -1979,6 +2040,8 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         ExecutionEventDto::export_to_string(&cfg)?,
         ExecutionEventKindDto::export_to_string(&cfg)?,
         ExecutionHeaderDto::export_to_string(&cfg)?,
+        ExecutionProxyMetadataDto::export_to_string(&cfg)?,
+        ExecutionTimeoutMetadataDto::export_to_string(&cfg)?,
     ] {
         let generated_without_imports = generated
             .lines()
@@ -2592,6 +2655,7 @@ impl From<RequestContent> for RequestContentDto {
             auth: RequestAuthDto::from(content.auth),
             redirect: RedirectPolicyDto::from(content.redirect),
             tls: TlsPolicyDto::from(content.tls),
+            transport: TransportPolicyDto::from(content.transport),
         }
     }
 }
@@ -2612,6 +2676,7 @@ impl From<RequestContentDto> for RequestContent {
             auth: RequestAuth::from(content.auth),
             redirect: RedirectPolicy::from(content.redirect),
             tls: TlsPolicy::from(content.tls),
+            transport: TransportPolicy::from(content.transport),
         }
     }
 }
@@ -2708,6 +2773,84 @@ impl From<TlsPolicyDto> for TlsPolicy {
             custom_ca_reference: policy.custom_ca_reference,
             client_certificate_reference: policy.client_certificate_reference,
             client_key_reference: policy.client_key_reference,
+        }
+    }
+}
+
+impl From<TransportPolicy> for TransportPolicyDto {
+    fn from(policy: TransportPolicy) -> Self {
+        Self {
+            proxy: ProxyPolicyDto::from(policy.proxy),
+            timeouts: TimeoutPolicyDto::from(policy.timeouts),
+        }
+    }
+}
+
+impl From<TransportPolicyDto> for TransportPolicy {
+    fn from(policy: TransportPolicyDto) -> Self {
+        Self {
+            proxy: ProxyPolicy::from(policy.proxy),
+            timeouts: TimeoutPolicy::from(policy.timeouts),
+        }
+    }
+}
+
+impl From<ProxyPolicy> for ProxyPolicyDto {
+    fn from(policy: ProxyPolicy) -> Self {
+        Self {
+            source: ProxySourceDto::from(policy.source),
+            url: policy.url,
+            no_proxy: policy.no_proxy,
+        }
+    }
+}
+
+impl From<ProxyPolicyDto> for ProxyPolicy {
+    fn from(policy: ProxyPolicyDto) -> Self {
+        Self {
+            source: ProxySource::from(policy.source),
+            url: policy.url,
+            no_proxy: policy.no_proxy,
+        }
+    }
+}
+
+impl From<ProxySource> for ProxySourceDto {
+    fn from(source: ProxySource) -> Self {
+        match source {
+            ProxySource::Disabled => Self::Disabled,
+            ProxySource::ProcessEnvironment => Self::ProcessEnvironment,
+            ProxySource::Custom => Self::Custom,
+        }
+    }
+}
+
+impl From<ProxySourceDto> for ProxySource {
+    fn from(source: ProxySourceDto) -> Self {
+        match source {
+            ProxySourceDto::Disabled => Self::Disabled,
+            ProxySourceDto::ProcessEnvironment => Self::ProcessEnvironment,
+            ProxySourceDto::Custom => Self::Custom,
+        }
+    }
+}
+
+impl From<TimeoutPolicy> for TimeoutPolicyDto {
+    fn from(policy: TimeoutPolicy) -> Self {
+        Self {
+            connect_ms: policy.connect_ms,
+            overall_ms: policy.overall_ms,
+            idle_ms: policy.idle_ms,
+        }
+    }
+}
+
+impl From<TimeoutPolicyDto> for TimeoutPolicy {
+    fn from(policy: TimeoutPolicyDto) -> Self {
+        Self {
+            connect_ms: policy.connect_ms,
+            overall_ms: policy.overall_ms,
+            idle_ms: policy.idle_ms,
         }
     }
 }
@@ -2914,10 +3057,14 @@ impl From<ExecutionEventKind> for ExecutionEventKindDto {
                 method,
                 url,
                 tls_verification,
+                proxy,
+                timeouts,
             } => Self::Started {
                 method,
                 url,
                 tls_verification,
+                proxy: ExecutionProxyMetadataDto::from(proxy),
+                timeouts: ExecutionTimeoutMetadataDto::from(timeouts),
             },
             ExecutionEventKind::Redirected { from, to, status } => {
                 Self::Redirected { from, to, status }
@@ -2929,9 +3076,16 @@ impl From<ExecutionEventKind> for ExecutionEventKindDto {
                 sent_bytes,
                 total_bytes,
             },
-            ExecutionEventKind::ResponseHeaders { status, headers } => Self::ResponseHeaders {
+            ExecutionEventKind::ResponseHeaders {
+                status,
+                headers,
+                protocol,
+                remote_addr,
+            } => Self::ResponseHeaders {
                 status,
                 headers: headers.into_iter().map(ExecutionHeaderDto::from).collect(),
+                protocol,
+                remote_addr,
             },
             ExecutionEventKind::DownloadProgress {
                 received_bytes,
@@ -2944,13 +3098,37 @@ impl From<ExecutionEventKind> for ExecutionEventKindDto {
                 status,
                 body_preview,
                 body_truncated,
+                decoded_bytes,
+                wire_bytes,
             } => Self::Completed {
                 status,
                 body_preview,
                 body_truncated,
+                decoded_bytes,
+                wire_bytes,
             },
             ExecutionEventKind::Failed { message } => Self::Failed { message },
             ExecutionEventKind::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl From<ExecutionProxyMetadata> for ExecutionProxyMetadataDto {
+    fn from(metadata: ExecutionProxyMetadata) -> Self {
+        Self {
+            source: metadata.source,
+            selected_proxy: metadata.selected_proxy,
+            bypass_reason: metadata.bypass_reason,
+        }
+    }
+}
+
+impl From<ExecutionTimeoutMetadata> for ExecutionTimeoutMetadataDto {
+    fn from(metadata: ExecutionTimeoutMetadata) -> Self {
+        Self {
+            connect_ms: metadata.connect_ms,
+            overall_ms: metadata.overall_ms,
+            idle_ms: metadata.idle_ms,
         }
     }
 }

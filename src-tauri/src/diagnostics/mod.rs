@@ -182,6 +182,7 @@ impl RequestSmokeReport {
                 ExecutionEventKind::ResponseHeaders {
                     status: next_status,
                     headers: next_headers,
+                    ..
                 } => {
                     status = Some(*next_status);
                     headers = next_headers
@@ -196,6 +197,7 @@ impl RequestSmokeReport {
                     status: next_status,
                     body_preview: next_body_preview,
                     body_truncated: next_body_truncated,
+                    ..
                 } => {
                     status = Some(*next_status);
                     body_preview = next_body_preview.clone();

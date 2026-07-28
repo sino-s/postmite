@@ -1,4 +1,6 @@
 use std::{
+    env,
+    io::Read,
     path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -10,8 +12,11 @@ use std::{
 use bytes::Bytes;
 use futures_util::{stream, StreamExt, TryStreamExt};
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue, LOCATION},
-    multipart, Method, Url,
+    header::{
+        HeaderMap, HeaderName, HeaderValue, ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH,
+        LOCATION,
+    },
+    multipart, Method, NoProxy, Proxy, Url, Version,
 };
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
@@ -21,10 +26,12 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     application::execution::{
         ExecutionCoordinator, ExecutionEvent, ExecutionEventKind, ExecutionHeader, ExecutionId,
-        ExecutionRequest, MAX_RESPONSE_PREVIEW_BYTES,
+        ExecutionProxyMetadata, ExecutionRequest, ExecutionTimeoutMetadata,
+        MAX_RESPONSE_PREVIEW_BYTES,
     },
     domain::request::{
-        BodyFilePath, BodyFileReference, MultipartPart, OrderedField, RequestBody, RequestContent,
+        BodyFilePath, BodyFileReference, MultipartPart, OrderedField, ProxySource, RequestBody,
+        RequestContent, TimeoutPolicy,
     },
 };
 
@@ -58,6 +65,8 @@ pub async fn run_http_execution(
                 status: completed.status,
                 body_preview: completed.body_preview,
                 body_truncated: completed.body_truncated,
+                decoded_bytes: completed.decoded_bytes,
+                wire_bytes: completed.wire_bytes,
             },
         ),
         Err(HttpExecutionError::Cancelled) => emit(
@@ -88,7 +97,13 @@ async fn execute_http(
     let mut method = Method::from_bytes(content.method.as_bytes())
         .map_err(|_| HttpExecutionError::InvalidInput("method.invalid"))?;
     let mut url = resolve_url(content)?;
-    let headers = resolve_headers(&content.headers)?;
+    let mut headers = resolve_headers(&content.headers)?;
+    if !headers.contains_key(ACCEPT_ENCODING) {
+        headers.insert(
+            ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, br, deflate, zstd"),
+        );
+    }
 
     emit(
         &coordinator,
@@ -98,6 +113,8 @@ async fn execute_http(
             method: method.as_str().to_owned(),
             url: url.to_string(),
             tls_verification: content.tls.verify,
+            proxy: proxy_metadata(content, &url),
+            timeouts: timeout_metadata(&content.transport.timeouts),
         },
     );
 
@@ -141,7 +158,15 @@ async fn execute_http(
             result = builder.send() => match result {
                 Ok(response) => response,
                 Err(_) if cancellation.is_cancelled() => return Err(HttpExecutionError::Cancelled),
-                Err(error) if error.is_request() || error.is_connect() || error.is_timeout() => {
+                Err(error) if error.is_timeout() => {
+                    let timeout = if error.is_connect() {
+                        TimeoutKind::Connect
+                    } else {
+                        TimeoutKind::Overall
+                    };
+                    return Err(HttpExecutionError::Timeout(timeout));
+                }
+                Err(error) if error.is_request() || error.is_connect() => {
                     return Err(HttpExecutionError::Transport);
                 }
                 Err(_) => return Err(HttpExecutionError::Response),
@@ -180,19 +205,26 @@ async fn execute_http(
     };
 
     let status = response.status().as_u16();
-    let total_bytes = response.content_length();
+    let wire_bytes = response_wire_bytes(response.headers());
+    let content_encoding = response_content_encoding(response.headers());
+    let protocol = http_version(response.version()).to_owned();
+    let remote_addr = response.remote_addr().map(|address| address.to_string());
     let headers = response_headers(response.headers());
     emit(
         &coordinator,
         &sink,
         execution_id,
-        ExecutionEventKind::ResponseHeaders { status, headers },
+        ExecutionEventKind::ResponseHeaders {
+            status,
+            headers,
+            protocol,
+            remote_addr,
+        },
     );
 
     let mut stream = response.bytes_stream();
-    let mut preview = Vec::new();
+    let mut raw_body = Vec::new();
     let mut received_bytes = 0_u64;
-    let mut body_truncated = false;
 
     loop {
         let chunk = tokio::select! {
@@ -203,22 +235,17 @@ async fn execute_http(
         let Some(chunk) = chunk else {
             break;
         };
-        let chunk = chunk.map_err(|_| {
+        let chunk = chunk.map_err(|error| {
             if cancellation.is_cancelled() {
                 HttpExecutionError::Cancelled
+            } else if error.is_timeout() {
+                HttpExecutionError::Timeout(TimeoutKind::Idle)
             } else {
                 HttpExecutionError::Response
             }
         })?;
         received_bytes += chunk.len() as u64;
-        if preview.len() < MAX_RESPONSE_PREVIEW_BYTES {
-            let remaining = MAX_RESPONSE_PREVIEW_BYTES - preview.len();
-            let copied = chunk.len().min(remaining);
-            preview.extend_from_slice(&chunk[..copied]);
-            body_truncated = copied < chunk.len();
-        } else {
-            body_truncated = true;
-        }
+        raw_body.extend_from_slice(&chunk);
 
         emit(
             &coordinator,
@@ -226,15 +253,23 @@ async fn execute_http(
             execution_id,
             ExecutionEventKind::DownloadProgress {
                 received_bytes,
-                total_bytes,
+                total_bytes: wire_bytes,
             },
         );
     }
 
+    let decoded_body = decode_response_body(&raw_body, content_encoding.as_deref())?;
+    let decoded_bytes = decoded_body.len() as u64;
+    let body_truncated = decoded_body.len() > MAX_RESPONSE_PREVIEW_BYTES;
+    let preview_len = decoded_body.len().min(MAX_RESPONSE_PREVIEW_BYTES);
+    let preview = &decoded_body[..preview_len];
+
     Ok(CompletedHttpExecution {
         status,
-        body_preview: String::from_utf8_lossy(&preview).into_owned(),
+        body_preview: String::from_utf8_lossy(preview).into_owned(),
         body_truncated,
+        decoded_bytes,
+        wire_bytes: wire_bytes.or(Some(received_bytes)),
     })
 }
 
@@ -284,6 +319,196 @@ fn response_headers(headers: &HeaderMap) -> Vec<ExecutionHeader> {
             value: value.to_str().unwrap_or("<binary>").to_owned(),
         })
         .collect()
+}
+
+fn response_wire_bytes(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+fn response_content_encoding(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+}
+
+fn decode_response_body(
+    body: &[u8],
+    content_encoding: Option<&str>,
+) -> Result<Vec<u8>, HttpExecutionError> {
+    match content_encoding {
+        Some("gzip") => {
+            let mut decoder = flate2::read::GzDecoder::new(body);
+            read_decoded_body(&mut decoder)
+        }
+        Some("deflate") => {
+            let mut decoder = flate2::read::ZlibDecoder::new(body);
+            read_decoded_body(&mut decoder)
+        }
+        Some("br") => {
+            let mut decoder = brotli::Decompressor::new(body, 4096);
+            read_decoded_body(&mut decoder)
+        }
+        Some("zstd") => zstd::stream::decode_all(body).map_err(|_| HttpExecutionError::Response),
+        _ => Ok(body.to_vec()),
+    }
+}
+
+fn read_decoded_body(reader: &mut impl Read) -> Result<Vec<u8>, HttpExecutionError> {
+    let mut decoded = Vec::new();
+    reader
+        .read_to_end(&mut decoded)
+        .map_err(|_| HttpExecutionError::Response)?;
+    Ok(decoded)
+}
+
+fn http_version(version: Version) -> &'static str {
+    match version {
+        Version::HTTP_09 => "HTTP/0.9",
+        Version::HTTP_10 => "HTTP/1.0",
+        Version::HTTP_11 => "HTTP/1.1",
+        Version::HTTP_2 => "HTTP/2",
+        Version::HTTP_3 => "HTTP/3",
+        _ => "UNKNOWN",
+    }
+}
+
+fn timeout_metadata(timeouts: &TimeoutPolicy) -> ExecutionTimeoutMetadata {
+    ExecutionTimeoutMetadata {
+        connect_ms: optional_timeout_ms(timeouts.connect_ms),
+        overall_ms: optional_timeout_ms(timeouts.overall_ms),
+        idle_ms: optional_timeout_ms(timeouts.idle_ms),
+    }
+}
+
+fn optional_timeout_ms(timeout_ms: u64) -> Option<u64> {
+    if timeout_ms == 0 {
+        None
+    } else {
+        Some(timeout_ms)
+    }
+}
+
+fn duration_from_ms(timeout_ms: u64) -> Option<Duration> {
+    optional_timeout_ms(timeout_ms).map(Duration::from_millis)
+}
+
+fn proxy_metadata(content: &RequestContent, url: &Url) -> ExecutionProxyMetadata {
+    let proxy = &content.transport.proxy;
+    match proxy.source {
+        ProxySource::Disabled => ExecutionProxyMetadata {
+            source: "disabled".to_owned(),
+            selected_proxy: None,
+            bypass_reason: Some("proxy.disabled".to_owned()),
+        },
+        ProxySource::Custom => {
+            if no_proxy_matches(url, &proxy.no_proxy) {
+                return ExecutionProxyMetadata {
+                    source: "custom".to_owned(),
+                    selected_proxy: None,
+                    bypass_reason: Some("no_proxy.custom".to_owned()),
+                };
+            }
+            ExecutionProxyMetadata {
+                source: "custom".to_owned(),
+                selected_proxy: proxy
+                    .url
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(redact_proxy_url),
+                bypass_reason: None,
+            }
+        }
+        ProxySource::ProcessEnvironment => {
+            let no_proxy = env_no_proxy_entries();
+            if no_proxy_matches(url, &no_proxy) {
+                return ExecutionProxyMetadata {
+                    source: "processEnvironment".to_owned(),
+                    selected_proxy: None,
+                    bypass_reason: Some("no_proxy.environment".to_owned()),
+                };
+            }
+            ExecutionProxyMetadata {
+                source: "processEnvironment".to_owned(),
+                selected_proxy: env_proxy_for_url(url).map(|value| redact_proxy_url(&value)),
+                bypass_reason: None,
+            }
+        }
+    }
+}
+
+fn no_proxy_from_entries(entries: &[String]) -> Option<NoProxy> {
+    let joined = entries
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .collect::<Vec<_>>()
+        .join(",");
+    if joined.is_empty() {
+        None
+    } else {
+        NoProxy::from_string(&joined)
+    }
+}
+
+fn no_proxy_matches(url: &Url, entries: &[String]) -> bool {
+    let Some(host) = url.host_str().map(|host| host.to_ascii_lowercase()) else {
+        return false;
+    };
+    entries
+        .iter()
+        .flat_map(|entry| entry.split(','))
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .any(|entry| no_proxy_entry_matches(&host, entry))
+}
+
+fn no_proxy_entry_matches(host: &str, entry: &str) -> bool {
+    let entry = entry.trim().trim_start_matches('.').to_ascii_lowercase();
+    entry == "*" || host == entry || host.ends_with(&format!(".{entry}"))
+}
+
+fn env_no_proxy_entries() -> Vec<String> {
+    env::var("NO_PROXY")
+        .or_else(|_| env::var("no_proxy"))
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn env_proxy_for_url(url: &Url) -> Option<String> {
+    let scheme = url.scheme();
+    let candidates = match scheme {
+        "https" => ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"],
+        _ => ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"],
+    };
+    candidates.into_iter().find_map(|name| env::var(name).ok())
+}
+
+fn redact_proxy_url(value: &str) -> String {
+    let Ok(url) = Url::parse(value) else {
+        return "<invalid>".to_owned();
+    };
+    let Some(host) = url.host_str() else {
+        return "<invalid>".to_owned();
+    };
+    let port = url
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    format!("{}://{}{}", url.scheme(), host, port)
 }
 
 enum BuiltRequestBody {
@@ -351,8 +576,11 @@ fn build_client(
         .no_gzip()
         .no_brotli()
         .no_zstd()
+        .no_deflate()
         .redirect(reqwest::redirect::Policy::none())
         .danger_accept_invalid_certs(!content.tls.verify);
+    builder = apply_timeouts(builder, &content.transport.timeouts);
+    builder = apply_proxy(builder, content)?;
 
     if let Some(reference) = content.tls.custom_ca_reference.as_deref() {
         if !reference.trim().is_empty() {
@@ -387,6 +615,57 @@ fn build_client(
     }
 
     builder.build().map_err(|_| HttpExecutionError::Transport)
+}
+
+fn apply_timeouts(
+    mut builder: reqwest::ClientBuilder,
+    timeouts: &TimeoutPolicy,
+) -> reqwest::ClientBuilder {
+    if let Some(timeout) = duration_from_ms(timeouts.connect_ms) {
+        builder = builder.connect_timeout(timeout);
+    }
+    if let Some(timeout) = duration_from_ms(timeouts.overall_ms) {
+        builder = builder.timeout(timeout);
+    }
+    if let Some(timeout) = duration_from_ms(timeouts.idle_ms) {
+        builder = builder.read_timeout(timeout);
+    }
+    builder
+}
+
+fn apply_proxy(
+    mut builder: reqwest::ClientBuilder,
+    content: &RequestContent,
+) -> Result<reqwest::ClientBuilder, HttpExecutionError> {
+    let proxy = &content.transport.proxy;
+    match proxy.source {
+        ProxySource::Disabled => Ok(builder.no_proxy()),
+        ProxySource::ProcessEnvironment => Ok(builder),
+        ProxySource::Custom => {
+            let Some(proxy_url) = proxy
+                .url
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            else {
+                return Ok(builder.no_proxy());
+            };
+            let parsed_proxy_url = Url::parse(proxy_url)
+                .map_err(|_| HttpExecutionError::InvalidInput("proxy.url.invalid"))?;
+            let mut reqwest_proxy = Proxy::all(proxy_url)
+                .map_err(|_| HttpExecutionError::InvalidInput("proxy.url.invalid"))?;
+            if !parsed_proxy_url.username().is_empty() {
+                reqwest_proxy = reqwest_proxy.basic_auth(
+                    parsed_proxy_url.username(),
+                    parsed_proxy_url.password().unwrap_or_default(),
+                );
+            }
+            if let Some(no_proxy) = no_proxy_from_entries(&proxy.no_proxy) {
+                reqwest_proxy = reqwest_proxy.no_proxy(Some(no_proxy));
+            }
+            builder = builder.no_proxy().proxy(reqwest_proxy);
+            Ok(builder)
+        }
+    }
 }
 
 fn resolve_reference_path(
@@ -674,6 +953,8 @@ struct CompletedHttpExecution {
     status: u16,
     body_preview: String,
     body_truncated: bool,
+    decoded_bytes: u64,
+    wire_bytes: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -683,8 +964,16 @@ enum HttpExecutionError {
     BodyFileMissing,
     Certificate,
     Transport,
+    Timeout(TimeoutKind),
     Response,
     Cancelled,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TimeoutKind {
+    Connect,
+    Overall,
+    Idle,
 }
 
 impl HttpExecutionError {
@@ -695,6 +984,9 @@ impl HttpExecutionError {
             Self::BodyFileMissing => "body.file.missing".to_owned(),
             Self::Certificate => "certificate.invalid".to_owned(),
             Self::Transport => "transport.failed".to_owned(),
+            Self::Timeout(TimeoutKind::Connect) => "timeout.connect".to_owned(),
+            Self::Timeout(TimeoutKind::Overall) => "timeout.overall".to_owned(),
+            Self::Timeout(TimeoutKind::Idle) => "timeout.idle".to_owned(),
             Self::Response => "response.failed".to_owned(),
             Self::Cancelled => "cancelled".to_owned(),
         }
@@ -704,6 +996,7 @@ impl HttpExecutionError {
 #[cfg(test)]
 mod tests {
     use std::{
+        io::Write,
         sync::{Arc, Mutex},
         time::Duration,
     };
@@ -730,8 +1023,8 @@ mod tests {
     use crate::{
         application::execution::{ExecutionCoordinator, ExecutionEventKind, ExecutionRequest},
         domain::request::{
-            BodyFilePath, BodyFileReference, MultipartPart, OrderedField, RequestBody,
-            RequestContent, RequestDraftId, TlsPolicy,
+            BodyFilePath, BodyFileReference, MultipartPart, OrderedField, ProxyPolicy, ProxySource,
+            RequestBody, RequestContent, RequestDraftId, TimeoutPolicy, TlsPolicy, TransportPolicy,
         },
     };
 
@@ -895,6 +1188,174 @@ mod tests {
         .await;
 
         assert_terminal_completed(&events);
+    }
+
+    #[tokio::test]
+    async fn custom_authenticated_proxy_is_used_without_exposing_credentials() {
+        let (proxy, captured) = start_authenticated_proxy_fixture().await;
+        let expected_proxy = format!("http://{}", proxy.address);
+        let events = run_fixture_request(RequestContent {
+            method: "GET".to_owned(),
+            url: "http://example.test/proxied".to_owned(),
+            transport: TransportPolicy {
+                proxy: ProxyPolicy {
+                    source: ProxySource::Custom,
+                    url: Some(format!("http://user:fixture-pass@{}", proxy.address)),
+                    no_proxy: Vec::new(),
+                },
+                ..TransportPolicy::default()
+            },
+            ..RequestContent::blank()
+        })
+        .await;
+
+        let request = captured.await.expect("proxy request");
+        assert!(request.starts_with("GET http://example.test/proxied HTTP/1.1"));
+        assert!(
+            request.contains("\r\nproxy-authorization: Basic dXNlcjpmaXh0dXJlLXBhc3M=\r\n"),
+            "unexpected proxy request:\n{request}"
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            ExecutionEventKind::Started { proxy, .. }
+                if proxy.source == "custom"
+                    && proxy.selected_proxy.as_deref() == Some(expected_proxy.as_str())
+                    && proxy.bypass_reason.is_none()
+        )));
+        assert!(!format!("{events:?}").contains("fixture-pass"));
+        assert_terminal_completed(&events);
+    }
+
+    #[tokio::test]
+    async fn custom_no_proxy_bypasses_proxy_for_matching_host() {
+        let (server, captured) = start_fixture(FixtureMode::Echo).await;
+        let events = run_fixture_request(RequestContent {
+            method: "GET".to_owned(),
+            url: server.url("/direct"),
+            transport: TransportPolicy {
+                proxy: ProxyPolicy {
+                    source: ProxySource::Custom,
+                    url: Some("http://127.0.0.1:9".to_owned()),
+                    no_proxy: vec!["127.0.0.1".to_owned()],
+                },
+                ..TransportPolicy::default()
+            },
+            ..RequestContent::blank()
+        })
+        .await;
+
+        let request = captured.await.expect("direct request");
+        assert!(request.starts_with("GET /direct HTTP/1.1"));
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            ExecutionEventKind::Started { proxy, .. }
+                if proxy.source == "custom"
+                    && proxy.selected_proxy.is_none()
+                    && proxy.bypass_reason.as_deref() == Some("no_proxy.custom")
+        )));
+        assert_terminal_completed(&events);
+    }
+
+    #[tokio::test]
+    async fn deterministic_overall_timeout_is_classified() {
+        let (server, _captured) = start_fixture(FixtureMode::SlowHeaders).await;
+        let events = run_fixture_request(RequestContent {
+            method: "GET".to_owned(),
+            url: server.url("/overall-timeout"),
+            transport: TransportPolicy {
+                timeouts: TimeoutPolicy {
+                    connect_ms: 0,
+                    overall_ms: 50,
+                    idle_ms: 0,
+                },
+                ..TransportPolicy::default()
+            },
+            ..RequestContent::blank()
+        })
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            ExecutionEventKind::Failed { message } if message == "timeout.overall"
+        )));
+    }
+
+    #[tokio::test]
+    async fn deterministic_idle_timeout_is_classified() {
+        let (server, _captured) = start_fixture(FixtureMode::SlowDownload).await;
+        let events = run_fixture_request(RequestContent {
+            method: "GET".to_owned(),
+            url: server.url("/idle-timeout"),
+            transport: TransportPolicy {
+                timeouts: TimeoutPolicy {
+                    connect_ms: 0,
+                    overall_ms: 0,
+                    idle_ms: 50,
+                },
+                ..TransportPolicy::default()
+            },
+            ..RequestContent::blank()
+        })
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            ExecutionEventKind::Failed { message } if message == "timeout.idle"
+        )));
+    }
+
+    #[tokio::test]
+    async fn protocol_metadata_is_reported_for_http11_fixture() {
+        let (server, _captured) = start_fixture(FixtureMode::Echo).await;
+        let events = run_fixture_request(RequestContent {
+            method: "GET".to_owned(),
+            url: server.url("/protocol"),
+            ..RequestContent::blank()
+        })
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            ExecutionEventKind::ResponseHeaders { protocol, remote_addr, .. }
+                if protocol == "HTTP/1.1" && remote_addr.is_some()
+        )));
+        assert_terminal_completed(&events);
+    }
+
+    #[tokio::test]
+    async fn compressed_responses_decode_and_report_wire_and_decoded_sizes() {
+        for encoding in ["gzip", "br", "deflate", "zstd"] {
+            let decoded = format!("decoded body for {encoding}");
+            let encoded = encode_fixture_body(encoding, decoded.as_bytes());
+            let encoded_len = encoded.len() as u64;
+            let decoded_len = decoded.len() as u64;
+            let (server, _captured) = start_fixture(FixtureMode::Compressed {
+                encoding,
+                body: encoded,
+            })
+            .await;
+            let events = run_fixture_request(RequestContent {
+                method: "GET".to_owned(),
+                url: server.url("/compressed"),
+                ..RequestContent::blank()
+            })
+            .await;
+
+            assert!(
+                events.iter().any(|event| matches!(
+                    &event.kind,
+                    ExecutionEventKind::Completed {
+                        body_preview,
+                        decoded_bytes,
+                        wire_bytes,
+                        ..
+                    } if body_preview == &decoded
+                        && *decoded_bytes == decoded_len
+                        && *wire_bytes == Some(encoded_len)
+                )),
+                "missing decoded completion for {encoding}: {events:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1486,6 +1947,10 @@ mod tests {
         SlowHeaders,
         SlowDownload,
         SlowUploadRead,
+        Compressed {
+            encoding: &'static str,
+            body: Vec<u8>,
+        },
     }
 
     async fn start_fixture(mode: FixtureMode) -> (FixtureServer, oneshot::Receiver<String>) {
@@ -1531,11 +1996,79 @@ mod tests {
                         .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
                         .await;
                 }
+                FixtureMode::Compressed { encoding, body } => {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Encoding: {encoding}\r\nContent-Length: {}\r\n\r\n",
+                        body.len()
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("write compressed headers");
+                    stream
+                        .write_all(&body)
+                        .await
+                        .expect("write compressed body");
+                }
             }
         });
 
         ready_rx.recv().await.expect("fixture ready");
         (FixtureServer { address }, captured_rx)
+    }
+
+    struct ProxyFixture {
+        address: String,
+    }
+
+    async fn start_authenticated_proxy_fixture() -> (ProxyFixture, oneshot::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind proxy fixture");
+        let address = listener.local_addr().expect("proxy address").to_string();
+        let (captured_tx, captured_rx) = oneshot::channel();
+        let (ready_tx, mut ready_rx) = mpsc::channel(1);
+
+        tokio::spawn(async move {
+            ready_tx.send(()).await.expect("signal proxy readiness");
+            let (mut stream, _) = listener.accept().await.expect("accept proxy request");
+            let request = read_http_request(&mut stream).await;
+            let _ = captured_tx.send(request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nproxied")
+                .await
+                .expect("write proxy response");
+        });
+
+        ready_rx.recv().await.expect("proxy ready");
+        (ProxyFixture { address }, captured_rx)
+    }
+
+    fn encode_fixture_body(encoding: &str, body: &[u8]) -> Vec<u8> {
+        match encoding {
+            "gzip" => {
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(body).expect("gzip body");
+                encoder.finish().expect("finish gzip")
+            }
+            "deflate" => {
+                let mut encoder =
+                    flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(body).expect("deflate body");
+                encoder.finish().expect("finish deflate")
+            }
+            "br" => {
+                let mut encoded = Vec::new();
+                {
+                    let mut encoder = brotli::CompressorWriter::new(&mut encoded, 4096, 5, 22);
+                    encoder.write_all(body).expect("brotli body");
+                }
+                encoded
+            }
+            "zstd" => zstd::stream::encode_all(body, 0).expect("zstd body"),
+            _ => body.to_vec(),
+        }
     }
 
     async fn start_redirect_fixture() -> (FixtureServer, oneshot::Receiver<Vec<String>>) {

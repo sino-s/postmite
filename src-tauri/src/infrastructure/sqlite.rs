@@ -22,7 +22,7 @@ use crate::{
             ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse, MultipartPart,
             OrderedField, RedirectPolicy, RequestAuth, RequestBody, RequestContent, RequestDraft,
             RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId, TlsPolicy,
-            Variable, VariableValue, WorkspaceCookie,
+            TransportPolicy, Variable, VariableValue, WorkspaceCookie,
         },
         workspace::{Workspace, WorkspaceId, WorkspaceName, DEFAULT_WORKSPACE_NAME},
     },
@@ -345,6 +345,15 @@ ALTER TABLE request_drafts ADD COLUMN tls_policy TEXT NOT NULL DEFAULT '{"verify
 ALTER TABLE execution_records ADD COLUMN auth TEXT NOT NULL DEFAULT '{"type":"NONE"}';
 ALTER TABLE execution_records ADD COLUMN redirect_policy TEXT NOT NULL DEFAULT '{"enabled":true,"maxRedirects":10}';
 ALTER TABLE execution_records ADD COLUMN tls_policy TEXT NOT NULL DEFAULT '{"verify":true,"customCaReference":null,"clientCertificateReference":null,"clientKeyReference":null}';
+"#,
+    },
+    Migration {
+        version: 10,
+        name: "add_request_transport_policy",
+        sql: r#"
+ALTER TABLE saved_requests ADD COLUMN transport_policy TEXT NOT NULL DEFAULT '{"proxy":{"source":"PROCESS_ENVIRONMENT","url":null,"noProxy":[]},"timeouts":{"connectMs":10000,"overallMs":300000,"idleMs":60000}}';
+ALTER TABLE request_drafts ADD COLUMN transport_policy TEXT NOT NULL DEFAULT '{"proxy":{"source":"PROCESS_ENVIRONMENT","url":null,"noProxy":[]},"timeouts":{"connectMs":10000,"overallMs":300000,"idleMs":60000}}';
+ALTER TABLE execution_records ADD COLUMN transport_policy TEXT NOT NULL DEFAULT '{"proxy":{"source":"PROCESS_ENVIRONMENT","url":null,"noProxy":[]},"timeouts":{"connectMs":10000,"overallMs":300000,"idleMs":60000}}';
 "#,
     },
 ];
@@ -1605,8 +1614,8 @@ fn insert_saved_request_at(
     tx.execute(
         "INSERT INTO saved_requests
             (id, workspace_id, collection_id, name, method, url, body, auth, redirect_policy,
-             tls_policy, position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             tls_policy, transport_policy, position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             saved_request_id.to_string(),
             workspace_id.to_string(),
@@ -1618,6 +1627,7 @@ fn insert_saved_request_at(
             request_auth_to_sql(&content.auth)?,
             redirect_policy_to_sql(&content.redirect)?,
             tls_policy_to_sql(&content.tls)?,
+            transport_policy_to_sql(&content.transport)?,
             i64::from(position),
         ],
     )
@@ -1647,9 +1657,9 @@ fn replace_saved_request_content(
     tx.execute(
         "UPDATE saved_requests
          SET name = ?1, method = ?2, url = ?3, body = ?4, auth = ?5,
-             redirect_policy = ?6, tls_policy = ?7,
+             redirect_policy = ?6, tls_policy = ?7, transport_policy = ?8,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?8",
+         WHERE id = ?9",
         params![
             content.name.as_str(),
             content.method.as_str(),
@@ -1658,6 +1668,7 @@ fn replace_saved_request_content(
             request_auth_to_sql(&content.auth)?,
             redirect_policy_to_sql(&content.redirect)?,
             tls_policy_to_sql(&content.tls)?,
+            transport_policy_to_sql(&content.transport)?,
             saved_request_id.to_string()
         ],
     )
@@ -1690,8 +1701,8 @@ fn insert_draft(
     tx.execute(
         "INSERT INTO request_drafts
             (id, workspace_id, saved_request_id, name, method, url, body, auth,
-             redirect_policy, tls_policy, is_dirty)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             redirect_policy, tls_policy, transport_policy, is_dirty)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             draft_id.to_string(),
             workspace_id.to_string(),
@@ -1703,6 +1714,7 @@ fn insert_draft(
             request_auth_to_sql(&content.auth)?,
             redirect_policy_to_sql(&content.redirect)?,
             tls_policy_to_sql(&content.tls)?,
+            transport_policy_to_sql(&content.transport)?,
             bool_to_i64(is_dirty),
         ],
     )
@@ -1734,9 +1746,9 @@ fn replace_draft_content(
         .execute(
             "UPDATE request_drafts
              SET name = ?1, method = ?2, url = ?3, body = ?4, auth = ?5,
-                 redirect_policy = ?6, tls_policy = ?7, is_dirty = ?8,
+                 redirect_policy = ?6, tls_policy = ?7, transport_policy = ?8, is_dirty = ?9,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE id = ?9",
+             WHERE id = ?10",
             params![
                 content.name.as_str(),
                 content.method.as_str(),
@@ -1745,6 +1757,7 @@ fn replace_draft_content(
                 request_auth_to_sql(&content.auth)?,
                 redirect_policy_to_sql(&content.redirect)?,
                 tls_policy_to_sql(&content.tls)?,
+                transport_policy_to_sql(&content.transport)?,
                 bool_to_i64(is_dirty),
                 draft_id.to_string()
             ],
@@ -2348,9 +2361,9 @@ fn insert_execution_record(
     tx.execute(
         "INSERT INTO execution_records
             (id, workspace_id, created_at_epoch_seconds, pinned, name, method, url, body,
-             auth, redirect_policy, tls_policy, response_status, response_body_preview, response_body_truncated,
+             auth, redirect_policy, tls_policy, transport_policy, response_status, response_body_preview, response_body_truncated,
              response_error, response_duration_ms)
-         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             record_id.to_string(),
             draft.workspace_id.to_string(),
@@ -2362,6 +2375,7 @@ fn insert_execution_record(
             request_auth_to_sql(&draft.content.auth)?,
             redirect_policy_to_sql(&draft.content.redirect)?,
             tls_policy_to_sql(&draft.content.tls)?,
+            transport_policy_to_sql(&draft.content.transport)?,
             draft.response.status.map(i64::from),
             draft.response.body_preview.as_str(),
             bool_to_i64(draft.response.body_truncated),
@@ -2487,7 +2501,7 @@ fn load_execution_records(
     let mut statement = connection
         .prepare(
             "SELECT id, workspace_id, created_at_epoch_seconds, pinned, name, method, url, body,
-                    auth, redirect_policy, tls_policy, response_status,
+                    auth, redirect_policy, tls_policy, transport_policy, response_status,
                     response_body_preview, response_body_truncated,
                     response_error, response_duration_ms
              FROM execution_records
@@ -2788,7 +2802,7 @@ fn load_saved_requests(
     let mut statement = connection
         .prepare(
             "SELECT id, workspace_id, collection_id, name, method, url, body,
-                    auth, redirect_policy, tls_policy, position
+                    auth, redirect_policy, tls_policy, transport_policy, position
              FROM saved_requests
              WHERE workspace_id = ?1
              ORDER BY collection_id, position, created_at, id",
@@ -2831,6 +2845,13 @@ fn load_saved_requests(
                         Box::new(error),
                     )
                 })?,
+                transport: transport_policy_from_sql(row.get(10)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        10,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
                 query: Vec::new(),
                 headers: Vec::new(),
             };
@@ -2838,9 +2859,9 @@ fn load_saved_requests(
                 id,
                 workspace_id: row_workspace_id,
                 collection_id,
-                position: u32::try_from(row.get::<_, i64>(10)?).map_err(|error| {
+                position: u32::try_from(row.get::<_, i64>(11)?).map_err(|error| {
                     rusqlite::Error::FromSqlConversionFailure(
-                        10,
+                        11,
                         rusqlite::types::Type::Integer,
                         Box::new(error),
                     )
@@ -2900,7 +2921,7 @@ fn load_open_drafts(
     let mut statement = connection
         .prepare(
             "SELECT DISTINCT d.id, d.workspace_id, d.saved_request_id, d.name, d.method, d.url,
-                    d.body, d.auth, d.redirect_policy, d.tls_policy, d.is_dirty
+                    d.body, d.auth, d.redirect_policy, d.tls_policy, d.transport_policy, d.is_dirty
              FROM request_drafts d
              INNER JOIN request_tabs t ON t.draft_id = d.id
              WHERE d.workspace_id = ?1
@@ -2940,7 +2961,7 @@ fn load_draft(
     let mut draft = connection
         .query_row(
             "SELECT id, workspace_id, saved_request_id, name, method, url, body,
-                    auth, redirect_policy, tls_policy, is_dirty
+                    auth, redirect_policy, tls_policy, transport_policy, is_dirty
              FROM request_drafts
              WHERE workspace_id = ?1 AND id = ?2",
             params![workspace_id.to_string(), draft_id.to_string()],
@@ -3083,6 +3104,18 @@ fn tls_policy_from_sql(value: String) -> Result<TlsPolicy, serde_json::Error> {
     }
 }
 
+fn transport_policy_to_sql(policy: &TransportPolicy) -> Result<String, RequestError> {
+    serde_json::to_string(policy).map_err(RequestError::persistence)
+}
+
+fn transport_policy_from_sql(value: String) -> Result<TransportPolicy, serde_json::Error> {
+    if value.trim().is_empty() {
+        Ok(TransportPolicy::default())
+    } else {
+        serde_json::from_str(&value)
+    }
+}
+
 fn replace_body_file_reference(
     body: &mut RequestBody,
     from_path: &str,
@@ -3178,10 +3211,17 @@ fn draft_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestDraft> {
                     Box::new(error),
                 )
             })?,
+            transport: transport_policy_from_sql(row.get(10)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    10,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
             query: Vec::new(),
             headers: Vec::new(),
         },
-        is_dirty: row.get::<_, i64>(10)? != 0,
+        is_dirty: row.get::<_, i64>(11)? != 0,
     })
 }
 
@@ -3206,8 +3246,8 @@ fn workspace_cookie_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Worksp
 }
 
 fn execution_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRecord> {
-    let status: Option<i64> = row.get(11)?;
-    let duration_ms: Option<i64> = row.get(15)?;
+    let status: Option<i64> = row.get(12)?;
+    let duration_ms: Option<i64> = row.get(16)?;
     Ok(ExecutionRecord {
         id: execution_record_id_from_row(row)?,
         workspace_id: workspace_id_from_row_index(row, 1)?,
@@ -3245,6 +3285,13 @@ fn execution_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Execut
                     Box::new(error),
                 )
             })?,
+            transport: transport_policy_from_sql(row.get(11)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    11,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
             query: Vec::new(),
             headers: Vec::new(),
         },
@@ -3253,7 +3300,7 @@ fn execution_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Execut
                 .map(|value| {
                     u16::try_from(value).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            11,
+                            12,
                             rusqlite::types::Type::Integer,
                             Box::new(error),
                         )
@@ -3261,14 +3308,14 @@ fn execution_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Execut
                 })
                 .transpose()?,
             headers: Vec::new(),
-            body_preview: row.get(12)?,
-            body_truncated: row.get::<_, i64>(13)? != 0,
-            error: row.get(14)?,
+            body_preview: row.get(13)?,
+            body_truncated: row.get::<_, i64>(14)? != 0,
+            error: row.get(15)?,
             duration_ms: duration_ms
                 .map(|value| {
                     u64::try_from(value).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            15,
+                            16,
                             rusqlite::types::Type::Integer,
                             Box::new(error),
                         )
