@@ -1,13 +1,15 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt,
     future::Future,
     str::FromStr,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -15,6 +17,7 @@ use crate::domain::request::{MultipartPart, RequestBody, RequestContent, Request
 
 pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_RESPONSE_PREVIEW_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_EXECUTION_CONCURRENCY: usize = 8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct ExecutionId(Uuid);
@@ -83,6 +86,7 @@ pub enum ExecutionEventKind {
         tls_verification: bool,
         proxy: ExecutionProxyMetadata,
         timeouts: ExecutionTimeoutMetadata,
+        queued_ms: u64,
     },
     Redirected {
         from: String,
@@ -109,6 +113,7 @@ pub enum ExecutionEventKind {
         body_truncated: bool,
         decoded_bytes: u64,
         wire_bytes: Option<u64>,
+        timing: ExecutionTimingMetadata,
     },
     Failed {
         message: String,
@@ -147,16 +152,36 @@ pub struct ExecutionTimeoutMetadata {
     pub idle_ms: Option<u64>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionTimingMetadata {
+    pub queued_ms: u64,
+    pub dns_ms: Option<u64>,
+    pub connect_ms: Option<u64>,
+    pub tls_ms: Option<u64>,
+    pub first_byte_ms: Option<u64>,
+    pub download_ms: Option<u64>,
+    pub total_ms: u64,
+}
+
 pub type ExecutionEventSink = Arc<dyn Fn(ExecutionEvent) + Send + Sync + 'static>;
 
-#[derive(Default)]
 pub struct ExecutionCoordinator {
     state: Mutex<ExecutionState>,
+    permits: Arc<Semaphore>,
 }
 
 impl ExecutionCoordinator {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_concurrency(DEFAULT_EXECUTION_CONCURRENCY)
+    }
+
+    pub fn with_concurrency(concurrency: usize) -> Self {
+        let concurrency = concurrency.max(1);
+        Self {
+            state: Mutex::new(ExecutionState::default()),
+            permits: Arc::new(Semaphore::new(concurrency)),
+        }
     }
 
     pub fn start<F, Fut>(
@@ -181,25 +206,73 @@ impl ExecutionCoordinator {
 
         let execution_id = ExecutionId::new();
         let cancellation = CancellationToken::new();
-        {
+        let replaced = {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| ExecutionError::StateUnavailable)?;
-            state.latest_by_draft.insert(request.draft_id, execution_id);
-            state.active.insert(
+            let replaced = state.latest_by_draft.insert(request.draft_id, execution_id);
+            state.queue.push_back(execution_id);
+            state.executions.insert(
                 execution_id,
-                ActiveExecution {
+                ExecutionEntry {
                     draft_id: request.draft_id,
                     cancellation: cancellation.clone(),
+                    queued_at: Instant::now(),
                     last_sequence: 0,
                     terminal_emitted: false,
+                    status: ExecutionStatus::Queued,
                 },
             );
+            replaced.and_then(|id| {
+                state
+                    .executions
+                    .get(&id)
+                    .map(|entry| entry.cancellation.clone())
+            })
+        };
+
+        if let Some(replaced) = replaced {
+            replaced.cancel();
         }
 
         let coordinator = Arc::clone(self);
-        tokio::spawn(run(execution_id, request, cancellation, coordinator, sink));
+        let permits = Arc::clone(&self.permits);
+        tokio::spawn(async move {
+            let permit = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    coordinator.emit_cancelled_if_current(execution_id, &sink);
+                    return;
+                }
+                permit = permits.acquire_owned() => match permit {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        coordinator.emit_cancelled_if_current(execution_id, &sink);
+                        return;
+                    }
+                },
+            };
+
+            if !coordinator.mark_running(execution_id) {
+                coordinator.emit_cancelled_if_current(execution_id, &sink);
+                return;
+            }
+
+            if cancellation.is_cancelled() {
+                coordinator.emit_cancelled_if_current(execution_id, &sink);
+                return;
+            }
+
+            run(
+                execution_id,
+                request,
+                cancellation,
+                Arc::clone(&coordinator),
+                Arc::clone(&sink),
+            )
+            .await;
+            drop(permit);
+        });
 
         Ok(StartExecutionResult { execution_id })
     }
@@ -214,9 +287,9 @@ impl ExecutionCoordinator {
                 .lock()
                 .map_err(|_| ExecutionError::StateUnavailable)?;
             state
-                .active
+                .executions
                 .get(&execution_id)
-                .map(|active| active.cancellation.clone())
+                .map(|execution| execution.cancellation.clone())
         };
 
         if let Some(cancellation) = cancellation {
@@ -239,24 +312,29 @@ impl ExecutionCoordinator {
         kind: ExecutionEventKind,
     ) -> Option<ExecutionEvent> {
         let mut state = self.state.lock().ok()?;
-        let draft_id = state.active.get(&execution_id)?.draft_id;
+        let draft_id = state.executions.get(&execution_id)?.draft_id;
 
         if state.latest_by_draft.get(&draft_id) != Some(&execution_id) {
+            if kind.is_terminal() {
+                state.executions.remove(&execution_id);
+                state.queue.retain(|id| *id != execution_id);
+            }
             return None;
         }
 
-        let active = state.active.get_mut(&execution_id)?;
-        if active.terminal_emitted {
+        let execution = state.executions.get_mut(&execution_id)?;
+        if execution.terminal_emitted {
             return None;
         }
 
-        active.last_sequence += 1;
-        let sequence = active.last_sequence;
+        execution.last_sequence += 1;
+        let sequence = execution.last_sequence;
         let is_terminal = kind.is_terminal();
 
         if is_terminal {
-            active.terminal_emitted = true;
-            state.active.remove(&execution_id);
+            execution.terminal_emitted = true;
+            state.executions.remove(&execution_id);
+            state.queue.retain(|id| *id != execution_id);
             if state.latest_by_draft.get(&draft_id) == Some(&execution_id) {
                 state.latest_by_draft.remove(&draft_id);
             }
@@ -268,19 +346,93 @@ impl ExecutionCoordinator {
             kind,
         })
     }
+
+    pub fn queued_ms(&self, execution_id: ExecutionId) -> u64 {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .executions
+                    .get(&execution_id)
+                    .map(|entry| entry.queued_at)
+            })
+            .map(|queued_at| queued_at.elapsed().as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    pub fn cancel_all(&self) {
+        let cancellations = self
+            .state
+            .lock()
+            .map(|state| {
+                state
+                    .executions
+                    .values()
+                    .map(|entry| entry.cancellation.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for cancellation in cancellations {
+            cancellation.cancel();
+        }
+    }
+
+    fn mark_running(&self, execution_id: ExecutionId) -> bool {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return false,
+        };
+        state.queue.retain(|id| *id != execution_id);
+        let Some(execution) = state.executions.get_mut(&execution_id) else {
+            return false;
+        };
+        if execution.cancellation.is_cancelled() || execution.terminal_emitted {
+            return false;
+        }
+        execution.status = ExecutionStatus::Running;
+        true
+    }
+
+    fn emit_cancelled_if_current(&self, execution_id: ExecutionId, sink: &ExecutionEventSink) {
+        if let Some(event) = self.record_event(execution_id, ExecutionEventKind::Cancelled) {
+            sink(event);
+        }
+    }
+}
+
+impl Default for ExecutionCoordinator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ExecutionCoordinator {
+    fn drop(&mut self) {
+        self.cancel_all();
+    }
 }
 
 #[derive(Default)]
 struct ExecutionState {
-    active: HashMap<ExecutionId, ActiveExecution>,
+    executions: HashMap<ExecutionId, ExecutionEntry>,
     latest_by_draft: HashMap<RequestDraftId, ExecutionId>,
+    queue: VecDeque<ExecutionId>,
 }
 
-struct ActiveExecution {
+struct ExecutionEntry {
     draft_id: RequestDraftId,
     cancellation: CancellationToken,
+    queued_at: Instant,
     last_sequence: u64,
     terminal_emitted: bool,
+    status: ExecutionStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecutionStatus {
+    Queued,
+    Running,
 }
 
 #[derive(Debug, Error)]
@@ -323,6 +475,8 @@ fn body_text_bytes(body: &RequestBody) -> usize {
 mod tests {
     use super::*;
     use crate::domain::request::RequestContent;
+    use tokio::sync::{mpsc, oneshot};
+    use tokio::time::{sleep, Duration};
 
     #[test]
     fn stale_events_for_an_older_execution_are_rejected() {
@@ -352,6 +506,7 @@ mod tests {
                         overall_ms: Some(300_000),
                         idle_ms: Some(60_000),
                     },
+                    queued_ms: 0,
                 },
             )
             .expect("current event");
@@ -397,6 +552,93 @@ mod tests {
         assert!(matches!(error, ExecutionError::InvalidInput(_)));
     }
 
+    #[tokio::test]
+    async fn ninth_execution_waits_until_a_slot_opens() {
+        let coordinator = Arc::new(ExecutionCoordinator::with_concurrency(8));
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let mut release_txs = Vec::new();
+
+        for index in 0..9 {
+            let (release_tx, release_rx) = oneshot::channel();
+            release_txs.push(release_tx);
+            let started_tx = started_tx.clone();
+            coordinator
+                .start(
+                    request(),
+                    Arc::new(|_| {}),
+                    move |execution_id, _, _, coordinator, sink| async move {
+                        started_tx.send(index).expect("started signal");
+                        let _ = release_rx.await;
+                        if let Some(event) = coordinator.record_event(
+                            execution_id,
+                            ExecutionEventKind::Completed {
+                                status: 200,
+                                body_preview: String::new(),
+                                body_truncated: false,
+                                decoded_bytes: 0,
+                                wire_bytes: Some(0),
+                                timing: ExecutionTimingMetadata::default(),
+                            },
+                        ) {
+                            sink(event);
+                        }
+                    },
+                )
+                .expect("start execution");
+        }
+
+        let mut started = Vec::new();
+        for _ in 0..8 {
+            started.push(started_rx.recv().await.expect("started execution"));
+        }
+        assert_eq!(started, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        sleep(Duration::from_millis(50)).await;
+        assert!(started_rx.try_recv().is_err());
+
+        release_txs.remove(0).send(()).expect("release first");
+        assert_eq!(started_rx.recv().await.expect("ninth starts"), 8);
+    }
+
+    #[tokio::test]
+    async fn queued_execution_can_be_cancelled_before_it_runs() {
+        let coordinator = Arc::new(ExecutionCoordinator::with_concurrency(1));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (release_tx, release_rx) = oneshot::channel();
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+
+        coordinator
+            .start(
+                request(),
+                Arc::new(|_| {}),
+                move |_, _, _, _, _| async move {
+                    started_tx.send("first").expect("first started");
+                    let _ = release_rx.await;
+                },
+            )
+            .expect("start first");
+        assert_eq!(started_rx.recv().await, Some("first"));
+
+        let second = coordinator
+            .start(
+                request(),
+                event_sink(&events),
+                move |_, _, _, _, _| async move {
+                    panic!("cancelled queued execution must not run");
+                },
+            )
+            .expect("start queued");
+
+        let result = coordinator
+            .cancel(second.execution_id)
+            .expect("cancel queued");
+        assert!(result.cancelled);
+        let events = wait_for_terminal(events).await;
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].kind, ExecutionEventKind::Cancelled));
+
+        release_tx.send(()).expect("release first");
+    }
+
     fn insert_active(
         coordinator: &Arc<ExecutionCoordinator>,
         draft_id: RequestDraftId,
@@ -404,15 +646,50 @@ mod tests {
         let execution_id = ExecutionId::new();
         let mut state = coordinator.state.lock().expect("lock coordinator");
         state.latest_by_draft.insert(draft_id, execution_id);
-        state.active.insert(
+        state.executions.insert(
             execution_id,
-            ActiveExecution {
+            ExecutionEntry {
                 draft_id,
                 cancellation: CancellationToken::new(),
+                queued_at: Instant::now(),
                 last_sequence: 0,
                 terminal_emitted: false,
+                status: ExecutionStatus::Running,
             },
         );
         execution_id
+    }
+
+    fn request() -> ExecutionRequest {
+        ExecutionRequest {
+            draft_id: RequestDraftId::new(),
+            workspace_base_directory: None,
+            content: RequestContent {
+                url: "http://127.0.0.1".to_owned(),
+                ..RequestContent::blank()
+            },
+        }
+    }
+
+    fn event_sink(
+        events: &Arc<Mutex<Vec<ExecutionEvent>>>,
+    ) -> Arc<dyn Fn(ExecutionEvent) + Send + Sync + 'static> {
+        let events = Arc::clone(events);
+        Arc::new(move |event| {
+            events.lock().expect("lock events").push(event);
+        })
+    }
+
+    async fn wait_for_terminal(events: Arc<Mutex<Vec<ExecutionEvent>>>) -> Vec<ExecutionEvent> {
+        for _ in 0..100 {
+            {
+                let events = events.lock().expect("lock events");
+                if events.iter().any(|event| event.kind.is_terminal()) {
+                    return events.clone();
+                }
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        panic!("timed out waiting for terminal event");
     }
 }

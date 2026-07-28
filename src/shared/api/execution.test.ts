@@ -163,6 +163,7 @@ describe("request execution API", () => {
           bodyTruncated: false,
           decodedBytes: 11n,
           wireBytes: 31n,
+          timing: timingMetadata(),
         },
       },
       145,
@@ -195,6 +196,7 @@ describe("request execution API", () => {
           tlsVerification: false,
           proxy: defaultProxyMetadata(),
           timeouts: defaultTimeoutMetadata(),
+          queuedMs: 7n,
         },
       },
       110,
@@ -225,7 +227,23 @@ describe("request execution API", () => {
           status: 303,
         },
       ],
+      timing: expect.objectContaining({ queuedMs: 7n }),
     });
+  });
+
+  it("stores completed timing metadata in response state", () => {
+    const queued = createQueuedResponseExecutionState({
+      draftId: "draft-1",
+      executionId: "execution-1",
+      nowMs: 100,
+    });
+    const completed = reduceResponseExecutionStates(
+      { "draft-1": queued },
+      event("execution-1", 1n, "COMPLETED"),
+      200,
+    );
+
+    expect(completed["draft-1"].timing).toEqual(timingMetadata());
   });
 
   it("ignores response events for another execution or stale sequence", () => {
@@ -275,6 +293,7 @@ function event(
         tlsVerification: true,
         proxy: defaultProxyMetadata(),
         timeouts: defaultTimeoutMetadata(),
+        queuedMs: 0n,
       },
     };
   }
@@ -314,6 +333,7 @@ function event(
         bodyTruncated: false,
         decodedBytes: 0n,
         wireBytes: null,
+        timing: timingMetadata(),
       },
     };
   }
@@ -322,6 +342,18 @@ function event(
     sequence,
     kind: { type },
   } as ExecutionEventDto;
+}
+
+function timingMetadata() {
+  return {
+    queuedMs: 0n,
+    dnsMs: null,
+    connectMs: null,
+    tlsMs: null,
+    firstByteMs: 12n,
+    downloadMs: 3n,
+    totalMs: 20n,
+  };
 }
 
 function defaultTransport() {

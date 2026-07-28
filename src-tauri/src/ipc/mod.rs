@@ -19,7 +19,7 @@ use crate::{
     application::execution::{
         CancelExecutionResult, ExecutionError, ExecutionEvent, ExecutionEventKind, ExecutionHeader,
         ExecutionId, ExecutionProxyMetadata, ExecutionRequest, ExecutionTimeoutMetadata,
-        StartExecutionResult,
+        ExecutionTimingMetadata, StartExecutionResult,
     },
     application::request::{
         materialize_request_auth, CloseTabDecision, CollectionLocation, CookieJarSnapshot,
@@ -724,6 +724,7 @@ pub enum ExecutionEventKindDto {
         tls_verification: bool,
         proxy: ExecutionProxyMetadataDto,
         timeouts: ExecutionTimeoutMetadataDto,
+        queued_ms: u64,
     },
     Redirected {
         from: String,
@@ -750,6 +751,7 @@ pub enum ExecutionEventKindDto {
         body_truncated: bool,
         decoded_bytes: u64,
         wire_bytes: Option<u64>,
+        timing: ExecutionTimingMetadataDto,
     },
     Failed {
         message: String,
@@ -778,6 +780,18 @@ pub struct ExecutionTimeoutMetadataDto {
     pub connect_ms: Option<u64>,
     pub overall_ms: Option<u64>,
     pub idle_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionTimingMetadataDto {
+    pub queued_ms: u64,
+    pub dns_ms: Option<u64>,
+    pub connect_ms: Option<u64>,
+    pub tls_ms: Option<u64>,
+    pub first_byte_ms: Option<u64>,
+    pub download_ms: Option<u64>,
+    pub total_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -2042,6 +2056,7 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         ExecutionHeaderDto::export_to_string(&cfg)?,
         ExecutionProxyMetadataDto::export_to_string(&cfg)?,
         ExecutionTimeoutMetadataDto::export_to_string(&cfg)?,
+        ExecutionTimingMetadataDto::export_to_string(&cfg)?,
     ] {
         let generated_without_imports = generated
             .lines()
@@ -3059,12 +3074,14 @@ impl From<ExecutionEventKind> for ExecutionEventKindDto {
                 tls_verification,
                 proxy,
                 timeouts,
+                queued_ms,
             } => Self::Started {
                 method,
                 url,
                 tls_verification,
                 proxy: ExecutionProxyMetadataDto::from(proxy),
                 timeouts: ExecutionTimeoutMetadataDto::from(timeouts),
+                queued_ms,
             },
             ExecutionEventKind::Redirected { from, to, status } => {
                 Self::Redirected { from, to, status }
@@ -3100,12 +3117,14 @@ impl From<ExecutionEventKind> for ExecutionEventKindDto {
                 body_truncated,
                 decoded_bytes,
                 wire_bytes,
+                timing,
             } => Self::Completed {
                 status,
                 body_preview,
                 body_truncated,
                 decoded_bytes,
                 wire_bytes,
+                timing: ExecutionTimingMetadataDto::from(timing),
             },
             ExecutionEventKind::Failed { message } => Self::Failed { message },
             ExecutionEventKind::Cancelled => Self::Cancelled,
@@ -3129,6 +3148,20 @@ impl From<ExecutionTimeoutMetadata> for ExecutionTimeoutMetadataDto {
             connect_ms: metadata.connect_ms,
             overall_ms: metadata.overall_ms,
             idle_ms: metadata.idle_ms,
+        }
+    }
+}
+
+impl From<ExecutionTimingMetadata> for ExecutionTimingMetadataDto {
+    fn from(metadata: ExecutionTimingMetadata) -> Self {
+        Self {
+            queued_ms: metadata.queued_ms,
+            dns_ms: metadata.dns_ms,
+            connect_ms: metadata.connect_ms,
+            tls_ms: metadata.tls_ms,
+            first_byte_ms: metadata.first_byte_ms,
+            download_ms: metadata.download_ms,
+            total_ms: metadata.total_ms,
         }
     }
 }

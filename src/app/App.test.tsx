@@ -323,6 +323,7 @@ describe("App request editor", () => {
     expect(screen.getByText("application/json")).toBeInTheDocument();
     expect(screen.getByText(/"ok": true/)).toBeInTheDocument();
     expect(screen.getByText(/^Time \d+ ms$/)).toBeInTheDocument();
+    expect(screen.getByText(/Timing queue 0 ms/)).toBeInTheDocument();
   });
 
   it("cancels an in-flight execution through typed IPC", async () => {
@@ -343,6 +344,38 @@ describe("App request editor", () => {
     });
     expect(await screen.findByText("Cancelled")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+
+  it("asks before closing a tab with a running execution and cancels it", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const queryClient = renderApp(
+      requestSnapshot({ content: requestContent(), isDirty: true }),
+    );
+    const empty = emptyRequestSnapshot();
+    requestApiMock.updateRequestDraft.mockResolvedValue(undefined);
+    requestApiMock.closeRequestTab.mockImplementation(
+      async (client: QueryClient) => {
+        client.setQueryData(requestWorkspaceQueryKey("workspace-1"), empty);
+        return empty;
+      },
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Send" }));
+    await user.click(screen.getByRole("button", { name: "Close Untitled Request" }));
+
+    expect(confirm).toHaveBeenCalledWith(
+      "This request is still running. Cancel it and close the tab?",
+    );
+    expect(executionApiMock.cancelRequestExecution).toHaveBeenCalledWith({
+      executionId: "execution-1",
+    });
+    expect(requestApiMock.closeRequestTab).toHaveBeenCalledWith(queryClient, {
+      workspaceId: "workspace-1",
+      tabId: "tab-1",
+      decision: "SAVE",
+    });
+    confirm.mockRestore();
   });
 
   it("keeps execution responses isolated by tab", async () => {
@@ -1045,6 +1078,7 @@ function completeExecutionEventKind(kind: ExecutionEventKindInput): ExecutionEve
       tlsVerification: true,
       proxy: defaultProxyMetadata(),
       timeouts: defaultTimeoutMetadata(),
+      queuedMs: 0n,
       ...kind,
     };
   }
@@ -1064,6 +1098,7 @@ function completeExecutionEventKind(kind: ExecutionEventKindInput): ExecutionEve
       bodyTruncated: false,
       decodedBytes: 0n,
       wireBytes: null,
+      timing: defaultTimingMetadata(),
       ...kind,
     };
   }
@@ -1090,6 +1125,18 @@ function defaultProxyMetadata() {
     source: "processEnvironment",
     selectedProxy: null,
     bypassReason: null,
+  };
+}
+
+function defaultTimingMetadata() {
+  return {
+    queuedMs: 0n,
+    dnsMs: null,
+    connectMs: null,
+    tlsMs: null,
+    firstByteMs: 12n,
+    downloadMs: 3n,
+    totalMs: 20n,
   };
 }
 

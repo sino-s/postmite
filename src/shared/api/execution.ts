@@ -4,6 +4,7 @@ import type {
   CancelRequestExecutionInput,
   ExecutionEventDto,
   ExecutionProxyMetadataDto,
+  ExecutionTimingMetadataDto,
   ExecutionTimeoutMetadataDto,
   StartRequestExecutionInput,
 } from "./generated/ipc";
@@ -41,6 +42,7 @@ export type ResponseExecutionState = {
   tlsVerification: boolean | null;
   proxy: ExecutionProxyMetadataDto | null;
   timeouts: ExecutionTimeoutMetadataDto | null;
+  timing: ExecutionTimingMetadataDto;
   redirects: Array<{ from: string; to: string; status: number }>;
   status: number | null;
   protocol: string | null;
@@ -124,6 +126,7 @@ export function createQueuedResponseExecutionState({
     tlsVerification: null,
     proxy: null,
     timeouts: null,
+    timing: emptyTiming(),
     redirects: [],
     status: null,
     protocol: null,
@@ -187,6 +190,10 @@ export function reduceResponseExecutionState(
         tlsVerification: event.kind.tlsVerification,
         proxy: event.kind.proxy,
         timeouts: event.kind.timeouts,
+        timing: {
+          ...base.timing,
+          queuedMs: event.kind.queuedMs,
+        },
       };
     case "REDIRECTED":
       return {
@@ -234,6 +241,7 @@ export function reduceResponseExecutionState(
         bodyTruncated: event.kind.bodyTruncated,
         decodedBytes: event.kind.decodedBytes,
         wireBytes: event.kind.wireBytes,
+        timing: event.kind.timing,
         error: null,
       };
     case "FAILED":
@@ -250,6 +258,18 @@ export function reduceResponseExecutionState(
         completedAtMs: nowMs,
       };
   }
+}
+
+function emptyTiming(): ExecutionTimingMetadataDto {
+  return {
+    queuedMs: 0n,
+    dnsMs: null,
+    connectMs: null,
+    tlsMs: null,
+    firstByteMs: null,
+    downloadMs: null,
+    totalMs: 0n,
+  };
 }
 
 export function isTerminalResponseExecution(state: ResponseExecutionState) {

@@ -336,6 +336,16 @@ export function RequestEditor({
   async function handleClose(tab: RequestTabDto, decision: "SAVE" | "DISCARD") {
     const draft = snapshot?.drafts.find((item) => item.id === tab.draftId);
     const content = draft ? overrides[draft.id] ?? draft.content : null;
+    const tabExecution = executions[tab.draftId] ?? null;
+    if (tabExecution && !isTerminalResponseExecution(tabExecution)) {
+      const shouldCancel = window.confirm(
+        "This request is still running. Cancel it and close the tab?",
+      );
+      if (!shouldCancel) {
+        return;
+      }
+      await onCancel({ executionId: tabExecution.executionId });
+    }
     if (draft && content && decision === "SAVE") {
       await persistDraft(draft, content);
     }

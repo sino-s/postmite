@@ -14,7 +14,7 @@ use application::{
     execution::ExecutionCoordinator, request::RequestService, workspace::WorkspaceService,
 };
 use infrastructure::sqlite::SqliteWorkspaceRepository;
-use tauri::Manager;
+use tauri::{Manager, WindowEvent};
 
 pub struct AppState {
     pub executions: Arc<ExecutionCoordinator>,
@@ -100,6 +100,13 @@ pub fn run() {
             app.manage(AppState::new(executions, workspaces, requests));
             diagnostics::configure_perf(app, started_at.elapsed())?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                let app = window.app_handle();
+                let state = app.state::<AppState>();
+                state.executions.cancel_all();
+            }
         })
         .run(tauri::generate_context!())
         .expect("failed to run Postmite");
