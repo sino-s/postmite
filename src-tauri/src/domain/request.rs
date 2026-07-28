@@ -264,7 +264,7 @@ pub struct RequestContent {
     pub name: String,
     pub method: String,
     pub url: String,
-    pub body: String,
+    pub body: RequestBody,
     pub query: Vec<OrderedField>,
     pub headers: Vec<OrderedField>,
 }
@@ -275,11 +275,83 @@ impl RequestContent {
             name: "Untitled Request".to_owned(),
             method: "GET".to_owned(),
             url: String::new(),
-            body: String::new(),
+            body: RequestBody::None,
             query: Vec::new(),
             headers: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum RequestBody {
+    None,
+    Raw { content: String },
+    UrlEncoded { fields: Vec<OrderedField> },
+    Multipart { parts: Vec<MultipartPart> },
+    Binary { file: BodyFileReference },
+}
+
+impl RequestBody {
+    pub fn legacy_raw_text(&self) -> String {
+        match self {
+            Self::None => String::new(),
+            Self::Raw { content } => content.clone(),
+            Self::UrlEncoded { fields } => fields
+                .iter()
+                .filter(|field| field.enabled)
+                .map(|field| format!("{}={}", field.name, field.value))
+                .collect::<Vec<_>>()
+                .join("&"),
+            Self::Multipart { .. } | Self::Binary { .. } => String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum MultipartPart {
+    Field {
+        enabled: bool,
+        order: u32,
+        name: String,
+        value: String,
+    },
+    File {
+        enabled: bool,
+        order: u32,
+        name: String,
+        file: BodyFileReference,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BodyFileReference {
+    pub path: BodyFilePath,
+    pub file_name: String,
+    pub size: u64,
+    pub modified_at_epoch_seconds: Option<i64>,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum BodyFilePath {
+    Relative { path: String },
+    Absolute { path: String },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

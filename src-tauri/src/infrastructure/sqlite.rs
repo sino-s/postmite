@@ -17,11 +17,11 @@ use crate::{
     },
     domain::{
         request::{
-            CollectionFolder, CollectionId, CollectionVariable, CookieDraft, CookieId,
-            CookieSameSite, Environment, EnvironmentId, EnvironmentVariable, ExecutionRecord,
-            ExecutionRecordId, ExecutionRecordResponse, OrderedField, RequestContent, RequestDraft,
-            RequestDraftId, RequestTab, RequestTabId, SavedRequest, SavedRequestId, Variable,
-            VariableValue, WorkspaceCookie,
+            BodyFilePath, BodyFileReference, CollectionFolder, CollectionId, CollectionVariable,
+            CookieDraft, CookieId, CookieSameSite, Environment, EnvironmentId, EnvironmentVariable,
+            ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse, MultipartPart,
+            OrderedField, RequestBody, RequestContent, RequestDraft, RequestDraftId, RequestTab,
+            RequestTabId, SavedRequest, SavedRequestId, Variable, VariableValue, WorkspaceCookie,
         },
         workspace::{Workspace, WorkspaceId, WorkspaceName, DEFAULT_WORKSPACE_NAME},
     },
@@ -322,6 +322,13 @@ CREATE INDEX workspace_cookies_workspace_scope
     ON workspace_cookies(workspace_id, domain, path, secure, expires_at_epoch_seconds);
 "#,
     },
+    Migration {
+        version: 8,
+        name: "add_workspace_base_directory",
+        sql: r#"
+ALTER TABLE workspaces ADD COLUMN base_directory TEXT;
+"#,
+    },
 ];
 
 struct Migration {
@@ -421,6 +428,28 @@ impl WorkspaceRepository for SqliteWorkspaceRepository {
             return Err(WorkspaceError::NotFound);
         }
 
+        let snapshot = load_snapshot(&tx)?;
+        tx.commit().map_err(WorkspaceError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn set_workspace_base_directory(
+        &mut self,
+        id: WorkspaceId,
+        base_directory: Option<String>,
+    ) -> Result<WorkspaceSnapshot, WorkspaceError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(WorkspaceError::persistence)?;
+        ensure_workspace_exists(&tx, id)?;
+        tx.execute(
+            "UPDATE workspaces
+             SET base_directory = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?2",
+            params![base_directory.as_deref(), id.to_string()],
+        )
+        .map_err(map_sqlite_error)?;
         let snapshot = load_snapshot(&tx)?;
         tx.commit().map_err(WorkspaceError::persistence)?;
         Ok(snapshot)
@@ -1238,6 +1267,34 @@ impl RequestRepository for SqliteWorkspaceRepository {
         tx.commit().map_err(RequestError::persistence)?;
         Ok(removed)
     }
+
+    fn relink_body_files(
+        &mut self,
+        workspace_id: WorkspaceId,
+        from_path: String,
+        replacement: BodyFileReference,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        let saved_requests = load_saved_requests(&tx, workspace_id)?;
+        for mut request in saved_requests {
+            if replace_body_file_reference(&mut request.content.body, &from_path, &replacement) {
+                replace_saved_request_content(&tx, request.id, &request.content)?;
+            }
+        }
+        let drafts = load_open_drafts(&tx, workspace_id)?;
+        for mut draft in drafts {
+            if replace_body_file_reference(&mut draft.content.body, &from_path, &replacement) {
+                replace_draft_content(&tx, draft.id, &draft.content, true)?;
+            }
+        }
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), WorkspaceError> {
@@ -1330,7 +1387,7 @@ fn select_workspace(tx: &Transaction<'_>, id: WorkspaceId) -> Result<(), Workspa
 fn load_snapshot(connection: &Connection) -> Result<WorkspaceSnapshot, WorkspaceError> {
     let selected_workspace_id = selected_workspace_id(connection)?;
     let mut statement = connection
-        .prepare("SELECT id, name FROM workspaces ORDER BY created_at, id")
+        .prepare("SELECT id, name, base_directory FROM workspaces ORDER BY created_at, id")
         .map_err(WorkspaceError::persistence)?;
 
     let workspaces = statement
@@ -1347,6 +1404,7 @@ fn load_snapshot(connection: &Connection) -> Result<WorkspaceSnapshot, Workspace
                     )
                 })?,
                 is_selected: id == selected_workspace_id,
+                base_directory: row.get(2)?,
             })
         })
         .map_err(WorkspaceError::persistence)?
@@ -1537,7 +1595,7 @@ fn insert_saved_request_at(
             content.name.as_str(),
             content.method.as_str(),
             content.url.as_str(),
-            content.body.as_str(),
+            request_body_to_sql(&content.body)?,
             i64::from(position),
         ],
     )
@@ -1573,7 +1631,7 @@ fn replace_saved_request_content(
             content.name.as_str(),
             content.method.as_str(),
             content.url.as_str(),
-            content.body.as_str(),
+            request_body_to_sql(&content.body)?,
             saved_request_id.to_string()
         ],
     )
@@ -1614,7 +1672,7 @@ fn insert_draft(
             content.name.as_str(),
             content.method.as_str(),
             content.url.as_str(),
-            content.body.as_str(),
+            request_body_to_sql(&content.body)?,
             bool_to_i64(is_dirty),
         ],
     )
@@ -1652,7 +1710,7 @@ fn replace_draft_content(
                 content.name.as_str(),
                 content.method.as_str(),
                 content.url.as_str(),
-                content.body.as_str(),
+                request_body_to_sql(&content.body)?,
                 bool_to_i64(is_dirty),
                 draft_id.to_string()
             ],
@@ -2266,7 +2324,7 @@ fn insert_execution_record(
             draft.content.name.as_str(),
             draft.content.method.as_str(),
             draft.content.url.as_str(),
-            draft.content.body.as_str(),
+            request_body_to_sql(&draft.content.body)?,
             draft.response.status.map(i64::from),
             draft.response.body_preview.as_str(),
             bool_to_i64(draft.response.body_truncated),
@@ -2707,7 +2765,13 @@ fn load_saved_requests(
                 name: row.get(3)?,
                 method: row.get(4)?,
                 url: row.get(5)?,
-                body: row.get(6)?,
+                body: request_body_from_sql(row.get(6)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        6,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
                 query: Vec::new(),
                 headers: Vec::new(),
             };
@@ -2908,6 +2972,52 @@ fn validate_request_content(content: &RequestContent) -> Result<(), RequestError
     Ok(())
 }
 
+fn request_body_to_sql(body: &RequestBody) -> Result<String, RequestError> {
+    serde_json::to_string(body).map_err(RequestError::persistence)
+}
+
+fn request_body_from_sql(value: String) -> Result<RequestBody, serde_json::Error> {
+    if value.trim_start().starts_with('{') {
+        serde_json::from_str(&value)
+    } else if value.is_empty() {
+        Ok(RequestBody::None)
+    } else {
+        Ok(RequestBody::Raw { content: value })
+    }
+}
+
+fn replace_body_file_reference(
+    body: &mut RequestBody,
+    from_path: &str,
+    replacement: &BodyFileReference,
+) -> bool {
+    match body {
+        RequestBody::Binary { file } if body_file_path_matches(file, from_path) => {
+            *file = replacement.clone();
+            true
+        }
+        RequestBody::Multipart { parts } => {
+            let mut changed = false;
+            for part in parts {
+                if let MultipartPart::File { file, .. } = part {
+                    if body_file_path_matches(file, from_path) {
+                        *file = replacement.clone();
+                        changed = true;
+                    }
+                }
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn body_file_path_matches(file: &BodyFileReference, from_path: &str) -> bool {
+    match &file.path {
+        BodyFilePath::Relative { path } | BodyFilePath::Absolute { path } => path == from_path,
+    }
+}
+
 fn validate_collection_name(name: &str) -> Result<(), RequestError> {
     if name.trim().is_empty() {
         return Err(RequestError::InvalidInput(
@@ -2943,7 +3053,13 @@ fn draft_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestDraft> {
             name: row.get(3)?,
             method: row.get(4)?,
             url: row.get(5)?,
-            body: row.get(6)?,
+            body: request_body_from_sql(row.get(6)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
             query: Vec::new(),
             headers: Vec::new(),
         },
@@ -2983,7 +3099,13 @@ fn execution_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Execut
             name: row.get(4)?,
             method: row.get(5)?,
             url: row.get(6)?,
-            body: row.get(7)?,
+            body: request_body_from_sql(row.get(7)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    7,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
             query: Vec::new(),
             headers: Vec::new(),
         },
@@ -3249,7 +3371,7 @@ mod tests {
         application::request::{RequestRepository, RequestService},
         application::workspace::WorkspaceRepository,
         domain::request::{
-            CookieDraft, CookieSameSite, EnvironmentId, OrderedField, RequestContent,
+            CookieDraft, CookieSameSite, EnvironmentId, OrderedField, RequestBody, RequestContent,
             RequestDraftId, VariableValue,
         },
     };
@@ -3676,7 +3798,7 @@ mod tests {
                         name: "Secret".to_owned(),
                         method: "GET".to_owned(),
                         url: "https://example.test/{{token}}".to_owned(),
-                        body: String::new(),
+                        body: RequestBody::None,
                         query: Vec::new(),
                         headers: vec![OrderedField {
                             enabled: true,
@@ -4021,6 +4143,64 @@ mod tests {
     }
 
     #[test]
+    fn bulk_relink_updates_saved_requests_and_open_drafts() {
+        let mut repository = repository();
+        let workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        let original = body_file_reference("old.bin");
+        let replacement = body_file_reference("new.bin");
+        let content = RequestContent {
+            body: RequestBody::Binary {
+                file: original.clone(),
+            },
+            ..request_content("Binary", "https://example.test/upload")
+        };
+        repository
+            .create_saved_request(workspace_id, content)
+            .expect("create saved request");
+        let snapshot = repository
+            .open_unsaved_tab(workspace_id)
+            .expect("open unsaved tab");
+        let draft_id = snapshot.drafts[0].id;
+        repository
+            .persist_draft(
+                workspace_id,
+                draft_id,
+                RequestContent {
+                    body: RequestBody::Multipart {
+                        parts: vec![MultipartPart::File {
+                            enabled: true,
+                            order: 0,
+                            name: "file".to_owned(),
+                            file: original,
+                        }],
+                    },
+                    ..request_content("Multipart", "https://example.test/upload")
+                },
+            )
+            .expect("persist draft");
+
+        let snapshot = repository
+            .relink_body_files(workspace_id, "old.bin".to_owned(), replacement.clone())
+            .expect("bulk relink");
+
+        assert!(matches!(
+            &snapshot.saved_requests[0].content.body,
+            RequestBody::Binary { file } if file == &replacement
+        ));
+        assert!(matches!(
+            &snapshot.drafts[0].content.body,
+            RequestBody::Multipart { parts } if matches!(
+                &parts[0],
+                MultipartPart::File { file, .. } if file == &replacement
+            )
+        ));
+        assert!(snapshot.drafts[0].is_dirty);
+    }
+
+    #[test]
     fn connection_uses_wal_and_foreign_keys() {
         let repository = repository();
         let journal_mode: String = repository
@@ -4083,7 +4263,9 @@ mod tests {
             name: "Fields".to_owned(),
             method: "GET".to_owned(),
             url: "https://example.test".to_owned(),
-            body: "{\"ok\":true}".to_owned(),
+            body: RequestBody::Raw {
+                content: "{\"ok\":true}".to_owned(),
+            },
             query: vec![
                 OrderedField {
                     enabled: true,
@@ -4120,7 +4302,12 @@ mod tests {
 
         assert_eq!(snapshot.saved_requests[0].content.query, content.query);
         assert_eq!(snapshot.saved_requests[0].content.headers, content.headers);
-        assert_eq!(snapshot.saved_requests[0].content.body, "{\"ok\":true}");
+        assert_eq!(
+            snapshot.saved_requests[0].content.body,
+            RequestBody::Raw {
+                content: "{\"ok\":true}".to_owned()
+            }
+        );
     }
 
     #[test]
@@ -4261,9 +4448,21 @@ mod tests {
             name: name.to_owned(),
             method: "GET".to_owned(),
             url: url.to_owned(),
-            body: String::new(),
+            body: RequestBody::None,
             query: Vec::new(),
             headers: Vec::new(),
+        }
+    }
+
+    fn body_file_reference(path: &str) -> BodyFileReference {
+        BodyFileReference {
+            path: BodyFilePath::Relative {
+                path: path.to_owned(),
+            },
+            file_name: path.to_owned(),
+            size: 1,
+            modified_at_epoch_seconds: Some(1),
+            sha256: format!("{path}-hash"),
         }
     }
 

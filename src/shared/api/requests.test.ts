@@ -136,7 +136,7 @@ describe("request query API", () => {
         name: "Edited draft",
         method: "GET",
         url: "https://example.test",
-        body: "",
+        body: { type: "NONE" },
         query: [],
         headers: [],
       },

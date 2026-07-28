@@ -71,6 +71,6 @@ describe("workspace query API", () => {
 function workspaceSnapshot(id: string, name: string): WorkspaceSnapshotDto {
   return {
     selectedWorkspaceId: id,
-    workspaces: [{ id, name, isSelected: true }],
+    workspaces: [{ id, name, isSelected: true, baseDirectory: null }],
   };
 }

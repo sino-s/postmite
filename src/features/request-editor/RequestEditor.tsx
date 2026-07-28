@@ -29,6 +29,7 @@ import {
   deleteCollectionFolder,
   deleteCookie,
   deleteSavedRequest,
+  describeBodyFile,
   duplicateCollectionFolder,
   duplicateSavedRequest,
   executionHistoryQuery,
@@ -40,6 +41,7 @@ import {
   openUnsavedRequestTab,
   requestWorkspaceQuery,
   revealCookieValue,
+  relinkBodyFiles,
   resolveRequestContent,
   renameCollectionFolder,
   saveRequestDraft,
@@ -60,6 +62,7 @@ import {
 import {
   workspaceQuery,
   workspaceQueryKey,
+  setWorkspaceBaseDirectory,
 } from "../../shared/api/workspaces";
 import type { ResponseExecutionState } from "../../shared/api/execution";
 import type {
@@ -73,8 +76,11 @@ import type {
   ResolvedRequestContentDto,
   RequestContentDto,
   RequestDraftDto,
+  RequestBodyDto,
   SavedRequestDto,
   RequestTabDto,
+  MultipartPartDto,
+  BodyFileReferenceDto,
 } from "../../shared/api/generated/ipc";
 import { RawBodyEditor } from "./RawBodyEditor";
 import {
@@ -107,6 +113,8 @@ export function RequestEditor({
 
   const workspaces = useQuery(workspaceQuery);
   const selectedWorkspaceId = workspaces.data?.selectedWorkspaceId;
+  const selectedWorkspace =
+    workspaces.data?.workspaces.find((workspace) => workspace.isSelected) ?? null;
   const requestWorkspace = useQuery({
     ...requestWorkspaceQuery({ workspaceId: selectedWorkspaceId ?? "" }),
     enabled: Boolean(selectedWorkspaceId),
@@ -461,6 +469,41 @@ export function RequestEditor({
     });
   }
 
+  async function handleSetBaseDirectory() {
+    if (!selectedWorkspaceId) {
+      return;
+    }
+    const baseDirectory = window
+      .prompt("Workspace Base Directory", selectedWorkspace?.baseDirectory ?? "")
+      ?.trim();
+    if (baseDirectory === undefined) {
+      return;
+    }
+    await setWorkspaceBaseDirectory(queryClient, {
+      workspaceId: selectedWorkspaceId,
+      baseDirectory: baseDirectory || null,
+    });
+  }
+
+  async function handleRelinkBodyFiles() {
+    if (!selectedWorkspaceId) {
+      return;
+    }
+    const fromPath = window.prompt("Stored Body file path")?.trim();
+    if (!fromPath) {
+      return;
+    }
+    const replacementPath = window.prompt("Replacement absolute file path")?.trim();
+    if (!replacementPath) {
+      return;
+    }
+    await relinkBodyFiles(queryClient, {
+      workspaceId: selectedWorkspaceId,
+      fromPath,
+      replacementPath,
+    });
+  }
+
   async function handleOpenHistoryRecord(record: ExecutionRecordDto) {
     const nextSnapshot = await openExecutionRecordAsDraft(queryClient, {
       workspaceId: record.workspaceId,
@@ -528,15 +571,33 @@ export function RequestEditor({
     >
       <header className="flex min-h-12 items-center justify-between border-b border-slate-300 bg-white px-4">
         <h1 className="text-sm font-semibold">Postmite</h1>
-        <button
-          className="inline-flex h-8 items-center gap-2 rounded-md bg-slate-900 px-3 text-sm font-medium text-white hover:bg-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={openTabMutation.isPending}
-          onClick={() => openTabMutation.mutate()}
-          type="button"
-        >
-          <Plus aria-hidden="true" size={16} />
-          New
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+            onClick={() => void handleSetBaseDirectory()}
+            type="button"
+          >
+            <Folder aria-hidden="true" size={16} />
+            Base
+          </button>
+          <button
+            className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+            onClick={() => void handleRelinkBodyFiles()}
+            type="button"
+          >
+            <RotateCcw aria-hidden="true" size={16} />
+            Relink
+          </button>
+          <button
+            className="inline-flex h-8 items-center gap-2 rounded-md bg-slate-900 px-3 text-sm font-medium text-white hover:bg-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={openTabMutation.isPending}
+            onClick={() => openTabMutation.mutate()}
+            type="button"
+          >
+            <Plus aria-hidden="true" size={16} />
+            New
+          </button>
+        </div>
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)]">
@@ -610,14 +671,15 @@ export function RequestEditor({
                     }
                   />
                 </section>
-                <RawBodyEditor
+                <BodyEditor
+                  body={activeContent.body}
+                  workspaceId={selectedWorkspaceId}
                   onChange={(body) =>
                     changeActiveDraft((content) => ({
                       ...content,
                       body,
                     }))
                   }
-                  value={activeContent.body}
                 />
               </div>
               <div className="grid gap-4 xl:grid-cols-[minmax(260px,0.4fr)_minmax(0,1fr)_minmax(300px,0.5fr)_minmax(300px,0.5fr)]">
@@ -1626,9 +1688,326 @@ function ResponsePanel({ execution }: ResponsePanelProps) {
   );
 }
 
+type BodyEditorProps = {
+  body: RequestBodyDto;
+  onChange: (body: RequestBodyDto) => void;
+  workspaceId: string;
+};
+
+function BodyEditor({ body, onChange, workspaceId }: BodyEditorProps) {
+  return (
+    <section className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-slate-950">Body</h2>
+        <div
+          aria-label="Body mode"
+          className="inline-flex flex-wrap rounded-md border border-slate-300 bg-white p-0.5"
+          role="group"
+        >
+          {(["NONE", "RAW", "URL_ENCODED", "MULTIPART", "BINARY"] as const).map(
+            (mode) => (
+              <button
+                aria-pressed={body.type === mode}
+                className="rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 aria-pressed:bg-slate-900 aria-pressed:text-white"
+                key={mode}
+                onClick={() => onChange(emptyBodyForMode(mode, body))}
+                type="button"
+              >
+                {bodyModeLabel(mode)}
+              </button>
+            ),
+          )}
+        </div>
+      </div>
+      {body.type === "NONE" ? (
+        <div className="min-h-60 rounded-md border border-dashed border-slate-300 bg-white p-3 text-sm text-slate-500" />
+      ) : null}
+      {body.type === "RAW" ? (
+        <RawBodyEditor
+          onChange={(content) => onChange({ type: "RAW", content })}
+          value={body.content}
+        />
+      ) : null}
+      {body.type === "URL_ENCODED" ? (
+        <FieldTable
+          fields={body.fields}
+          legend="URL-encoded Body"
+          onChange={(fields) => onChange({ type: "URL_ENCODED", fields })}
+        />
+      ) : null}
+      {body.type === "MULTIPART" ? (
+        <MultipartEditor
+          onChange={(parts) => onChange({ type: "MULTIPART", parts })}
+          parts={body.parts}
+          workspaceId={workspaceId}
+        />
+      ) : null}
+      {body.type === "BINARY" ? (
+        <BodyFileEditor
+          file={body.file}
+          onChange={(file) => onChange({ type: "BINARY", file })}
+          workspaceId={workspaceId}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function MultipartEditor({
+  onChange,
+  parts,
+  workspaceId,
+}: {
+  onChange: (parts: MultipartPartDto[]) => void;
+  parts: MultipartPartDto[];
+  workspaceId: string;
+}) {
+  const fieldParts = parts.filter((part) => part.type === "FIELD");
+  const fileParts = parts.filter((part) => part.type === "FILE");
+  return (
+    <div className="grid min-h-60 gap-3">
+      <FieldTable
+        fields={fieldParts.map((part) => ({
+          enabled: part.enabled,
+          order: part.order,
+          name: part.name,
+          value: part.value,
+        }))}
+        legend="Multipart Fields"
+        onChange={(fields) =>
+          onChange([
+            ...fields.map((field) => ({ type: "FIELD" as const, ...field })),
+            ...fileParts,
+          ])
+        }
+      />
+      <div className="grid gap-2 rounded-md border border-slate-300 bg-white p-3">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Multipart Files</h3>
+          <button
+            className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 px-2 text-xs font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+            onClick={() => onChange([...parts, emptyMultipartFilePart(parts.length)])}
+            type="button"
+          >
+            <Plus aria-hidden="true" size={14} />
+            File
+          </button>
+        </div>
+        {fileParts.map((part, index) => (
+          <BodyFileEditor
+            file={part.file}
+            key={`${part.order}-${index}`}
+            name={part.name}
+            onChange={(file, name = part.name) =>
+              onChange(
+                parts.map((item) =>
+                  item === part ? { ...part, name, file } : item,
+                ),
+              )
+            }
+            onDelete={() => onChange(parts.filter((item) => item !== part))}
+            workspaceId={workspaceId}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BodyFileEditor({
+  file,
+  name,
+  onChange,
+  onDelete,
+  workspaceId,
+}: {
+  file: BodyFileReferenceDto;
+  name?: string;
+  onChange: (file: BodyFileReferenceDto, name?: string) => void;
+  onDelete?: () => void;
+  workspaceId: string;
+}) {
+  const pathValue = file.path.path;
+  const pathKind = file.path.type;
+  async function handleRefresh() {
+    const absolutePath =
+      pathKind === "ABSOLUTE"
+        ? pathValue
+        : window.prompt("Absolute file path", pathValue)?.trim();
+    if (!absolutePath) {
+      return;
+    }
+    const nextFile = await describeBodyFile({
+      workspaceId,
+      path: absolutePath,
+    });
+    onChange(nextFile, name);
+  }
+
+  return (
+    <div className="grid gap-2 rounded-md border border-slate-300 bg-white p-3">
+      <div className="grid gap-2 md:grid-cols-[160px_minmax(0,1fr)]">
+        {name !== undefined ? (
+          <input
+            aria-label="Multipart file field name"
+            className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+            onChange={(event) => onChange(file, event.currentTarget.value)}
+            placeholder="field name"
+            value={name}
+          />
+        ) : null}
+        <input
+          aria-label="Body file path"
+          className="h-9 min-w-0 rounded-md border border-slate-300 px-2 font-mono text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          onChange={(event) =>
+            onChange({
+              ...file,
+              path:
+                pathKind === "RELATIVE"
+                  ? { type: "RELATIVE", path: event.currentTarget.value }
+                  : { type: "ABSOLUTE", path: event.currentTarget.value },
+            })
+          }
+          placeholder={pathKind === "RELATIVE" ? "payloads/body.bin" : "/tmp/body.bin"}
+          value={pathValue}
+        />
+      </div>
+      <div className="grid gap-2 md:grid-cols-[120px_minmax(0,1fr)_120px_160px_minmax(0,1fr)_auto]">
+        <select
+          aria-label="Body file path kind"
+          className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          onChange={(event) =>
+            onChange({
+              ...file,
+              path:
+                event.currentTarget.value === "RELATIVE"
+                  ? { type: "RELATIVE", path: pathValue }
+                  : { type: "ABSOLUTE", path: pathValue },
+            })
+          }
+          value={pathKind}
+        >
+          <option value="RELATIVE">Relative</option>
+          <option value="ABSOLUTE">Absolute</option>
+        </select>
+        <input
+          aria-label="Body file name"
+          className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          onChange={(event) => onChange({ ...file, fileName: event.currentTarget.value })}
+          placeholder="body.bin"
+          value={file.fileName}
+        />
+        <input
+          aria-label="Body file size"
+          className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          min="0"
+          onChange={(event) =>
+            onChange({ ...file, size: BigInt(event.currentTarget.value || "0") })
+          }
+          type="number"
+          value={file.size.toString()}
+        />
+        <input
+          aria-label="Body file modified time"
+          className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          onChange={(event) =>
+            onChange({
+              ...file,
+              modifiedAtEpochSeconds: event.currentTarget.value
+                ? BigInt(event.currentTarget.value)
+                : null,
+            })
+          }
+          placeholder="mtime"
+          value={file.modifiedAtEpochSeconds?.toString() ?? ""}
+        />
+        <input
+          aria-label="Body file hash"
+          className="h-9 min-w-0 rounded-md border border-slate-300 px-2 font-mono text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          onChange={(event) => onChange({ ...file, sha256: event.currentTarget.value })}
+          placeholder="sha256"
+          value={file.sha256}
+        />
+        {onDelete ? (
+          <IconButton label="Delete file part" onClick={onDelete}>
+            <Trash2 aria-hidden="true" size={14} />
+          </IconButton>
+        ) : null}
+        <button
+          className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 px-2 text-xs font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+          onClick={() => void handleRefresh()}
+          type="button"
+        >
+          Refresh
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function emptyBodyForMode(
+  mode: RequestBodyDto["type"],
+  current: RequestBodyDto,
+): RequestBodyDto {
+  if (current.type === mode) {
+    return current;
+  }
+  switch (mode) {
+    case "NONE":
+      return { type: "NONE" };
+    case "RAW":
+      return { type: "RAW", content: bodyToText(current) };
+    case "URL_ENCODED":
+      return { type: "URL_ENCODED", fields: [] };
+    case "MULTIPART":
+      return { type: "MULTIPART", parts: [] };
+    case "BINARY":
+      return { type: "BINARY", file: emptyBodyFileReference() };
+  }
+}
+
+function bodyToText(body: RequestBodyDto) {
+  return body.type === "RAW" ? body.content : "";
+}
+
+function bodyModeLabel(mode: RequestBodyDto["type"]) {
+  switch (mode) {
+    case "NONE":
+      return "None";
+    case "RAW":
+      return "Raw";
+    case "URL_ENCODED":
+      return "Form";
+    case "MULTIPART":
+      return "Multipart";
+    case "BINARY":
+      return "Binary";
+  }
+}
+
+function emptyMultipartFilePart(order: number): MultipartPartDto {
+  return {
+    type: "FILE",
+    enabled: true,
+    order,
+    name: "",
+    file: emptyBodyFileReference(),
+  };
+}
+
+function emptyBodyFileReference(): BodyFileReferenceDto {
+  return {
+    path: { type: "RELATIVE", path: "" },
+    fileName: "",
+    size: 0n,
+    modifiedAtEpochSeconds: null,
+    sha256: "",
+  };
+}
+
 type FieldTableProps = {
   fields: OrderedFieldDto[];
-  legend: "Params" | "Headers";
+  legend: string;
   onChange: (fields: OrderedFieldDto[]) => void;
 };
 
@@ -1816,7 +2195,7 @@ function emptyRequestContent(): RequestContentDto {
     name: "Untitled Request",
     method: "GET",
     url: "",
-    body: "",
+    body: { type: "NONE" },
     query: [],
     headers: [],
   };

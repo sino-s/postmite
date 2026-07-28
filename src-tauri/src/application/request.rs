@@ -7,10 +7,11 @@ use thiserror::Error;
 
 use crate::domain::{
     request::{
-        CollectionFolder, CollectionId, CollectionVariable, CookieDraft, CookieId, CookieSameSite,
-        Environment, EnvironmentId, EnvironmentVariable, ExecutionRecord, ExecutionRecordId,
-        ExecutionRecordResponse, OrderedField, RequestContent, RequestDraft, RequestDraftId,
-        RequestTab, RequestTabId, SavedRequest, SavedRequestId, VariableValue, WorkspaceCookie,
+        BodyFileReference, CollectionFolder, CollectionId, CollectionVariable, CookieDraft,
+        CookieId, CookieSameSite, Environment, EnvironmentId, EnvironmentVariable, ExecutionRecord,
+        ExecutionRecordId, ExecutionRecordResponse, MultipartPart, OrderedField, RequestBody,
+        RequestContent, RequestDraft, RequestDraftId, RequestTab, RequestTabId, SavedRequest,
+        SavedRequestId, VariableValue, WorkspaceCookie,
     },
     workspace::WorkspaceId,
 };
@@ -197,6 +198,12 @@ pub trait RequestRepository {
         workspace_id: WorkspaceId,
         now_epoch_seconds: i64,
     ) -> Result<Vec<CookieId>, RequestError>;
+    fn relink_body_files(
+        &mut self,
+        workspace_id: WorkspaceId,
+        from_path: String,
+        replacement: BodyFileReference,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
 }
 
 pub struct RequestService<R>
@@ -516,6 +523,17 @@ where
         self.list_cookies(workspace_id)
     }
 
+    pub fn relink_body_files(
+        &mut self,
+        workspace_id: WorkspaceId,
+        from_path: String,
+        replacement: BodyFileReference,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.flush_pending_drafts()?;
+        self.repository
+            .relink_body_files(workspace_id, from_path, replacement)
+    }
+
     pub fn attach_matching_cookies(
         &mut self,
         workspace_id: WorkspaceId,
@@ -637,10 +655,45 @@ pub enum RequestError {
 pub struct ResolvedRequestContent {
     pub url: ResolvedValue,
     pub body: ResolvedValue,
+    pub body_kind: ResolvedRequestBody,
     pub query: Vec<ResolvedField>,
     pub headers: Vec<ResolvedField>,
     pub references: Vec<ResolvedVariableReference>,
     pub errors: Vec<VariableResolutionError>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum ResolvedRequestBody {
+    None,
+    Raw { content: ResolvedValue },
+    UrlEncoded { fields: Vec<ResolvedField> },
+    Multipart { parts: Vec<ResolvedMultipartPart> },
+    Binary,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum ResolvedMultipartPart {
+    Field {
+        enabled: bool,
+        order: u32,
+        name: ResolvedValue,
+        value: ResolvedValue,
+    },
+    File {
+        enabled: bool,
+        order: u32,
+        name: ResolvedValue,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -689,7 +742,8 @@ pub fn resolve_request_content(
     let scope = VariableScope::from_snapshot(snapshot);
     let mut state = ResolutionState::default();
     let url = resolve_text(&content.url, &scope, &mut state);
-    let body = resolve_text(&content.body, &scope, &mut state);
+    let body_kind = resolve_request_body(&content.body, &scope, &mut state);
+    let body = resolved_body_preview(&body_kind);
     let query = content
         .query
         .iter()
@@ -723,6 +777,7 @@ pub fn resolve_request_content(
     ResolvedRequestContent {
         url,
         body,
+        body_kind,
         query,
         headers,
         references,
@@ -738,7 +793,7 @@ pub fn redact_request_content(
         name: content.name,
         method: content.method,
         url: redact_value_pair(content.url, &resolved.url),
-        body: redact_value_pair(content.body, &resolved.body),
+        body: redact_request_body(content.body, &resolved.body_kind),
         query: content
             .query
             .into_iter()
@@ -768,6 +823,148 @@ pub fn redact_request_content(
                 }
             })
             .collect(),
+    }
+}
+
+fn resolve_request_body(
+    body: &RequestBody,
+    scope: &VariableScope,
+    state: &mut ResolutionState,
+) -> ResolvedRequestBody {
+    match body {
+        RequestBody::None => ResolvedRequestBody::None,
+        RequestBody::Raw { content } => ResolvedRequestBody::Raw {
+            content: resolve_text(content, scope, state),
+        },
+        RequestBody::UrlEncoded { fields } => ResolvedRequestBody::UrlEncoded {
+            fields: fields
+                .iter()
+                .map(|field| ResolvedField {
+                    enabled: field.enabled,
+                    order: field.order,
+                    name: resolve_text(&field.name, scope, state),
+                    value: resolve_text(&field.value, scope, state),
+                })
+                .collect(),
+        },
+        RequestBody::Multipart { parts } => ResolvedRequestBody::Multipart {
+            parts: parts
+                .iter()
+                .map(|part| match part {
+                    MultipartPart::Field {
+                        enabled,
+                        order,
+                        name,
+                        value,
+                    } => ResolvedMultipartPart::Field {
+                        enabled: *enabled,
+                        order: *order,
+                        name: resolve_text(name, scope, state),
+                        value: resolve_text(value, scope, state),
+                    },
+                    MultipartPart::File {
+                        enabled,
+                        order,
+                        name,
+                        ..
+                    } => ResolvedMultipartPart::File {
+                        enabled: *enabled,
+                        order: *order,
+                        name: resolve_text(name, scope, state),
+                    },
+                })
+                .collect(),
+        },
+        RequestBody::Binary { .. } => ResolvedRequestBody::Binary,
+    }
+}
+
+fn resolved_body_preview(body: &ResolvedRequestBody) -> ResolvedValue {
+    match body {
+        ResolvedRequestBody::None => ResolvedValue {
+            value: String::new(),
+            contains_secret: false,
+        },
+        ResolvedRequestBody::Raw { content } => content.clone(),
+        ResolvedRequestBody::UrlEncoded { fields } => ResolvedValue {
+            value: fields
+                .iter()
+                .filter(|field| field.enabled)
+                .map(|field| format!("{}={}", field.name.value, field.value.value))
+                .collect::<Vec<_>>()
+                .join("&"),
+            contains_secret: fields
+                .iter()
+                .any(|field| field.name.contains_secret || field.value.contains_secret),
+        },
+        ResolvedRequestBody::Multipart { parts } => ResolvedValue {
+            value: format!("{} multipart part(s)", parts.len()),
+            contains_secret: parts.iter().any(|part| match part {
+                ResolvedMultipartPart::Field { name, value, .. } => {
+                    name.contains_secret || value.contains_secret
+                }
+                ResolvedMultipartPart::File { name, .. } => name.contains_secret,
+            }),
+        },
+        ResolvedRequestBody::Binary => ResolvedValue {
+            value: "binary file".to_owned(),
+            contains_secret: false,
+        },
+    }
+}
+
+fn redact_request_body(body: RequestBody, resolved: &ResolvedRequestBody) -> RequestBody {
+    match (body, resolved) {
+        (RequestBody::Raw { content }, ResolvedRequestBody::Raw { content: resolved }) => {
+            RequestBody::Raw {
+                content: redact_value_pair(content, resolved),
+            }
+        }
+        (
+            RequestBody::UrlEncoded { fields },
+            ResolvedRequestBody::UrlEncoded { fields: resolved },
+        ) => RequestBody::UrlEncoded {
+            fields: fields
+                .into_iter()
+                .zip(resolved.iter())
+                .map(|(field, resolved)| OrderedField {
+                    enabled: field.enabled,
+                    order: field.order,
+                    name: redact_value_pair(field.name, &resolved.name),
+                    value: redact_value_pair(field.value, &resolved.value),
+                })
+                .collect(),
+        },
+        (RequestBody::Multipart { parts }, ResolvedRequestBody::Multipart { parts: resolved }) => {
+            RequestBody::Multipart {
+                parts: parts
+                    .into_iter()
+                    .zip(resolved.iter())
+                    .map(|(part, resolved)| match (part, resolved) {
+                        (
+                            MultipartPart::Field {
+                                enabled,
+                                order,
+                                name,
+                                value,
+                            },
+                            ResolvedMultipartPart::Field {
+                                name: resolved_name,
+                                value: resolved_value,
+                                ..
+                            },
+                        ) => MultipartPart::Field {
+                            enabled,
+                            order,
+                            name: redact_value_pair(name, resolved_name),
+                            value: redact_value_pair(value, resolved_value),
+                        },
+                        (part, _) => part,
+                    })
+                    .collect(),
+            }
+        }
+        (body, _) => body,
     }
 }
 
@@ -1358,6 +1555,15 @@ mod tests {
             self.cookies.retain(|cookie| !removed.contains(&cookie.id));
             Ok(removed)
         }
+
+        fn relink_body_files(
+            &mut self,
+            workspace_id: WorkspaceId,
+            _from_path: String,
+            _replacement: BodyFileReference,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            self.list_request_workspace(workspace_id)
+        }
     }
 
     #[test]
@@ -1679,7 +1885,9 @@ mod tests {
             name: "Secret request".to_owned(),
             method: "POST".to_owned(),
             url: "https://example.test?token={{token}}".to_owned(),
-            body: "{\"token\":\"{{token}}\"}".to_owned(),
+            body: RequestBody::Raw {
+                content: "{\"token\":\"{{token}}\"}".to_owned(),
+            },
             query: vec![OrderedField {
                 enabled: true,
                 order: 0,
@@ -1735,7 +1943,12 @@ mod tests {
             .first()
             .expect("history record");
         assert_eq!(record.content.url, REDACTED_VALUE);
-        assert_eq!(record.content.body, REDACTED_VALUE);
+        assert_eq!(
+            record.content.body,
+            RequestBody::Raw {
+                content: REDACTED_VALUE.to_owned()
+            }
+        );
         assert_eq!(record.content.query[0].value, REDACTED_VALUE);
         assert_eq!(record.content.headers[0].value, REDACTED_VALUE);
         assert_eq!(record.content.headers[1].value, REDACTED_VALUE);
@@ -1797,7 +2010,7 @@ mod tests {
             name: name.to_owned(),
             method: "GET".to_owned(),
             url: "https://example.test".to_owned(),
-            body: String::new(),
+            body: RequestBody::None,
             query: vec![OrderedField {
                 enabled: true,
                 order: 0,

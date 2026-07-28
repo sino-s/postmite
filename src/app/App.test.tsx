@@ -187,6 +187,7 @@ describe("App request editor", () => {
       screen.getByLabelText("URL"),
       "https://example.test/users?tag=first&tag=",
     );
+    await user.click(screen.getByRole("button", { name: "Raw" }));
     await user.click(screen.getByLabelText("Raw body editor"));
     await user.paste("{\"ok\":true}");
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -207,7 +208,7 @@ describe("App request editor", () => {
       content: expect.objectContaining({
         method: "POST",
         name: "Create user",
-        body: "{\"ok\":true}",
+        body: { type: "RAW", content: "{\"ok\":true}" },
         query: [
           { enabled: true, order: 0, name: "tag", value: "first" },
           { enabled: true, order: 1, name: "tag", value: "" },
@@ -671,7 +672,9 @@ function renderApp(
 function workspaceSnapshot(): WorkspaceSnapshotDto {
   return {
     selectedWorkspaceId: "workspace-1",
-    workspaces: [{ id: "workspace-1", name: "Personal", isSelected: true }],
+    workspaces: [
+      { id: "workspace-1", name: "Personal", isSelected: true, baseDirectory: null },
+    ],
   };
 }
 
@@ -997,7 +1000,7 @@ function requestContent(
     name: "Untitled Request",
     method: "GET",
     url,
-    body: "",
+    body: { type: "NONE" },
     query: queryFromUrl(url),
     headers: [],
     ...overrides,

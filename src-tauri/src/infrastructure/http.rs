@@ -1,11 +1,21 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    path::{Component, Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use bytes::Bytes;
-use futures_util::{stream, StreamExt};
+use futures_util::{stream, StreamExt, TryStreamExt};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
-    Method, Url,
+    multipart, Method, Url,
 };
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncReadExt;
+use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -13,7 +23,9 @@ use crate::{
         ExecutionCoordinator, ExecutionEvent, ExecutionEventKind, ExecutionHeader, ExecutionId,
         ExecutionRequest, MAX_RESPONSE_PREVIEW_BYTES,
     },
-    domain::request::{OrderedField, RequestContent},
+    domain::request::{
+        BodyFilePath, BodyFileReference, MultipartPart, OrderedField, RequestBody, RequestContent,
+    },
 };
 
 const UPLOAD_CHUNK_BYTES: usize = 16 * 1024;
@@ -25,10 +37,12 @@ pub async fn run_http_execution(
     coordinator: Arc<ExecutionCoordinator>,
     sink: Arc<dyn Fn(ExecutionEvent) + Send + Sync + 'static>,
 ) {
+    let base_directory = request.workspace_base_directory.clone();
     let content = request.content;
     let result = execute_http(
         execution_id,
         &content,
+        base_directory.as_deref(),
         cancellation.clone(),
         Arc::clone(&coordinator),
         Arc::clone(&sink),
@@ -66,6 +80,7 @@ pub async fn run_http_execution(
 async fn execute_http(
     execution_id: ExecutionId,
     content: &RequestContent,
+    base_directory: Option<&str>,
     cancellation: CancellationToken,
     coordinator: Arc<ExecutionCoordinator>,
     sink: Arc<dyn Fn(ExecutionEvent) + Send + Sync + 'static>,
@@ -74,7 +89,15 @@ async fn execute_http(
         .map_err(|_| HttpExecutionError::InvalidInput("method.invalid"))?;
     let url = resolve_url(content)?;
     let headers = resolve_headers(&content.headers)?;
-    let body = content.body.as_bytes().to_vec();
+    let body = build_request_body(
+        &content.body,
+        base_directory,
+        cancellation.clone(),
+        execution_id,
+        Arc::clone(&coordinator),
+        Arc::clone(&sink),
+    )
+    .await?;
 
     emit(
         &coordinator,
@@ -95,17 +118,40 @@ async fn execute_http(
         .map_err(|_| HttpExecutionError::Transport)?;
 
     let mut builder = client.request(method, url).headers(headers);
-    if !body.is_empty() {
-        let total_bytes = body.len() as u64;
-        let body_stream = cancellable_upload_stream(
+    match body {
+        BuiltRequestBody::None => {}
+        BuiltRequestBody::Bytes {
+            bytes,
+            content_type,
+        } => {
+            let total_bytes = bytes.len() as u64;
+            let body_stream = cancellable_upload_stream(
+                bytes,
+                cancellation.clone(),
+                execution_id,
+                Arc::clone(&coordinator),
+                Arc::clone(&sink),
+            );
+            builder = builder.body(reqwest::Body::wrap_stream(body_stream));
+            builder = builder.header(reqwest::header::CONTENT_LENGTH, total_bytes);
+            if let Some(content_type) = content_type {
+                builder = builder.header(reqwest::header::CONTENT_TYPE, content_type);
+            }
+        }
+        BuiltRequestBody::Stream {
             body,
-            cancellation.clone(),
-            execution_id,
-            Arc::clone(&coordinator),
-            Arc::clone(&sink),
-        );
-        builder = builder.body(reqwest::Body::wrap_stream(body_stream));
-        builder = builder.header(reqwest::header::CONTENT_LENGTH, total_bytes);
+            content_length,
+            content_type,
+        } => {
+            builder = builder.body(body);
+            builder = builder.header(reqwest::header::CONTENT_LENGTH, content_length);
+            if let Some(content_type) = content_type {
+                builder = builder.header(reqwest::header::CONTENT_TYPE, content_type);
+            }
+        }
+        BuiltRequestBody::Multipart { form } => {
+            builder = builder.multipart(form);
+        }
     }
 
     let response = tokio::select! {
@@ -227,6 +273,215 @@ fn response_headers(headers: &HeaderMap) -> Vec<ExecutionHeader> {
         .collect()
 }
 
+enum BuiltRequestBody {
+    None,
+    Bytes {
+        bytes: Vec<u8>,
+        content_type: Option<&'static str>,
+    },
+    Stream {
+        body: reqwest::Body,
+        content_length: u64,
+        content_type: Option<&'static str>,
+    },
+    Multipart {
+        form: multipart::Form,
+    },
+}
+
+async fn build_request_body(
+    body: &RequestBody,
+    base_directory: Option<&str>,
+    cancellation: CancellationToken,
+    execution_id: ExecutionId,
+    coordinator: Arc<ExecutionCoordinator>,
+    sink: Arc<dyn Fn(ExecutionEvent) + Send + Sync + 'static>,
+) -> Result<BuiltRequestBody, HttpExecutionError> {
+    match body {
+        RequestBody::None => Ok(BuiltRequestBody::None),
+        RequestBody::Raw { content } => Ok(BuiltRequestBody::Bytes {
+            bytes: content.as_bytes().to_vec(),
+            content_type: None,
+        }),
+        RequestBody::UrlEncoded { fields } => {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            for field in sorted_enabled_fields(fields) {
+                serializer.append_pair(&field.name, &field.value);
+            }
+            Ok(BuiltRequestBody::Bytes {
+                bytes: serializer.finish().into_bytes(),
+                content_type: Some("application/x-www-form-urlencoded"),
+            })
+        }
+        RequestBody::Binary { file } => {
+            let resolved = resolve_body_file_path(file, base_directory)?;
+            ensure_body_file_current(file, &resolved).await?;
+            let body = file_upload_body(
+                &resolved,
+                file.size,
+                cancellation,
+                execution_id,
+                coordinator,
+                sink,
+            )
+            .await?;
+            Ok(BuiltRequestBody::Stream {
+                body,
+                content_length: file.size,
+                content_type: None,
+            })
+        }
+        RequestBody::Multipart { parts } => {
+            let mut form = multipart::Form::new();
+            for part in parts.iter().filter(|part| match part {
+                MultipartPart::Field { enabled, .. } | MultipartPart::File { enabled, .. } => {
+                    *enabled
+                }
+            }) {
+                match part {
+                    MultipartPart::Field { name, value, .. } => {
+                        form = form.text(name.clone(), value.clone());
+                    }
+                    MultipartPart::File { name, file, .. } => {
+                        let resolved = resolve_body_file_path(file, base_directory)?;
+                        ensure_body_file_current(file, &resolved).await?;
+                        let part_body = file_upload_body(
+                            &resolved,
+                            file.size,
+                            cancellation.clone(),
+                            execution_id,
+                            Arc::clone(&coordinator),
+                            Arc::clone(&sink),
+                        )
+                        .await?;
+                        form = form.part(
+                            name.clone(),
+                            multipart::Part::stream_with_length(part_body, file.size)
+                                .file_name(file.file_name.clone()),
+                        );
+                    }
+                }
+            }
+            Ok(BuiltRequestBody::Multipart { form })
+        }
+    }
+}
+
+async fn file_upload_body(
+    path: &Path,
+    total_bytes: u64,
+    cancellation: CancellationToken,
+    execution_id: ExecutionId,
+    coordinator: Arc<ExecutionCoordinator>,
+    sink: Arc<dyn Fn(ExecutionEvent) + Send + Sync + 'static>,
+) -> Result<reqwest::Body, HttpExecutionError> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| HttpExecutionError::BodyFileMissing)?;
+    let sent = Arc::new(AtomicU64::new(0));
+    let stream = ReaderStream::new(file)
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))
+        .map_ok({
+            let sent = Arc::clone(&sent);
+            move |chunk| {
+                let next =
+                    sent.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
+                emit(
+                    &coordinator,
+                    &sink,
+                    execution_id,
+                    ExecutionEventKind::UploadProgress {
+                        sent_bytes: next,
+                        total_bytes,
+                    },
+                );
+                chunk
+            }
+        })
+        .take_until(cancellation.cancelled_owned());
+    Ok(reqwest::Body::wrap_stream(stream))
+}
+
+async fn ensure_body_file_current(
+    reference: &BodyFileReference,
+    path: &Path,
+) -> Result<(), HttpExecutionError> {
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|_| HttpExecutionError::BodyFileMissing)?;
+    if !metadata.is_file() {
+        return Err(HttpExecutionError::BodyFileMissing);
+    }
+    if metadata.len() != reference.size {
+        return Err(HttpExecutionError::BodyFileChanged);
+    }
+    if !reference.sha256.is_empty() && sha256_file(path).await? != reference.sha256 {
+        return Err(HttpExecutionError::BodyFileChanged);
+    }
+    Ok(())
+}
+
+async fn sha256_file(path: &Path) -> Result<String, HttpExecutionError> {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| HttpExecutionError::BodyFileMissing)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; UPLOAD_CHUNK_BYTES];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|_| HttpExecutionError::BodyFileMissing)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn resolve_body_file_path(
+    reference: &BodyFileReference,
+    base_directory: Option<&str>,
+) -> Result<PathBuf, HttpExecutionError> {
+    match &reference.path {
+        BodyFilePath::Absolute { path } => {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                Ok(path)
+            } else {
+                Err(HttpExecutionError::InvalidInput(
+                    "body.file.absolute.invalid",
+                ))
+            }
+        }
+        BodyFilePath::Relative { path } => {
+            if path_has_unsafe_components(path) {
+                return Err(HttpExecutionError::InvalidInput(
+                    "body.file.relative.invalid",
+                ));
+            }
+            let Some(base_directory) = base_directory else {
+                return Err(HttpExecutionError::InvalidInput(
+                    "workspace.baseDirectory.required",
+                ));
+            };
+            Ok(PathBuf::from(base_directory).join(path))
+        }
+    }
+}
+
+fn path_has_unsafe_components(path: &str) -> bool {
+    let path = Path::new(path);
+    path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+}
+
 fn cancellable_upload_stream(
     body: Vec<u8>,
     cancellation: CancellationToken,
@@ -282,6 +537,8 @@ struct CompletedHttpExecution {
 #[derive(Debug)]
 enum HttpExecutionError {
     InvalidInput(&'static str),
+    BodyFileChanged,
+    BodyFileMissing,
     Transport,
     Response,
     Cancelled,
@@ -291,6 +548,8 @@ impl HttpExecutionError {
     fn safe_message(&self) -> String {
         match self {
             Self::InvalidInput(detail) => (*detail).to_owned(),
+            Self::BodyFileChanged => "body.file.changed".to_owned(),
+            Self::BodyFileMissing => "body.file.missing".to_owned(),
             Self::Transport => "transport.failed".to_owned(),
             Self::Response => "response.failed".to_owned(),
             Self::Cancelled => "cancelled".to_owned(),
@@ -314,7 +573,10 @@ mod tests {
     use super::*;
     use crate::{
         application::execution::{ExecutionCoordinator, ExecutionEventKind, ExecutionRequest},
-        domain::request::{OrderedField, RequestContent, RequestDraftId},
+        domain::request::{
+            BodyFilePath, BodyFileReference, MultipartPart, OrderedField, RequestBody,
+            RequestContent, RequestDraftId,
+        },
     };
 
     #[tokio::test]
@@ -355,7 +617,9 @@ mod tests {
         let events = run_fixture_request(RequestContent {
             method: "POST".to_owned(),
             url: server.url("/post"),
-            body: "{\"ok\":true}".to_owned(),
+            body: RequestBody::Raw {
+                content: "{\"ok\":true}".to_owned(),
+            },
             ..RequestContent::blank()
         })
         .await;
@@ -379,12 +643,197 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn url_encoded_body_reaches_local_fixture_byte_for_byte() {
+        let (server, captured) = start_fixture(FixtureMode::Echo).await;
+        let events = run_fixture_request(RequestContent {
+            method: "POST".to_owned(),
+            url: server.url("/form"),
+            body: RequestBody::UrlEncoded {
+                fields: vec![field(1, "space", "a b"), field(0, "tag", "first")],
+            },
+            ..RequestContent::blank()
+        })
+        .await;
+
+        let request = captured.await.expect("fixture request");
+        assert!(request.contains("content-type: application/x-www-form-urlencoded"));
+        assert!(request.ends_with("tag=first&space=a+b"));
+        assert_terminal_completed(&events);
+    }
+
+    #[tokio::test]
+    async fn binary_body_streams_file_to_local_fixture_byte_for_byte() {
+        let file = tempfile::NamedTempFile::new().expect("temporary body file");
+        std::fs::write(file.path(), b"binary-payload").expect("write body file");
+        let metadata = std::fs::metadata(file.path()).expect("body metadata");
+        let (server, captured) = start_fixture(FixtureMode::Echo).await;
+
+        let events = run_fixture_request(RequestContent {
+            method: "POST".to_owned(),
+            url: server.url("/binary"),
+            body: RequestBody::Binary {
+                file: BodyFileReference {
+                    path: BodyFilePath::Absolute {
+                        path: file.path().to_string_lossy().into_owned(),
+                    },
+                    file_name: "payload.bin".to_owned(),
+                    size: metadata.len(),
+                    modified_at_epoch_seconds: None,
+                    sha256: hash_bytes(b"binary-payload"),
+                },
+            },
+            ..RequestContent::blank()
+        })
+        .await;
+
+        let request = captured.await.expect("fixture request");
+        assert!(request.starts_with("POST /binary HTTP/1.1"));
+        assert!(request.ends_with("binary-payload"));
+        assert_terminal_completed(&events);
+    }
+
+    #[tokio::test]
+    async fn relative_binary_body_survives_base_directory_move() {
+        let base = tempfile::TempDir::new().expect("base directory");
+        let file_path = base.path().join("payload.bin");
+        std::fs::write(&file_path, b"relative-payload").expect("write body file");
+        let metadata = std::fs::metadata(&file_path).expect("body metadata");
+        let (server, captured) = start_fixture(FixtureMode::Echo).await;
+
+        let events = run_fixture_request_with_base(
+            RequestContent {
+                method: "POST".to_owned(),
+                url: server.url("/relative"),
+                body: RequestBody::Binary {
+                    file: BodyFileReference {
+                        path: BodyFilePath::Relative {
+                            path: "payload.bin".to_owned(),
+                        },
+                        file_name: "payload.bin".to_owned(),
+                        size: metadata.len(),
+                        modified_at_epoch_seconds: None,
+                        sha256: hash_bytes(b"relative-payload"),
+                    },
+                },
+                ..RequestContent::blank()
+            },
+            Some(base.path().to_string_lossy().into_owned()),
+        )
+        .await;
+
+        let request = captured.await.expect("fixture request");
+        assert!(request.ends_with("relative-payload"));
+        assert_terminal_completed(&events);
+    }
+
+    #[tokio::test]
+    async fn changed_or_missing_body_files_fail_before_upload() {
+        let changed = tempfile::NamedTempFile::new().expect("changed body file");
+        std::fs::write(changed.path(), b"changed").expect("write body file");
+        let (server, _captured) = start_fixture(FixtureMode::Echo).await;
+        let changed_events = run_fixture_request(RequestContent {
+            method: "POST".to_owned(),
+            url: server.url("/changed"),
+            body: RequestBody::Binary {
+                file: BodyFileReference {
+                    path: BodyFilePath::Absolute {
+                        path: changed.path().to_string_lossy().into_owned(),
+                    },
+                    file_name: "payload.bin".to_owned(),
+                    size: 999,
+                    modified_at_epoch_seconds: None,
+                    sha256: hash_bytes(b"original"),
+                },
+            },
+            ..RequestContent::blank()
+        })
+        .await;
+        assert!(changed_events.iter().any(|event| matches!(
+            &event.kind,
+            ExecutionEventKind::Failed { message } if message == "body.file.changed"
+        )));
+
+        let missing_path = changed.path().with_file_name("missing.bin");
+        let (server, _captured) = start_fixture(FixtureMode::Echo).await;
+        let missing_events = run_fixture_request(RequestContent {
+            method: "POST".to_owned(),
+            url: server.url("/missing"),
+            body: RequestBody::Binary {
+                file: BodyFileReference {
+                    path: BodyFilePath::Absolute {
+                        path: missing_path.to_string_lossy().into_owned(),
+                    },
+                    file_name: "missing.bin".to_owned(),
+                    size: 7,
+                    modified_at_epoch_seconds: None,
+                    sha256: hash_bytes(b"missing"),
+                },
+            },
+            ..RequestContent::blank()
+        })
+        .await;
+        assert!(missing_events.iter().any(|event| matches!(
+            &event.kind,
+            ExecutionEventKind::Failed { message } if message == "body.file.missing"
+        )));
+    }
+
+    #[tokio::test]
+    async fn multipart_body_streams_fields_and_files_to_local_fixture() {
+        let file = tempfile::NamedTempFile::new().expect("temporary body file");
+        std::fs::write(file.path(), b"file-payload").expect("write body file");
+        let metadata = std::fs::metadata(file.path()).expect("body metadata");
+        let (server, captured) = start_fixture(FixtureMode::Echo).await;
+
+        let events = run_fixture_request(RequestContent {
+            method: "POST".to_owned(),
+            url: server.url("/multipart"),
+            body: RequestBody::Multipart {
+                parts: vec![
+                    MultipartPart::Field {
+                        enabled: true,
+                        order: 0,
+                        name: "kind".to_owned(),
+                        value: "fixture".to_owned(),
+                    },
+                    MultipartPart::File {
+                        enabled: true,
+                        order: 1,
+                        name: "upload".to_owned(),
+                        file: BodyFileReference {
+                            path: BodyFilePath::Absolute {
+                                path: file.path().to_string_lossy().into_owned(),
+                            },
+                            file_name: "payload.txt".to_owned(),
+                            size: metadata.len(),
+                            modified_at_epoch_seconds: None,
+                            sha256: hash_bytes(b"file-payload"),
+                        },
+                    },
+                ],
+            },
+            ..RequestContent::blank()
+        })
+        .await;
+
+        let request = captured.await.expect("fixture request");
+        let lower_request = request.to_ascii_lowercase();
+        assert!(lower_request.contains("content-disposition: form-data; name=\"kind\""));
+        assert!(request.contains("fixture"));
+        assert!(lower_request
+            .contains("content-disposition: form-data; name=\"upload\"; filename=\"payload.txt\""));
+        assert!(request.contains("file-payload"));
+        assert_terminal_completed(&events);
+    }
+
+    #[tokio::test]
     async fn cancel_before_connect_emits_one_terminal_event() {
         let (server, _captured) = start_fixture(FixtureMode::SlowHeaders).await;
         let coordinator = Arc::new(ExecutionCoordinator::new());
         let events = Arc::new(Mutex::new(Vec::new()));
         let request = ExecutionRequest {
             draft_id: RequestDraftId::new(),
+            workspace_base_directory: None,
             content: RequestContent {
                 url: server.url("/slow"),
                 ..RequestContent::blank()
@@ -410,6 +859,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let request = ExecutionRequest {
             draft_id: RequestDraftId::new(),
+            workspace_base_directory: None,
             content: RequestContent {
                 url: server.url("/download"),
                 ..RequestContent::blank()
@@ -441,10 +891,13 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let request = ExecutionRequest {
             draft_id: RequestDraftId::new(),
+            workspace_base_directory: None,
             content: RequestContent {
                 method: "POST".to_owned(),
                 url: server.url("/upload"),
-                body: "x".repeat(128 * 1024),
+                body: RequestBody::Raw {
+                    content: "x".repeat(128 * 1024),
+                },
                 ..RequestContent::blank()
             },
         };
@@ -468,10 +921,18 @@ mod tests {
     }
 
     async fn run_fixture_request(content: RequestContent) -> Vec<ExecutionEvent> {
+        run_fixture_request_with_base(content, None).await
+    }
+
+    async fn run_fixture_request_with_base(
+        content: RequestContent,
+        workspace_base_directory: Option<String>,
+    ) -> Vec<ExecutionEvent> {
         let coordinator = Arc::new(ExecutionCoordinator::new());
         let events = Arc::new(Mutex::new(Vec::new()));
         let request = ExecutionRequest {
             draft_id: RequestDraftId::new(),
+            workspace_base_directory,
             content,
         };
         let sink = event_sink(&events);
@@ -555,6 +1016,12 @@ mod tests {
             name: name.to_owned(),
             value: value.to_owned(),
         }
+    }
+
+    fn hash_bytes(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        format!("{:x}", hasher.finalize())
     }
 
     struct FixtureServer {

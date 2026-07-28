@@ -3,6 +3,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type {
   CreateWorkspaceInput,
   RenameWorkspaceInput,
+  SetWorkspaceBaseDirectoryInput,
   WorkspaceIdInput,
   WorkspaceSnapshotDto,
 } from "./generated/ipc";
@@ -32,6 +33,16 @@ export async function renameWorkspace(
   return updateWorkspaceSnapshot(
     queryClient,
     workspaceIpc.renameWorkspace(input),
+  );
+}
+
+export async function setWorkspaceBaseDirectory(
+  queryClient: QueryClient,
+  input: SetWorkspaceBaseDirectoryInput,
+) {
+  return updateWorkspaceSnapshot(
+    queryClient,
+    workspaceIpc.setWorkspaceBaseDirectory(input),
   );
 }
 

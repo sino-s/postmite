@@ -120,6 +120,7 @@ pub fn configure_e2e_request_smoke(
         let result = executions.start(
             ExecutionRequest {
                 draft_id: RequestDraftId::new(),
+                workspace_base_directory: None,
                 content: RequestContent {
                     url,
                     ..RequestContent::blank()
