@@ -21,6 +21,7 @@
     "ci:rust": "pnpm ci:rust:fmt && pnpm ci:rust:clippy && pnpm ci:rust:test",
     "ci:frontend": "pnpm typecheck && pnpm lint && pnpm test && pnpm build:web",
     "ci:build": "pnpm build:tauri:ci",
+    "e2e:request": "node scripts/e2e-request.mjs",
     "perf:release": "node scripts/perf-release.mjs",
     "perf:release:strict": "POSTMITE_PERF_STRICT=1 node scripts/perf-release.mjs"
   },

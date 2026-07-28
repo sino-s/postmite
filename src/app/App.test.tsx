@@ -5,6 +5,8 @@ import { axe } from "jest-axe";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
+  ExecutionEventDto,
+  ExecutionEventKindDto,
   RequestContentDto,
   RequestWorkspaceSnapshotDto,
   WorkspaceSnapshotDto,
@@ -33,12 +35,25 @@ const requestApiMock = vi.hoisted(() => ({
 }));
 
 const executionApiMock = vi.hoisted(() => ({
+  cancelRequestExecution: vi.fn(),
+  emitExecutionEvent: vi.fn(),
+  listenToRequestExecutionEvents: vi.fn(),
   startRequestExecution: vi.fn(),
 }));
 
 vi.mock("../shared/api/workspaces", () => workspaceApiMock);
 vi.mock("../shared/api/requests", () => requestApiMock);
-vi.mock("../shared/api/execution", () => executionApiMock);
+vi.mock("../shared/api/execution", async (importActual) => {
+  const actual =
+    await importActual<typeof import("../shared/api/execution")>();
+  return {
+    ...actual,
+    cancelRequestExecution: executionApiMock.cancelRequestExecution,
+    listenToRequestExecutionEvents:
+      executionApiMock.listenToRequestExecutionEvents,
+    startRequestExecution: executionApiMock.startRequestExecution,
+  };
+});
 vi.mock("../features/request-editor/CodeMirrorBodyEditor", () => ({
   CodeMirrorBodyEditor: ({
     value,
@@ -71,6 +86,16 @@ describe("App request editor", () => {
       status: "queued",
       executionId: "execution-1",
     });
+    executionApiMock.cancelRequestExecution.mockResolvedValue({
+      executionId: "execution-1",
+      cancelled: true,
+    });
+    executionApiMock.listenToRequestExecutionEvents.mockImplementation(
+      async (onEvent: (event: ExecutionEventDto) => void) => {
+        executionApiMock.emitExecutionEvent.mockImplementation(onEvent);
+        return vi.fn();
+      },
+    );
   });
 
   it("creates, edits, saves, and closes a request tab", async () => {
@@ -212,9 +237,102 @@ describe("App request editor", () => {
       draftId: "draft-1",
       content: requestContent(),
     });
-    expect(
-      await screen.findByText("Execution queued: execution-1"),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("displays status headers JSON body and timing from execution events", async () => {
+    const user = userEvent.setup();
+    renderApp(
+      requestSnapshot({ content: requestContent(), isDirty: true }),
+    );
+    requestApiMock.updateRequestDraft.mockResolvedValue(undefined);
+
+    await user.click(await screen.findByRole("button", { name: "Send" }));
+    executionApiMock.emitExecutionEvent(
+      executionEvent("execution-1", 1n, {
+        type: "STARTED",
+        method: "GET",
+        url: "https://example.test",
+      }),
+    );
+    executionApiMock.emitExecutionEvent(
+      executionEvent("execution-1", 2n, {
+        type: "RESPONSE_HEADERS",
+        status: 200,
+        headers: [{ name: "content-type", value: "application/json" }],
+      }),
+    );
+    executionApiMock.emitExecutionEvent(
+      executionEvent("execution-1", 3n, {
+        type: "COMPLETED",
+        status: 200,
+        bodyPreview: "{\"ok\":true}",
+        bodyTruncated: false,
+      }),
+    );
+
+    expect(await screen.findByText("Completed")).toBeInTheDocument();
+    expect(screen.getByText("Status 200")).toBeInTheDocument();
+    expect(screen.getByText("content-type")).toBeInTheDocument();
+    expect(screen.getByText("application/json")).toBeInTheDocument();
+    expect(screen.getByText(/"ok": true/)).toBeInTheDocument();
+    expect(screen.getByText(/^Time \d+ ms$/)).toBeInTheDocument();
+  });
+
+  it("cancels an in-flight execution through typed IPC", async () => {
+    const user = userEvent.setup();
+    renderApp(
+      requestSnapshot({ content: requestContent(), isDirty: true }),
+    );
+    requestApiMock.updateRequestDraft.mockResolvedValue(undefined);
+
+    await user.click(await screen.findByRole("button", { name: "Send" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    executionApiMock.emitExecutionEvent(
+      executionEvent("execution-1", 1n, { type: "CANCELLED" }),
+    );
+
+    expect(executionApiMock.cancelRequestExecution).toHaveBeenCalledWith({
+      executionId: "execution-1",
+    });
+    expect(await screen.findByText("Cancelled")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+
+  it("keeps execution responses isolated by tab", async () => {
+    const user = userEvent.setup();
+    renderApp(twoTabRequestSnapshot());
+    requestApiMock.updateRequestDraft.mockResolvedValue(undefined);
+    executionApiMock.startRequestExecution
+      .mockResolvedValueOnce({ status: "queued", executionId: "execution-1" })
+      .mockResolvedValueOnce({ status: "queued", executionId: "execution-2" });
+
+    await user.click(await screen.findByRole("button", { name: "Send" }));
+    executionApiMock.emitExecutionEvent(
+      executionEvent("execution-1", 1n, {
+        type: "COMPLETED",
+        status: 200,
+        bodyPreview: "first tab",
+        bodyTruncated: false,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Second Request" }));
+    expect(screen.queryByText("first tab")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    executionApiMock.emitExecutionEvent(
+      executionEvent("execution-2", 1n, {
+        type: "COMPLETED",
+        status: 201,
+        bodyPreview: "second tab",
+        bodyTruncated: false,
+      }),
+    );
+
+    expect(await screen.findByText("second tab")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Untitled Request" }));
+    expect(screen.getByText("first tab")).toBeInTheDocument();
+    expect(screen.queryByText("second tab")).not.toBeInTheDocument();
   });
 
   it("restores existing tabs from the request workspace snapshot", async () => {
@@ -330,6 +448,54 @@ function requestSnapshot({
   };
 }
 
+function twoTabRequestSnapshot(): RequestWorkspaceSnapshotDto {
+  const first = requestContent({ name: "Untitled Request" });
+  const second = requestContent({
+    name: "Second Request",
+    url: "https://example.test/second",
+  });
+  return {
+    workspaceId: "workspace-1",
+    savedRequests: [],
+    drafts: [
+      {
+        id: "draft-1",
+        workspaceId: "workspace-1",
+        savedRequestId: null,
+        content: first,
+        isDirty: false,
+      },
+      {
+        id: "draft-2",
+        workspaceId: "workspace-1",
+        savedRequestId: null,
+        content: second,
+        isDirty: false,
+      },
+    ],
+    tabs: [
+      {
+        id: "tab-1",
+        workspaceId: "workspace-1",
+        savedRequestId: null,
+        draftId: "draft-1",
+        position: 0,
+        title: "Untitled Request",
+        isActive: true,
+      },
+      {
+        id: "tab-2",
+        workspaceId: "workspace-1",
+        savedRequestId: null,
+        draftId: "draft-2",
+        position: 1,
+        title: "Second Request",
+        isActive: false,
+      },
+    ],
+  };
+}
+
 function requestContent(
   overrides: Partial<RequestContentDto> = {},
 ): RequestContentDto {
@@ -342,5 +508,17 @@ function requestContent(
     query: queryFromUrl(url),
     headers: [],
     ...overrides,
+  };
+}
+
+function executionEvent(
+  executionId: string,
+  sequence: bigint,
+  kind: ExecutionEventKindDto,
+): ExecutionEventDto {
+  return {
+    executionId,
+    sequence,
+    kind,
   };
 }

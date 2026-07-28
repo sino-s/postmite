@@ -19,8 +19,10 @@ vi.mock("./ipc", () => ({
 import {
   REQUEST_EXECUTION_EVENT,
   cancelRequestExecution,
+  createQueuedResponseExecutionState,
   listenToRequestExecutionEvents,
   reduceRequestExecutionEvent,
+  reduceResponseExecutionStates,
   startRequestExecution,
 } from "./execution";
 
@@ -123,6 +125,66 @@ describe("request execution API", () => {
     expect(stale).toBe(started);
     expect(outOfOrder).toBe(started);
     expect(started.latestEvent?.kind.type).toBe("RESPONSE_HEADERS");
+  });
+
+  it("reduces response events into bounded per-draft view state", () => {
+    const queued = createQueuedResponseExecutionState({
+      draftId: "draft-1",
+      executionId: "execution-1",
+      nowMs: 100,
+    });
+    const states = reduceResponseExecutionStates(
+      { "draft-1": queued },
+      {
+        executionId: "execution-1",
+        sequence: 1n,
+        kind: {
+          type: "COMPLETED",
+          status: 200,
+          bodyPreview: "{\"ok\":true}",
+          bodyTruncated: false,
+        },
+      },
+      145,
+    );
+
+    expect(states["draft-1"]).toMatchObject({
+      phase: "completed",
+      status: 200,
+      bodyPreview: "{\"ok\":true}",
+      bodyTruncated: false,
+      completedAtMs: 145,
+    });
+  });
+
+  it("ignores response events for another execution or stale sequence", () => {
+    const queued = createQueuedResponseExecutionState({
+      draftId: "draft-1",
+      executionId: "execution-1",
+      nowMs: 100,
+    });
+    const states = { "draft-1": queued };
+
+    expect(
+      reduceResponseExecutionStates(
+        states,
+        event("execution-older", 1n, "COMPLETED"),
+        150,
+      ),
+    ).toBe(states);
+
+    const completed = reduceResponseExecutionStates(
+      states,
+      event("execution-1", 2n, "COMPLETED"),
+      150,
+    );
+    expect(
+      reduceResponseExecutionStates(
+        completed,
+        event("execution-1", 1n, "FAILED"),
+        160,
+      ),
+    ).toBe(completed);
   });
 });
 
