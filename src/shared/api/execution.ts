@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   CancelRequestExecutionInput,
   ExecutionEventDto,
+  ExecutionProxyMetadataDto,
+  ExecutionTimeoutMetadataDto,
   StartRequestExecutionInput,
 } from "./generated/ipc";
 import { requestIpc } from "./ipc";
@@ -37,11 +39,17 @@ export type ResponseExecutionState = {
   method: string | null;
   url: string | null;
   tlsVerification: boolean | null;
+  proxy: ExecutionProxyMetadataDto | null;
+  timeouts: ExecutionTimeoutMetadataDto | null;
   redirects: Array<{ from: string; to: string; status: number }>;
   status: number | null;
+  protocol: string | null;
+  remoteAddr: string | null;
   headers: Array<{ name: string; value: string }>;
   bodyPreview: string;
   bodyTruncated: boolean;
+  decodedBytes: bigint | null;
+  wireBytes: bigint | null;
   error: string | null;
   uploadProgress: { sentBytes: bigint; totalBytes: bigint } | null;
   downloadProgress: { receivedBytes: bigint; totalBytes: bigint | null } | null;
@@ -114,11 +122,17 @@ export function createQueuedResponseExecutionState({
     method: null,
     url: null,
     tlsVerification: null,
+    proxy: null,
+    timeouts: null,
     redirects: [],
     status: null,
+    protocol: null,
+    remoteAddr: null,
     headers: [],
     bodyPreview: "",
     bodyTruncated: false,
+    decodedBytes: null,
+    wireBytes: null,
     error: null,
     uploadProgress: null,
     downloadProgress: null,
@@ -171,6 +185,8 @@ export function reduceResponseExecutionState(
         method: event.kind.method,
         url: event.kind.url,
         tlsVerification: event.kind.tlsVerification,
+        proxy: event.kind.proxy,
+        timeouts: event.kind.timeouts,
       };
     case "REDIRECTED":
       return {
@@ -196,6 +212,8 @@ export function reduceResponseExecutionState(
       return {
         ...base,
         status: event.kind.status,
+        protocol: event.kind.protocol,
+        remoteAddr: event.kind.remoteAddr,
         headers: event.kind.headers,
       };
     case "DOWNLOAD_PROGRESS":
@@ -214,6 +232,8 @@ export function reduceResponseExecutionState(
         status: event.kind.status,
         bodyPreview: event.kind.bodyPreview,
         bodyTruncated: event.kind.bodyTruncated,
+        decodedBytes: event.kind.decodedBytes,
+        wireBytes: event.kind.wireBytes,
         error: null,
       };
     case "FAILED":

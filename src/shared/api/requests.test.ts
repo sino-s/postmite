@@ -147,6 +147,18 @@ describe("request query API", () => {
           clientCertificateReference: null,
           clientKeyReference: null,
         },
+        transport: {
+          proxy: {
+            source: "PROCESS_ENVIRONMENT",
+            url: null,
+            noProxy: [],
+          },
+          timeouts: {
+            connectMs: 10_000n,
+            overallMs: 300_000n,
+            idleMs: 60_000n,
+          },
+        },
       },
     });
 

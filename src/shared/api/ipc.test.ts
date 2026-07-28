@@ -65,6 +65,7 @@ describe("typed IPC adapter", () => {
           clientCertificateReference: null,
           clientKeyReference: null,
         },
+        transport: defaultTransport(),
       },
     });
 
@@ -89,6 +90,7 @@ describe("typed IPC adapter", () => {
             clientCertificateReference: null,
             clientKeyReference: null,
           },
+          transport: defaultTransport(),
         },
       },
     });
@@ -159,3 +161,18 @@ describe("typed IPC adapter", () => {
     );
   });
 });
+
+function defaultTransport() {
+  return {
+    proxy: {
+      source: "PROCESS_ENVIRONMENT" as const,
+      url: null,
+      noProxy: [],
+    },
+    timeouts: {
+      connectMs: 10_000n,
+      overallMs: 300_000n,
+      idleMs: 60_000n,
+    },
+  };
+}

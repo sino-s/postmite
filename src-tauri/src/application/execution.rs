@@ -81,6 +81,8 @@ pub enum ExecutionEventKind {
         method: String,
         url: String,
         tls_verification: bool,
+        proxy: ExecutionProxyMetadata,
+        timeouts: ExecutionTimeoutMetadata,
     },
     Redirected {
         from: String,
@@ -94,6 +96,8 @@ pub enum ExecutionEventKind {
     ResponseHeaders {
         status: u16,
         headers: Vec<ExecutionHeader>,
+        protocol: String,
+        remote_addr: Option<String>,
     },
     DownloadProgress {
         received_bytes: u64,
@@ -103,6 +107,8 @@ pub enum ExecutionEventKind {
         status: u16,
         body_preview: String,
         body_truncated: bool,
+        decoded_bytes: u64,
+        wire_bytes: Option<u64>,
     },
     Failed {
         message: String,
@@ -123,6 +129,22 @@ impl ExecutionEventKind {
 pub struct ExecutionHeader {
     pub name: String,
     pub value: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionProxyMetadata {
+    pub source: String,
+    pub selected_proxy: Option<String>,
+    pub bypass_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionTimeoutMetadata {
+    pub connect_ms: Option<u64>,
+    pub overall_ms: Option<u64>,
+    pub idle_ms: Option<u64>,
 }
 
 pub type ExecutionEventSink = Arc<dyn Fn(ExecutionEvent) + Send + Sync + 'static>;
@@ -320,6 +342,16 @@ mod tests {
                     method: "GET".to_owned(),
                     url: "http://127.0.0.1".to_owned(),
                     tls_verification: true,
+                    proxy: ExecutionProxyMetadata {
+                        source: "disabled".to_owned(),
+                        selected_proxy: None,
+                        bypass_reason: Some("proxy.disabled".to_owned()),
+                    },
+                    timeouts: ExecutionTimeoutMetadata {
+                        connect_ms: Some(10_000),
+                        overall_ms: Some(300_000),
+                        idle_ms: Some(60_000),
+                    },
                 },
             )
             .expect("current event");

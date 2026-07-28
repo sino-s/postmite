@@ -155,7 +155,7 @@ export function RequestEditor({
       selectedWorkspaceId,
       activeDraft?.id ?? null,
       selectedEnvironment?.id ?? null,
-      activeContent,
+      activeContent ? requestContentQueryKey(activeContent) : null,
     ],
     queryFn: () =>
       resolveRequestContent({
@@ -1966,14 +1966,32 @@ function ResponsePanel({ execution }: ResponsePanelProps) {
           </span>
         ) : null}
         <span className="text-slate-600">Time {Math.max(0, elapsedMs)} ms</span>
+        {execution.protocol ? (
+          <span className="text-slate-600">{execution.protocol}</span>
+        ) : null}
         {execution.downloadProgress ? (
           <span className="text-slate-600">
             Received {execution.downloadProgress.receivedBytes.toString()} bytes
           </span>
         ) : null}
+        {execution.decodedBytes !== null ? (
+          <span className="text-slate-600">
+            Decoded {execution.decodedBytes.toString()} bytes
+          </span>
+        ) : null}
+        {execution.wireBytes !== null ? (
+          <span className="text-slate-600">
+            Wire {execution.wireBytes.toString()} bytes
+          </span>
+        ) : null}
         {execution.uploadProgress ? (
           <span className="text-slate-600">
             Sent {execution.uploadProgress.sentBytes.toString()} bytes
+          </span>
+        ) : null}
+        {execution.proxy ? (
+          <span className="text-slate-600">
+            Proxy {formatProxyMetadata(execution.proxy)}
           </span>
         ) : null}
         {execution.tlsVerification === false ? (
@@ -2572,11 +2590,39 @@ function emptyRequestContent(): RequestContentDto {
       clientCertificateReference: null,
       clientKeyReference: null,
     },
+    transport: {
+      proxy: {
+        source: "PROCESS_ENVIRONMENT",
+        url: null,
+        noProxy: [],
+      },
+      timeouts: {
+        connectMs: 10_000n,
+        overallMs: 300_000n,
+        idleMs: 60_000n,
+      },
+    },
   };
+}
+
+function requestContentQueryKey(content: RequestContentDto) {
+  return JSON.stringify(content, (_key, value: unknown) =>
+    typeof value === "bigint" ? value.toString() : value,
+  );
 }
 
 function formatVariableSource(source: string) {
   return source === "ENVIRONMENT" ? "Environment" : "Collection";
+}
+
+function formatProxyMetadata(proxy: ResponseExecutionState["proxy"]) {
+  if (!proxy) {
+    return "unknown";
+  }
+  if (proxy.bypassReason) {
+    return `${proxy.source} (${proxy.bypassReason})`;
+  }
+  return proxy.selectedProxy ? `${proxy.source} ${proxy.selectedProxy}` : proxy.source;
 }
 
 function formatResolutionError(kind: string) {

@@ -55,6 +55,7 @@ describe("request execution API", () => {
             clientCertificateReference: null,
             clientKeyReference: null,
           },
+          transport: defaultTransport(),
         },
       }),
     ).resolves.toEqual({
@@ -80,6 +81,7 @@ describe("request execution API", () => {
           clientCertificateReference: null,
           clientKeyReference: null,
         },
+        transport: defaultTransport(),
       },
     });
   });
@@ -159,6 +161,8 @@ describe("request execution API", () => {
           status: 200,
           bodyPreview: "{\"ok\":true}",
           bodyTruncated: false,
+          decodedBytes: 11n,
+          wireBytes: 31n,
         },
       },
       145,
@@ -189,6 +193,8 @@ describe("request execution API", () => {
           method: "POST",
           url: "https://example.test/login",
           tlsVerification: false,
+          proxy: defaultProxyMetadata(),
+          timeouts: defaultTimeoutMetadata(),
         },
       },
       110,
@@ -267,6 +273,8 @@ function event(
         method: "GET",
         url: "http://127.0.0.1",
         tlsVerification: true,
+        proxy: defaultProxyMetadata(),
+        timeouts: defaultTimeoutMetadata(),
       },
     };
   }
@@ -286,7 +294,27 @@ function event(
     return {
       executionId,
       sequence,
-      kind: { type, status: 200, headers: [] },
+      kind: {
+        type,
+        status: 200,
+        headers: [],
+        protocol: "HTTP/1.1",
+        remoteAddr: "127.0.0.1:8080",
+      },
+    };
+  }
+  if (type === "COMPLETED") {
+    return {
+      executionId,
+      sequence,
+      kind: {
+        type,
+        status: 200,
+        bodyPreview: "",
+        bodyTruncated: false,
+        decodedBytes: 0n,
+        wireBytes: null,
+      },
     };
   }
   return {
@@ -294,4 +322,35 @@ function event(
     sequence,
     kind: { type },
   } as ExecutionEventDto;
+}
+
+function defaultTransport() {
+  return {
+    proxy: {
+      source: "PROCESS_ENVIRONMENT" as const,
+      url: null,
+      noProxy: [],
+    },
+    timeouts: {
+      connectMs: 10_000n,
+      overallMs: 300_000n,
+      idleMs: 60_000n,
+    },
+  };
+}
+
+function defaultProxyMetadata() {
+  return {
+    source: "processEnvironment",
+    selectedProxy: null,
+    bypassReason: null,
+  };
+}
+
+function defaultTimeoutMetadata() {
+  return {
+    connectMs: 10_000n,
+    overallMs: 300_000n,
+    idleMs: 60_000n,
+  };
 }

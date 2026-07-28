@@ -830,7 +830,30 @@ pub fn redact_request_content(
         auth: redact_request_auth(content.auth),
         redirect: content.redirect,
         tls: content.tls,
+        transport: redact_transport_policy(content.transport),
     }
+}
+
+fn redact_transport_policy(
+    mut policy: crate::domain::request::TransportPolicy,
+) -> crate::domain::request::TransportPolicy {
+    if let Some(url) = policy.proxy.url.as_deref() {
+        policy.proxy.url = Some(redact_url_credentials(url));
+    }
+    policy
+}
+
+fn redact_url_credentials(value: &str) -> String {
+    let Ok(mut url) = url::Url::parse(value) else {
+        return REDACTED_VALUE.to_owned();
+    };
+    if !url.username().is_empty() {
+        let _ = url.set_username(REDACTED_VALUE);
+    }
+    if url.password().is_some() {
+        let _ = url.set_password(Some(REDACTED_VALUE));
+    }
+    url.to_string()
 }
 
 pub fn materialize_request_auth(
