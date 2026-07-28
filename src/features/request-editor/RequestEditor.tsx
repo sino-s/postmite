@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Ban,
   Play,
   Plus,
   RotateCcw,
@@ -7,7 +8,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   closeRequestTab,
@@ -16,11 +17,19 @@ import {
   saveRequestDraft,
   updateRequestDraft,
 } from "../../shared/api/requests";
-import { startRequestExecution } from "../../shared/api/execution";
+import {
+  cancelRequestExecution,
+  createQueuedResponseExecutionState,
+  isTerminalResponseExecution,
+  listenToRequestExecutionEvents,
+  reduceResponseExecutionStates,
+  startRequestExecution,
+} from "../../shared/api/execution";
 import {
   workspaceQuery,
   workspaceQueryKey,
 } from "../../shared/api/workspaces";
+import type { ResponseExecutionState } from "../../shared/api/execution";
 import type {
   OrderedFieldDto,
   RequestContentDto,
@@ -39,18 +48,22 @@ import {
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
 type RequestEditorProps = {
+  onCancel?: typeof cancelRequestExecution;
   onExecute?: typeof startRequestExecution;
 };
 
 type OverrideMap = Record<string, RequestContentDto>;
 
 export function RequestEditor({
+  onCancel = cancelRequestExecution,
   onExecute = startRequestExecution,
 }: RequestEditorProps) {
   const queryClient = useQueryClient();
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<OverrideMap>({});
-  const [executionStatus, setExecutionStatus] = useState("No request sent");
+  const [executions, setExecutions] = useState<
+    Record<string, ResponseExecutionState>
+  >({});
 
   const workspaces = useQuery(workspaceQuery);
   const selectedWorkspaceId = workspaces.data?.selectedWorkspaceId;
@@ -75,6 +88,31 @@ export function RequestEditor({
       : null;
   const activeContent =
     activeDraft ? overrides[activeDraft.id] ?? activeDraft.content : null;
+  const activeExecution = activeDraft ? executions[activeDraft.id] ?? null : null;
+  const activeExecutionRunning =
+    activeExecution !== null && !isTerminalResponseExecution(activeExecution);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+
+    void listenToRequestExecutionEvents((event) => {
+      setExecutions((current) =>
+        reduceResponseExecutionStates(current, event, Date.now()),
+      );
+    }).then((nextUnlisten) => {
+      if (disposed) {
+        nextUnlisten();
+        return;
+      }
+      unlisten = nextUnlisten;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   const openTabMutation = useMutation({
     mutationFn: async () => {
@@ -161,7 +199,33 @@ export function RequestEditor({
       draftId: activeDraft.id,
       content: activeContent,
     });
-    setExecutionStatus(`Execution ${result.status}: ${result.executionId}`);
+    setExecutions((current) => ({
+      ...current,
+      [activeDraft.id]: createQueuedResponseExecutionState({
+        draftId: activeDraft.id,
+        executionId: result.executionId,
+        nowMs: Date.now(),
+      }),
+    }));
+  }
+
+  async function handleCancel() {
+    if (!activeExecution || isTerminalResponseExecution(activeExecution)) {
+      return;
+    }
+
+    const result = await onCancel({ executionId: activeExecution.executionId });
+    if (!result.cancelled) {
+      setExecutions((current) => ({
+        ...current,
+        [activeExecution.draftId]: {
+          ...activeExecution,
+          phase: "failed",
+          completedAtMs: Date.now(),
+          error: "Execution was already finished.",
+        },
+      }));
+    }
   }
 
   function handleEditorKeyDown(event: React.KeyboardEvent<HTMLElement>) {
@@ -246,6 +310,8 @@ export function RequestEditor({
           >
             <RequestLine
               content={activeContent}
+              executionRunning={activeExecutionRunning}
+              onCancel={() => void handleCancel()}
               onChange={changeActiveDraft}
               onExecute={() => void handleExecute()}
               onSave={() => void handleSave()}
@@ -285,12 +351,7 @@ export function RequestEditor({
                 value={activeContent.body}
               />
             </div>
-            <footer
-              aria-live="polite"
-              className="min-h-10 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
-            >
-              {executionStatus}
-            </footer>
+            <ResponsePanel execution={activeExecution} />
           </section>
         ) : (
           <section className="flex flex-1 items-center justify-center p-6">
@@ -364,6 +425,8 @@ function TabStrip({
 
 type RequestLineProps = {
   content: RequestContentDto;
+  executionRunning: boolean;
+  onCancel: () => void;
   onChange: (updater: (content: RequestContentDto) => RequestContentDto) => void;
   onExecute: () => void;
   onSave: () => void;
@@ -372,13 +435,15 @@ type RequestLineProps = {
 
 function RequestLine({
   content,
+  executionRunning,
+  onCancel,
   onChange,
   onExecute,
   onSave,
   saving,
 }: RequestLineProps) {
   return (
-    <div className="grid gap-3 rounded-md border border-slate-300 bg-white p-3 md:grid-cols-[180px_140px_minmax(0,1fr)_auto_auto]">
+    <div className="grid gap-3 rounded-md border border-slate-300 bg-white p-3 md:grid-cols-[180px_140px_minmax(0,1fr)_auto_auto_auto]">
       <label className="sr-only" htmlFor="request-name">
         Name
       </label>
@@ -442,13 +507,122 @@ function RequestLine({
       </button>
       <button
         className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-sky-700 px-3 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+        disabled={executionRunning}
         onClick={onExecute}
         type="button"
       >
         <Play aria-hidden="true" size={16} />
         Send
       </button>
+      <button
+        className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-red-300 bg-white px-3 text-sm font-medium text-red-700 hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
+        disabled={!executionRunning}
+        onClick={onCancel}
+        type="button"
+      >
+        <Ban aria-hidden="true" size={16} />
+        Cancel
+      </button>
     </div>
+  );
+}
+
+type ResponsePanelProps = {
+  execution: ResponseExecutionState | null;
+};
+
+function ResponsePanel({ execution }: ResponsePanelProps) {
+  if (!execution) {
+    return (
+      <section
+        aria-label="Response"
+        aria-live="polite"
+        className="min-h-40 rounded-md border border-slate-300 bg-white p-3 text-sm text-slate-600"
+      >
+        No response yet.
+      </section>
+    );
+  }
+
+  const elapsedMs =
+    (execution.completedAtMs ?? Date.now()) - execution.startedAtMs;
+  const bodyPreview = formatBodyPreview(execution.bodyPreview);
+  const phaseLabel = execution.phase[0].toUpperCase() + execution.phase.slice(1);
+
+  return (
+    <section
+      aria-label="Response"
+      aria-live="polite"
+      className="grid min-h-40 gap-3 rounded-md border border-slate-300 bg-white p-3 text-sm"
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700">
+          {phaseLabel}
+        </span>
+        {execution.status ? (
+          <span className="font-semibold text-slate-950">
+            Status {execution.status}
+          </span>
+        ) : null}
+        <span className="text-slate-600">Time {Math.max(0, elapsedMs)} ms</span>
+        {execution.downloadProgress ? (
+          <span className="text-slate-600">
+            Received {execution.downloadProgress.receivedBytes.toString()} bytes
+          </span>
+        ) : null}
+        {execution.uploadProgress ? (
+          <span className="text-slate-600">
+            Sent {execution.uploadProgress.sentBytes.toString()} bytes
+          </span>
+        ) : null}
+      </div>
+
+      {execution.error ? (
+        <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-800">
+          {execution.error}
+        </p>
+      ) : null}
+
+      <div className="grid min-h-0 gap-3 lg:grid-cols-[minmax(260px,0.45fr)_minmax(0,1fr)]">
+        <div className="min-h-0 overflow-auto rounded-md border border-slate-200">
+          <table className="w-full table-fixed border-collapse text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
+                <th className="w-40 px-2 py-2 font-semibold">Header</th>
+                <th className="px-2 py-2 font-semibold">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {execution.headers.map((header, index) => (
+                <tr className="border-b border-slate-100" key={`${header.name}-${index}`}>
+                  <td className="break-words px-2 py-2 font-medium text-slate-700">
+                    {header.name}
+                  </td>
+                  <td className="break-words px-2 py-2 text-slate-600">
+                    {header.value}
+                  </td>
+                </tr>
+              ))}
+              {execution.headers.length === 0 ? (
+                <tr>
+                  <td className="px-2 py-5 text-center text-slate-500" colSpan={2}>
+                    No response headers
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+        <div className="min-h-0 rounded-md border border-slate-200 bg-slate-950 p-3 text-slate-50">
+          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words text-xs leading-5">
+            {bodyPreview || "No response body"}
+          </pre>
+          {execution.bodyTruncated ? (
+            <p className="mt-2 text-xs text-amber-200">Response preview truncated.</p>
+          ) : null}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -589,4 +763,17 @@ function omitKey<T>(record: Record<string, T>, key: string) {
   const next = { ...record };
   delete next[key];
   return next;
+}
+
+function formatBodyPreview(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2);
+  } catch {
+    return value;
+  }
 }

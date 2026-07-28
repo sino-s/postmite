@@ -66,10 +66,15 @@ pub fn run() {
             let workspace_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let request_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let mut workspaces = WorkspaceService::new(workspace_repository);
-            workspaces.initialize()?;
-            let requests = RequestService::new(request_repository);
+            let workspace_snapshot = workspaces.initialize()?;
+            let mut requests = RequestService::new(request_repository);
+            diagnostics::configure_perf_request_tabs(
+                &mut requests,
+                workspace_snapshot.selected_workspace_id,
+            )?;
             let executions = Arc::new(ExecutionCoordinator::new());
 
+            diagnostics::configure_e2e_request_smoke(Arc::clone(&executions))?;
             app.manage(AppState::new(executions, workspaces, requests));
             diagnostics::configure_perf(app, started_at.elapsed())?;
             Ok(())
