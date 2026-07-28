@@ -150,6 +150,35 @@ impl FromStr for RequestTabId {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct ExecutionRecordId(Uuid);
+
+impl ExecutionRecordId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for ExecutionRecordId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for ExecutionRecordId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for ExecutionRecordId {
+    type Err = uuid::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(value)?))
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CollectionFolder {
     pub id: CollectionId,
@@ -251,4 +280,24 @@ pub struct RequestTab {
     pub position: u32,
     pub title: String,
     pub is_active: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExecutionRecord {
+    pub id: ExecutionRecordId,
+    pub workspace_id: WorkspaceId,
+    pub created_at_epoch_seconds: i64,
+    pub request: RequestContent,
+    pub response: ExecutionRecordResponse,
+    pub pinned: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExecutionRecordResponse {
+    pub status: Option<u16>,
+    pub headers: Vec<OrderedField>,
+    pub body_preview: String,
+    pub body_truncated: bool,
+    pub error: Option<String>,
+    pub duration_ms: Option<u64>,
 }

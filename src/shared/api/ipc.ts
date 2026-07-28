@@ -7,6 +7,7 @@ import type {
   CreateSavedRequestInput,
   CreateCollectionFolderInput,
   CreateWorkspaceInput,
+  ExecutionRecordIdInput,
   IpcCommandContracts,
   IpcError,
   MoveCollectionFolderInput,
@@ -18,6 +19,8 @@ import type {
   RenameCollectionFolderInput,
   SavedRequestIdInput,
   SelectEnvironmentInput,
+  SetExecutionHistoryDisabledInput,
+  SetExecutionRecordPinnedInput,
   StartRequestExecutionInput,
   UpdateRequestDraftInput,
   WorkspaceIdInput,
@@ -102,6 +105,14 @@ export const requestIpc = {
     invokeCommand("save_request_draft", input),
   closeRequestTab: (input: CloseRequestTabInput) =>
     invokeCommand("close_request_tab", input),
+  listExecutionHistory: (input: WorkspaceIdInput) =>
+    invokeCommand("list_execution_history", input),
+  setExecutionHistoryDisabled: (input: SetExecutionHistoryDisabledInput) =>
+    invokeCommand("set_execution_history_disabled", input),
+  setExecutionRecordPinned: (input: SetExecutionRecordPinnedInput) =>
+    invokeCommand("set_execution_record_pinned", input),
+  openExecutionRecordAsDraft: (input: ExecutionRecordIdInput) =>
+    invokeCommand("open_execution_record_as_draft", input),
   startRequestExecution: (input: StartRequestExecutionInput) =>
     invokeCommand("start_request_execution", input),
   cancelRequestExecution: (input: CancelRequestExecutionInput) =>

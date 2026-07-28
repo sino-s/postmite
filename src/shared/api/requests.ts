@@ -5,6 +5,8 @@ import type {
   CloseRequestTabInput,
   CreateCollectionFolderInput,
   CreateSavedRequestInput,
+  ExecutionRecordIdInput,
+  ExecutionHistorySnapshotDto,
   MoveCollectionFolderInput,
   MoveSavedRequestInput,
   OpenSavedRequestTabInput,
@@ -14,6 +16,8 @@ import type {
   RenameCollectionFolderInput,
   SavedRequestIdInput,
   SelectEnvironmentInput,
+  SetExecutionHistoryDisabledInput,
+  SetExecutionRecordPinnedInput,
   UpdateRequestDraftInput,
   WorkspaceIdInput,
 } from "./generated/ipc";
@@ -22,9 +26,17 @@ import { requestIpc } from "./ipc";
 export const requestWorkspaceQueryKey = (workspaceId: string) =>
   ["requestWorkspace", workspaceId] as const;
 
+export const executionHistoryQueryKey = (workspaceId: string) =>
+  ["executionHistory", workspaceId] as const;
+
 export const requestWorkspaceQuery = (input: WorkspaceIdInput) => ({
   queryKey: requestWorkspaceQueryKey(input.workspaceId),
   queryFn: () => requestIpc.listRequestWorkspace(input),
+});
+
+export const executionHistoryQuery = (input: WorkspaceIdInput) => ({
+  queryKey: executionHistoryQueryKey(input.workspaceId),
+  queryFn: () => requestIpc.listExecutionHistory(input),
 });
 
 export async function openUnsavedRequestTab(
@@ -193,6 +205,39 @@ export async function closeRequestTab(
   );
 }
 
+export async function setExecutionHistoryDisabled(
+  queryClient: QueryClient,
+  input: SetExecutionHistoryDisabledInput,
+) {
+  return updateExecutionHistorySnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.setExecutionHistoryDisabled(input),
+  );
+}
+
+export async function setExecutionRecordPinned(
+  queryClient: QueryClient,
+  input: SetExecutionRecordPinnedInput,
+) {
+  return updateExecutionHistorySnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.setExecutionRecordPinned(input),
+  );
+}
+
+export async function openExecutionRecordAsDraft(
+  queryClient: QueryClient,
+  input: ExecutionRecordIdInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.openExecutionRecordAsDraft(input),
+  );
+}
+
 async function updateRequestWorkspaceSnapshot(
   queryClient: QueryClient,
   workspaceId: string,
@@ -200,5 +245,15 @@ async function updateRequestWorkspaceSnapshot(
 ) {
   const snapshot = await operation;
   queryClient.setQueryData(requestWorkspaceQueryKey(workspaceId), snapshot);
+  return snapshot;
+}
+
+async function updateExecutionHistorySnapshot(
+  queryClient: QueryClient,
+  workspaceId: string,
+  operation: Promise<ExecutionHistorySnapshotDto>,
+) {
+  const snapshot = await operation;
+  queryClient.setQueryData(executionHistoryQueryKey(workspaceId), snapshot);
   return snapshot;
 }

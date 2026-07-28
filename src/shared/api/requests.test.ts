@@ -1,7 +1,10 @@
 import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { RequestWorkspaceSnapshotDto } from "./generated/ipc";
+import type {
+  ExecutionHistorySnapshotDto,
+  RequestWorkspaceSnapshotDto,
+} from "./generated/ipc";
 
 const requestIpcMock = vi.hoisted(() => ({
   closeRequestTab: vi.fn(),
@@ -12,15 +15,19 @@ const requestIpcMock = vi.hoisted(() => ({
   duplicateCollectionFolder: vi.fn(),
   duplicateSavedRequest: vi.fn(),
   flushRequestDrafts: vi.fn(),
+  listExecutionHistory: vi.fn(),
   listRequestWorkspace: vi.fn(),
   moveCollectionFolder: vi.fn(),
   moveSavedRequest: vi.fn(),
+  openExecutionRecordAsDraft: vi.fn(),
   openSavedRequestTab: vi.fn(),
   openUnsavedRequestTab: vi.fn(),
   renameCollectionFolder: vi.fn(),
   resolveRequestContent: vi.fn(),
   saveRequestDraft: vi.fn(),
   selectEnvironment: vi.fn(),
+  setExecutionHistoryDisabled: vi.fn(),
+  setExecutionRecordPinned: vi.fn(),
   updateRequestDraft: vi.fn(),
 }));
 
@@ -29,9 +36,13 @@ vi.mock("./ipc", () => ({
 }));
 
 import {
+  executionHistoryQuery,
+  executionHistoryQueryKey,
+  openExecutionRecordAsDraft,
   openUnsavedRequestTab,
   requestWorkspaceQuery,
   requestWorkspaceQueryKey,
+  setExecutionHistoryDisabled,
   updateRequestDraft,
 } from "./requests";
 
@@ -65,6 +76,46 @@ describe("request query API", () => {
 
     const result = await openUnsavedRequestTab(queryClient, {
       workspaceId: "workspace-1",
+    });
+
+    expect(result).toBe(snapshot);
+    expect(queryClient.getQueryData(requestWorkspaceQueryKey("workspace-1"))).toBe(
+      snapshot,
+    );
+  });
+
+  it("uses a stable key and cache updates for execution history", async () => {
+    const history = executionHistorySnapshot("workspace-1");
+    requestIpcMock.listExecutionHistory.mockResolvedValue(history);
+    requestIpcMock.setExecutionHistoryDisabled.mockResolvedValue({
+      ...history,
+      disabled: true,
+    });
+
+    await expect(
+      executionHistoryQuery({ workspaceId: "workspace-1" }).queryFn(),
+    ).resolves.toBe(history);
+    const disabled = await setExecutionHistoryDisabled(queryClient, {
+      workspaceId: "workspace-1",
+      disabled: true,
+    });
+
+    expect(executionHistoryQuery({ workspaceId: "workspace-1" }).queryKey).toEqual(
+      executionHistoryQueryKey("workspace-1"),
+    );
+    expect(disabled.disabled).toBe(true);
+    expect(queryClient.getQueryData(executionHistoryQueryKey("workspace-1"))).toBe(
+      disabled,
+    );
+  });
+
+  it("opens an execution record as a draft into the request workspace cache", async () => {
+    const snapshot = requestSnapshot("workspace-1");
+    requestIpcMock.openExecutionRecordAsDraft.mockResolvedValue(snapshot);
+
+    const result = await openExecutionRecordAsDraft(queryClient, {
+      workspaceId: "workspace-1",
+      recordId: "history-1",
     });
 
     expect(result).toBe(snapshot);
@@ -108,5 +159,15 @@ function requestSnapshot(workspaceId: string): RequestWorkspaceSnapshotDto {
     savedRequests: [],
     drafts: [],
     tabs: [],
+  };
+}
+
+function executionHistorySnapshot(workspaceId: string): ExecutionHistorySnapshotDto {
+  return {
+    workspaceId,
+    disabled: false,
+    records: [],
+    warning:
+      "Unknown sensitive values inside arbitrary response bodies may not always be detected.",
   };
 }

@@ -7,11 +7,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ExecutionEventDto,
   ExecutionEventKindDto,
+  ExecutionHistorySnapshotDto,
+  ExecutionRecordDto,
   RequestContentDto,
   RequestWorkspaceSnapshotDto,
   WorkspaceSnapshotDto,
 } from "../shared/api/generated/ipc";
-import { requestWorkspaceQueryKey } from "../shared/api/requests";
+import {
+  executionHistoryQueryKey,
+  requestWorkspaceQueryKey,
+} from "../shared/api/requests";
 import { workspaceQueryKey } from "../shared/api/workspaces";
 import { App } from "./App";
 import { queryFromUrl } from "../features/request-editor/ordered-fields";
@@ -31,8 +36,12 @@ const requestApiMock = vi.hoisted(() => ({
   deleteSavedRequest: vi.fn(),
   duplicateCollectionFolder: vi.fn(),
   duplicateSavedRequest: vi.fn(),
+  executionHistoryQuery: vi.fn(),
+  executionHistoryQueryKey: (workspaceId: string) =>
+    ["executionHistory", workspaceId] as const,
   moveCollectionFolder: vi.fn(),
   moveSavedRequest: vi.fn(),
+  openExecutionRecordAsDraft: vi.fn(),
   openSavedRequestTab: vi.fn(),
   openUnsavedRequestTab: vi.fn(),
   requestWorkspaceQuery: vi.fn(),
@@ -42,6 +51,8 @@ const requestApiMock = vi.hoisted(() => ({
   resolveRequestContent: vi.fn(),
   saveRequestDraft: vi.fn(),
   selectEnvironment: vi.fn(),
+  setExecutionHistoryDisabled: vi.fn(),
+  setExecutionRecordPinned: vi.fn(),
   updateRequestDraft: vi.fn(),
 }));
 
@@ -91,6 +102,12 @@ describe("App request editor", () => {
       ({ workspaceId }: { workspaceId: string }) => ({
         queryKey: requestWorkspaceQueryKey(workspaceId),
         queryFn: vi.fn().mockResolvedValue(emptyRequestSnapshot()),
+      }),
+    );
+    requestApiMock.executionHistoryQuery.mockImplementation(
+      ({ workspaceId }: { workspaceId: string }) => ({
+        queryKey: executionHistoryQueryKey(workspaceId),
+        queryFn: vi.fn().mockResolvedValue(emptyExecutionHistorySnapshot()),
       }),
     );
     requestApiMock.resolveRequestContent.mockResolvedValue(emptyResolution());
@@ -487,6 +504,55 @@ describe("App request editor", () => {
     );
   });
 
+  it("pins disables and opens execution history without mutating saved requests", async () => {
+    const user = userEvent.setup();
+    const queryClient = renderApp(
+      requestSnapshot({ content: requestContent(), isDirty: true }),
+      executionHistorySnapshot(),
+    );
+    const opened = requestSnapshot({
+      content: requestContent({
+        name: "History Request",
+        url: "https://history.example.test",
+      }),
+      isDirty: true,
+      tabTitle: "History Request",
+    });
+    requestApiMock.setExecutionRecordPinned.mockResolvedValue(
+      executionHistorySnapshot({ pinned: true }),
+    );
+    requestApiMock.setExecutionHistoryDisabled.mockResolvedValue(
+      executionHistorySnapshot({ disabled: true }),
+    );
+    requestApiMock.openExecutionRecordAsDraft.mockImplementation(
+      async (client: QueryClient) => {
+        client.setQueryData(requestWorkspaceQueryKey("workspace-1"), opened);
+        return opened;
+      },
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Pin history record" }));
+    await user.click(screen.getByLabelText("Disable history"));
+    await user.click(screen.getByRole("button", { name: /History Request/ }));
+
+    expect(requestApiMock.setExecutionRecordPinned).toHaveBeenCalledWith(
+      queryClient,
+      { workspaceId: "workspace-1", recordId: "history-1", pinned: true },
+    );
+    expect(requestApiMock.setExecutionHistoryDisabled).toHaveBeenCalledWith(
+      queryClient,
+      { workspaceId: "workspace-1", disabled: true },
+    );
+    expect(requestApiMock.openExecutionRecordAsDraft).toHaveBeenCalledWith(
+      queryClient,
+      { workspaceId: "workspace-1", recordId: "history-1" },
+    );
+    expect(screen.getByRole("button", { name: /^History Request \*$/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
   it("has no automated accessibility violations in the editor shell", async () => {
     renderApp(
       requestSnapshot({ content: requestContent(), isDirty: true }),
@@ -499,7 +565,10 @@ describe("App request editor", () => {
   });
 });
 
-function renderApp(snapshot: RequestWorkspaceSnapshotDto) {
+function renderApp(
+  snapshot: RequestWorkspaceSnapshotDto,
+  history: ExecutionHistorySnapshotDto = emptyExecutionHistorySnapshot(),
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -508,10 +577,17 @@ function renderApp(snapshot: RequestWorkspaceSnapshotDto) {
   });
   queryClient.setQueryData(workspaceQueryKey, workspaceSnapshot());
   queryClient.setQueryData(requestWorkspaceQueryKey("workspace-1"), snapshot);
+  queryClient.setQueryData(executionHistoryQueryKey("workspace-1"), history);
   requestApiMock.requestWorkspaceQuery.mockImplementation(
     ({ workspaceId }: { workspaceId: string }) => ({
       queryKey: requestWorkspaceQueryKey(workspaceId),
       queryFn: vi.fn().mockResolvedValue(snapshot),
+    }),
+  );
+  requestApiMock.executionHistoryQuery.mockImplementation(
+    ({ workspaceId }: { workspaceId: string }) => ({
+      queryKey: executionHistoryQueryKey(workspaceId),
+      queryFn: vi.fn().mockResolvedValue(history),
     }),
   );
 
@@ -541,6 +617,51 @@ function emptyRequestSnapshot(): RequestWorkspaceSnapshotDto {
     savedRequests: [],
     drafts: [],
     tabs: [],
+  };
+}
+
+function emptyExecutionHistorySnapshot(): ExecutionHistorySnapshotDto {
+  return {
+    workspaceId: "workspace-1",
+    disabled: false,
+    records: [],
+    warning:
+      "Unknown sensitive values inside arbitrary response bodies may not always be detected.",
+  };
+}
+
+function executionHistorySnapshot({
+  disabled = false,
+  pinned = false,
+}: {
+  disabled?: boolean;
+  pinned?: boolean;
+} = {}): ExecutionHistorySnapshotDto {
+  return {
+    ...emptyExecutionHistorySnapshot(),
+    disabled,
+    records: [executionRecord({ pinned })],
+  };
+}
+
+function executionRecord({ pinned = false }: { pinned?: boolean } = {}): ExecutionRecordDto {
+  return {
+    id: "history-1",
+    workspaceId: "workspace-1",
+    createdAtEpochSeconds: 1_800_000_000n,
+    request: requestContent({
+      name: "History Request",
+      url: "https://history.example.test",
+    }),
+    response: {
+      status: 200,
+      headers: [],
+      bodyPreview: "{\"ok\":true}",
+      bodyTruncated: false,
+      error: null,
+      durationMs: 42n,
+    },
+    pinned,
   };
 }
 
