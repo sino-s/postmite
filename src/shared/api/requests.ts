@@ -13,6 +13,7 @@ import type {
   MoveCollectionFolderInput,
   MoveSavedRequestInput,
   OpenSavedRequestTabInput,
+  PostmanImportInput,
   RequestDraftIdInput,
   RelinkBodyFilesInput,
   ResolveRequestContentInput,
@@ -113,6 +114,22 @@ export async function relinkBodyFiles(
     input.workspaceId,
     requestIpc.relinkBodyFiles(input),
   );
+}
+
+export async function previewPostmanImport(input: PostmanImportInput) {
+  return requestIpc.previewPostmanImport(input);
+}
+
+export async function importPostman(
+  queryClient: QueryClient,
+  input: PostmanImportInput,
+) {
+  const result = await requestIpc.importPostman(input);
+  queryClient.setQueryData(
+    requestWorkspaceQueryKey(input.workspaceId),
+    result.snapshot,
+  );
+  return result;
 }
 
 export async function renameCollectionFolder(

@@ -13,6 +13,7 @@ use std::{
 use application::{
     execution::ExecutionCoordinator,
     oauth::{OAuthCoordinator, SystemBrowserLauncher},
+    postman_import::PostmanImportService,
     request::RequestService,
     secrets::{FallbackSecretStore, SecretStore, SessionSecretStore},
     workspace::WorkspaceService,
@@ -28,6 +29,7 @@ pub struct AppState {
     pub secrets: Arc<dyn SecretStore>,
     pub workspaces: Mutex<WorkspaceService<SqliteWorkspaceRepository>>,
     pub requests: Mutex<RequestService<SqliteWorkspaceRepository>>,
+    pub postman_imports: Mutex<PostmanImportService<SqliteWorkspaceRepository>>,
 }
 
 impl AppState {
@@ -37,6 +39,7 @@ impl AppState {
         secrets: Arc<dyn SecretStore>,
         workspaces: WorkspaceService<SqliteWorkspaceRepository>,
         requests: RequestService<SqliteWorkspaceRepository>,
+        postman_imports: PostmanImportService<SqliteWorkspaceRepository>,
     ) -> Self {
         Self {
             executions,
@@ -44,6 +47,7 @@ impl AppState {
             secrets,
             workspaces: Mutex::new(workspaces),
             requests: Mutex::new(requests),
+            postman_imports: Mutex::new(postman_imports),
         }
     }
 }
@@ -89,6 +93,8 @@ pub fn run() {
             ipc::reveal_cookie_value,
             ipc::describe_body_file,
             ipc::relink_body_files,
+            ipc::preview_postman_import,
+            ipc::import_postman,
             ipc::start_request_execution,
             ipc::cancel_request_execution,
             ipc::start_oauth_authorization,
@@ -101,6 +107,7 @@ pub fn run() {
 
             let workspace_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let request_repository = SqliteWorkspaceRepository::open(&database_path)?;
+            let postman_import_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let secrets: Arc<dyn SecretStore> = if env::var_os(SESSION_ONLY_SECRETS_ENV).is_some() {
                 Arc::new(SessionSecretStore::new())
             } else {
@@ -112,6 +119,8 @@ pub fn run() {
             let mut workspaces = WorkspaceService::new(workspace_repository, Arc::clone(&secrets));
             let workspace_snapshot = workspaces.initialize()?;
             let mut requests = RequestService::new(request_repository, Arc::clone(&secrets));
+            let postman_imports =
+                PostmanImportService::new(postman_import_repository, Arc::clone(&secrets));
             diagnostics::configure_perf_request_tabs(
                 &mut requests,
                 workspace_snapshot.selected_workspace_id,
@@ -126,7 +135,12 @@ pub fn run() {
                 Arc::clone(&secrets),
             )?;
             app.manage(AppState::new(
-                executions, oauth, secrets, workspaces, requests,
+                executions,
+                oauth,
+                secrets,
+                workspaces,
+                requests,
+                postman_imports,
             ));
             diagnostics::configure_perf(app, started_at.elapsed())?;
             Ok(())
