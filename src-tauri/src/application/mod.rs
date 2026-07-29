@@ -1,5 +1,6 @@
 //! Application use cases and ports.
 
+pub mod curl;
 pub mod execution;
 pub mod oauth;
 pub mod postman_import;

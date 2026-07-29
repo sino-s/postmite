@@ -592,13 +592,20 @@ impl RequestRepository for SqliteWorkspaceRepository {
         &mut self,
         workspace_id: WorkspaceId,
     ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.open_unsaved_tab_with_content(workspace_id, RequestContent::blank())
+    }
+
+    fn open_unsaved_tab_with_content(
+        &mut self,
+        workspace_id: WorkspaceId,
+        content: RequestContent,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
         let tx = self
             .connection
             .transaction()
             .map_err(RequestError::persistence)?;
         ensure_request_workspace_exists(&tx, workspace_id)?;
 
-        let content = RequestContent::blank();
         let draft_id = RequestDraftId::new();
         insert_draft(&tx, workspace_id, draft_id, None, &content, true)?;
         insert_tab(

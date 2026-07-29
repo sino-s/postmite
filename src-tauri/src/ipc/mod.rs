@@ -16,6 +16,11 @@ use tauri::{Emitter, Manager, State};
 use ts_rs::{Config, TS};
 
 use crate::{
+    application::curl::{
+        CurlError, CurlGenerateInput as ApplicationCurlGenerateInput, CurlGenerateResult,
+        CurlImportInput as ApplicationCurlImportInput, CurlImportPreview, CurlImportWarning,
+        CurlService, CurlUnsupportedField,
+    },
     application::execution::{
         CancelExecutionResult, ExecutionError, ExecutionEvent, ExecutionEventKind, ExecutionHeader,
         ExecutionId, ExecutionProxyMetadata, ExecutionRequest, ExecutionTimeoutMetadata,
@@ -37,8 +42,9 @@ use crate::{
     application::request::{
         CloseTabDecision, CollectionLocation, CookieJarSnapshot, ExecutionHistorySnapshot,
         RequestError, RequestRepository, RequestService, RequestWorkspaceSnapshot, ResolvedField,
-        ResolvedRequestContent, ResolvedValue, ResolvedVariableReference, VariableResolutionError,
-        VariableResolutionErrorKind, VariableSource, REDACTED_VALUE,
+        ResolvedMultipartPart, ResolvedRequestBody, ResolvedRequestContent, ResolvedValue,
+        ResolvedVariableReference, VariableResolutionError, VariableResolutionErrorKind,
+        VariableSource, REDACTED_VALUE,
     },
     application::workspace::{WorkspaceError, WorkspaceService, WorkspaceSnapshot},
     domain::{
@@ -96,6 +102,9 @@ pub const IMPORT_POSTMAN_COMMAND: &str = "import_postman";
 pub const EXPORT_POSTMAN_COMMAND: &str = "export_postman";
 pub const PREVIEW_POSTMAN_REIMPORT_COMMAND: &str = "preview_postman_reimport";
 pub const REIMPORT_POSTMAN_COMMAND: &str = "reimport_postman";
+pub const PREVIEW_CURL_IMPORT_COMMAND: &str = "preview_curl_import";
+pub const IMPORT_CURL_AS_DRAFT_COMMAND: &str = "import_curl_as_draft";
+pub const GENERATE_CURL_COMMAND: &str = "generate_curl";
 pub const START_REQUEST_EXECUTION_COMMAND: &str = "start_request_execution";
 pub const CANCEL_REQUEST_EXECUTION_COMMAND: &str = "cancel_request_execution";
 pub const START_OAUTH_AUTHORIZATION_COMMAND: &str = "start_oauth_authorization";
@@ -534,6 +543,62 @@ pub struct PostmanReimportInput {
 pub struct PostmanReimportResultDto {
     pub preview: PostmanReimportPreviewDto,
     pub snapshot: RequestWorkspaceSnapshotDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CurlImportInput {
+    pub workspace_id: String,
+    pub source_name: String,
+    pub command: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CurlGenerateInput {
+    pub content: RequestContentDto,
+    pub resolved: Option<ResolvedRequestContentDto>,
+    pub include_secrets: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CurlImportPreviewDto {
+    pub source_name: String,
+    pub content: RequestContentDto,
+    pub warning_count: u32,
+    pub unsupported_count: u32,
+    pub warnings: Vec<CurlImportWarningDto>,
+    pub unsupported: Vec<CurlUnsupportedFieldDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CurlImportWarningDto {
+    pub location: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CurlUnsupportedFieldDto {
+    pub location: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CurlImportResultDto {
+    pub preview: CurlImportPreviewDto,
+    pub snapshot: RequestWorkspaceSnapshotDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CurlGenerateResultDto {
+    pub command: String,
+    pub included_secret_count: u32,
+    pub redacted_secret_count: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -1362,6 +1427,37 @@ pub fn reimport_postman(
 ) -> Result<PostmanReimportResultDto, IpcError> {
     let service = state.postman_imports.lock().map_err(map_poison_error)?;
     handle_reimport_postman(service, input)
+}
+
+#[tauri::command]
+pub fn preview_curl_import(input: CurlImportInput) -> Result<CurlImportPreviewDto, IpcError> {
+    let input = ApplicationCurlImportInput::try_from(input)?;
+    CurlService::preview(&input)
+        .map(CurlImportPreviewDto::from)
+        .map_err(IpcError::from)
+}
+
+#[tauri::command]
+pub fn import_curl_as_draft(
+    state: State<'_, AppState>,
+    input: CurlImportInput,
+) -> Result<CurlImportResultDto, IpcError> {
+    let input = ApplicationCurlImportInput::try_from(input)?;
+    let preview = CurlService::preview(&input)?;
+    let mut requests = state.requests.lock().map_err(map_poison_error)?;
+    let snapshot = CurlService::import_as_draft(&mut requests, input)?;
+    Ok(CurlImportResultDto {
+        preview: CurlImportPreviewDto::from(preview),
+        snapshot: RequestWorkspaceSnapshotDto::from(snapshot),
+    })
+}
+
+#[tauri::command]
+pub fn generate_curl(input: CurlGenerateInput) -> Result<CurlGenerateResultDto, IpcError> {
+    let input = ApplicationCurlGenerateInput::from(input);
+    CurlService::generate(input)
+        .map(CurlGenerateResultDto::from)
+        .map_err(IpcError::from)
 }
 
 #[tauri::command]
@@ -2402,6 +2498,13 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         PostmanReimportDecisionDto::export_to_string(&cfg)?,
         PostmanReimportInput::export_to_string(&cfg)?,
         PostmanReimportResultDto::export_to_string(&cfg)?,
+        CurlImportInput::export_to_string(&cfg)?,
+        CurlGenerateInput::export_to_string(&cfg)?,
+        CurlImportPreviewDto::export_to_string(&cfg)?,
+        CurlImportWarningDto::export_to_string(&cfg)?,
+        CurlUnsupportedFieldDto::export_to_string(&cfg)?,
+        CurlImportResultDto::export_to_string(&cfg)?,
+        CurlGenerateResultDto::export_to_string(&cfg)?,
         ExecutionHistorySnapshotDto::export_to_string(&cfg)?,
         ExecutionRecordDto::export_to_string(&cfg)?,
         ExecutionRecordResponseDto::export_to_string(&cfg)?,
@@ -2625,6 +2728,18 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \treimport_postman: {\n\
          \t\tinput: PostmanReimportInput;\n\
          \t\toutput: PostmanReimportResultDto;\n\
+         \t};\n\
+         \tpreview_curl_import: {\n\
+         \t\tinput: CurlImportInput;\n\
+         \t\toutput: CurlImportPreviewDto;\n\
+         \t};\n\
+         \timport_curl_as_draft: {\n\
+         \t\tinput: CurlImportInput;\n\
+         \t\toutput: CurlImportResultDto;\n\
+         \t};\n\
+         \tgenerate_curl: {\n\
+         \t\tinput: CurlGenerateInput;\n\
+         \t\toutput: CurlGenerateResultDto;\n\
          \t};\n\
          \tstart_request_execution: {\n\
          \t\tinput: StartRequestExecutionInput;\n\
@@ -2933,6 +3048,185 @@ impl From<PostmanReimportResult> for PostmanReimportResultDto {
     }
 }
 
+impl TryFrom<CurlImportInput> for ApplicationCurlImportInput {
+    type Error = IpcError;
+
+    fn try_from(input: CurlImportInput) -> Result<Self, Self::Error> {
+        Ok(Self {
+            workspace_id: parse_workspace_id(&input.workspace_id)?,
+            source_name: input.source_name,
+            command: input.command,
+        })
+    }
+}
+
+impl From<CurlGenerateInput> for ApplicationCurlGenerateInput {
+    fn from(input: CurlGenerateInput) -> Self {
+        let content = RequestContent::from(input.content);
+        let resolved = input
+            .resolved
+            .map(|resolved| resolved_request_content_from_dto(resolved, &content));
+        Self {
+            content,
+            resolved,
+            include_secrets: input.include_secrets,
+        }
+    }
+}
+
+impl From<CurlImportPreview> for CurlImportPreviewDto {
+    fn from(preview: CurlImportPreview) -> Self {
+        Self {
+            source_name: preview.source_name,
+            content: RequestContentDto::from(preview.content),
+            warning_count: preview.warning_count,
+            unsupported_count: preview.unsupported_count,
+            warnings: preview
+                .warnings
+                .into_iter()
+                .map(CurlImportWarningDto::from)
+                .collect(),
+            unsupported: preview
+                .unsupported
+                .into_iter()
+                .map(CurlUnsupportedFieldDto::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<CurlImportWarning> for CurlImportWarningDto {
+    fn from(warning: CurlImportWarning) -> Self {
+        Self {
+            location: warning.location,
+            message: warning.message,
+        }
+    }
+}
+
+impl From<CurlUnsupportedField> for CurlUnsupportedFieldDto {
+    fn from(field: CurlUnsupportedField) -> Self {
+        Self {
+            location: field.location,
+            reason: field.reason,
+        }
+    }
+}
+
+impl From<CurlGenerateResult> for CurlGenerateResultDto {
+    fn from(result: CurlGenerateResult) -> Self {
+        Self {
+            command: result.command,
+            included_secret_count: result.included_secret_count,
+            redacted_secret_count: result.redacted_secret_count,
+        }
+    }
+}
+
+fn resolved_request_content_from_dto(
+    resolved: ResolvedRequestContentDto,
+    content: &RequestContent,
+) -> ResolvedRequestContent {
+    let body_kind = match &content.body {
+        RequestBody::None => ResolvedRequestBody::None,
+        RequestBody::Raw { .. } => ResolvedRequestBody::Raw {
+            content: ResolvedValue::from(resolved.body.clone()),
+        },
+        RequestBody::UrlEncoded { fields } => ResolvedRequestBody::UrlEncoded {
+            fields: fields
+                .iter()
+                .map(|field| {
+                    let contains_secret = resolved.body.contains_secret;
+                    ResolvedField {
+                        enabled: field.enabled,
+                        order: field.order,
+                        name: ResolvedValue {
+                            value: field.name.clone(),
+                            contains_secret: false,
+                        },
+                        value: ResolvedValue {
+                            value: if contains_secret {
+                                REDACTED_VALUE.to_owned()
+                            } else {
+                                field.value.clone()
+                            },
+                            contains_secret,
+                        },
+                    }
+                })
+                .collect(),
+        },
+        RequestBody::Multipart { parts } => ResolvedRequestBody::Multipart {
+            parts: parts
+                .iter()
+                .map(|part| match part {
+                    MultipartPart::Field {
+                        enabled,
+                        order,
+                        name,
+                        value,
+                    } => ResolvedMultipartPart::Field {
+                        enabled: *enabled,
+                        order: *order,
+                        name: ResolvedValue {
+                            value: name.clone(),
+                            contains_secret: false,
+                        },
+                        value: ResolvedValue {
+                            value: if resolved.body.contains_secret {
+                                REDACTED_VALUE.to_owned()
+                            } else {
+                                value.clone()
+                            },
+                            contains_secret: resolved.body.contains_secret,
+                        },
+                    },
+                    MultipartPart::File {
+                        enabled,
+                        order,
+                        name,
+                        ..
+                    } => ResolvedMultipartPart::File {
+                        enabled: *enabled,
+                        order: *order,
+                        name: ResolvedValue {
+                            value: name.clone(),
+                            contains_secret: false,
+                        },
+                    },
+                })
+                .collect(),
+        },
+        RequestBody::Binary { .. } => ResolvedRequestBody::Binary,
+    };
+    ResolvedRequestContent {
+        url: ResolvedValue::from(resolved.url),
+        body: ResolvedValue::from(resolved.body),
+        body_kind,
+        query: resolved
+            .query
+            .into_iter()
+            .map(ResolvedField::from)
+            .collect(),
+        headers: resolved
+            .headers
+            .into_iter()
+            .map(ResolvedField::from)
+            .collect(),
+        unsafe_tls_visible: resolved.unsafe_tls_visible,
+        references: resolved
+            .references
+            .into_iter()
+            .map(ResolvedVariableReference::from)
+            .collect(),
+        errors: resolved
+            .errors
+            .into_iter()
+            .map(VariableResolutionError::from)
+            .collect(),
+    }
+}
+
 impl From<ExecutionHistorySnapshot> for ExecutionHistorySnapshotDto {
     fn from(snapshot: ExecutionHistorySnapshot) -> Self {
         Self {
@@ -3178,8 +3472,28 @@ impl From<ResolvedField> for ResolvedFieldDto {
     }
 }
 
+impl From<ResolvedFieldDto> for ResolvedField {
+    fn from(field: ResolvedFieldDto) -> Self {
+        Self {
+            enabled: field.enabled,
+            order: field.order,
+            name: ResolvedValue::from(field.name),
+            value: ResolvedValue::from(field.value),
+        }
+    }
+}
+
 impl From<ResolvedValue> for ResolvedValueDto {
     fn from(value: ResolvedValue) -> Self {
+        Self {
+            value: value.value,
+            contains_secret: value.contains_secret,
+        }
+    }
+}
+
+impl From<ResolvedValueDto> for ResolvedValue {
+    fn from(value: ResolvedValueDto) -> Self {
         Self {
             value: value.value,
             contains_secret: value.contains_secret,
@@ -3197,11 +3511,30 @@ impl From<ResolvedVariableReference> for ResolvedVariableReferenceDto {
     }
 }
 
+impl From<ResolvedVariableReferenceDto> for ResolvedVariableReference {
+    fn from(reference: ResolvedVariableReferenceDto) -> Self {
+        Self {
+            name: reference.name,
+            source: VariableSource::from(reference.source),
+            value: ResolvedValue::from(reference.value),
+        }
+    }
+}
+
 impl From<VariableSource> for VariableSourceDto {
     fn from(source: VariableSource) -> Self {
         match source {
             VariableSource::Collection => Self::Collection,
             VariableSource::Environment => Self::Environment,
+        }
+    }
+}
+
+impl From<VariableSourceDto> for VariableSource {
+    fn from(source: VariableSourceDto) -> Self {
+        match source {
+            VariableSourceDto::Collection => Self::Collection,
+            VariableSourceDto::Environment => Self::Environment,
         }
     }
 }
@@ -3215,11 +3548,29 @@ impl From<VariableResolutionError> for VariableResolutionErrorDto {
     }
 }
 
+impl From<VariableResolutionErrorDto> for VariableResolutionError {
+    fn from(error: VariableResolutionErrorDto) -> Self {
+        Self {
+            name: error.name,
+            kind: VariableResolutionErrorKind::from(error.kind),
+        }
+    }
+}
+
 impl From<VariableResolutionErrorKind> for VariableResolutionErrorKindDto {
     fn from(kind: VariableResolutionErrorKind) -> Self {
         match kind {
             VariableResolutionErrorKind::Missing => Self::Missing,
             VariableResolutionErrorKind::Cycle => Self::Cycle,
+        }
+    }
+}
+
+impl From<VariableResolutionErrorKindDto> for VariableResolutionErrorKind {
+    fn from(kind: VariableResolutionErrorKindDto) -> Self {
+        match kind {
+            VariableResolutionErrorKindDto::Missing => Self::Missing,
+            VariableResolutionErrorKindDto::Cycle => Self::Cycle,
         }
     }
 }
@@ -4035,6 +4386,20 @@ impl From<PostmanImportError> for IpcError {
                 details: Some(detail),
                 retryable: false,
             },
+        }
+    }
+}
+
+impl From<CurlError> for IpcError {
+    fn from(error: CurlError) -> Self {
+        match error {
+            CurlError::InvalidInput(detail) => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "cURL input is invalid.".to_owned(),
+                details: Some(detail),
+                retryable: false,
+            },
+            CurlError::Request(error) => IpcError::from(error),
         }
     }
 }

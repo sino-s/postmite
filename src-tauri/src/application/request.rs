@@ -86,6 +86,11 @@ pub trait RequestRepository {
         &mut self,
         workspace_id: WorkspaceId,
     ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn open_unsaved_tab_with_content(
+        &mut self,
+        workspace_id: WorkspaceId,
+        content: RequestContent,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
     fn create_saved_request(
         &mut self,
         workspace_id: WorkspaceId,
@@ -253,6 +258,15 @@ where
         workspace_id: WorkspaceId,
     ) -> Result<RequestWorkspaceSnapshot, RequestError> {
         self.repository.open_unsaved_tab(workspace_id)
+    }
+
+    pub fn open_unsaved_tab_with_content(
+        &mut self,
+        workspace_id: WorkspaceId,
+        content: RequestContent,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.repository
+            .open_unsaved_tab_with_content(workspace_id, content)
     }
 
     pub fn create_saved_request(
@@ -1770,6 +1784,14 @@ mod tests {
         fn open_unsaved_tab(
             &mut self,
             workspace_id: WorkspaceId,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            self.list_request_workspace(workspace_id)
+        }
+
+        fn open_unsaved_tab_with_content(
+            &mut self,
+            workspace_id: WorkspaceId,
+            _content: RequestContent,
         ) -> Result<RequestWorkspaceSnapshot, RequestError> {
             self.list_request_workspace(workspace_id)
         }

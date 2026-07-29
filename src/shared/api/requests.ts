@@ -6,6 +6,8 @@ import type {
   CreateCollectionFolderInput,
   CreateSavedRequestInput,
   CookieIdInput,
+  CurlGenerateInput,
+  CurlImportInput,
   CookieJarSnapshotDto,
   DescribeBodyFileInput,
   ExecutionRecordIdInput,
@@ -152,6 +154,26 @@ export async function reimportPostman(
     result.snapshot,
   );
   return result;
+}
+
+export async function previewCurlImport(input: CurlImportInput) {
+  return requestIpc.previewCurlImport(input);
+}
+
+export async function importCurlAsDraft(
+  queryClient: QueryClient,
+  input: CurlImportInput,
+) {
+  const result = await requestIpc.importCurlAsDraft(input);
+  queryClient.setQueryData(
+    requestWorkspaceQueryKey(input.workspaceId),
+    result.snapshot,
+  );
+  return result;
+}
+
+export async function generateCurl(input: CurlGenerateInput) {
+  return requestIpc.generateCurl(input);
 }
 
 export async function renameCollectionFolder(
