@@ -7,8 +7,9 @@ use thiserror::Error;
 
 use crate::domain::{
     request::{
-        ApiKeyPlacement, OrderedField, RequestAuth, RequestBody, RequestContent, TimeoutPolicy,
-        TransportPolicy, VariableValue,
+        ApiKeyPlacement, BodyFilePath, CollectionId, EnvironmentId, MultipartPart, OrderedField,
+        RequestAuth, RequestBody, RequestContent, SavedRequest, TimeoutPolicy, TransportPolicy,
+        VariableValue,
     },
     workspace::WorkspaceId,
 };
@@ -26,6 +27,28 @@ pub struct PostmanImportInput {
     pub source_name: String,
     pub collection_json: String,
     pub environment_json: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PostmanExportInput {
+    pub workspace_id: WorkspaceId,
+    pub source_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PostmanExportResult {
+    pub collection_json: String,
+    pub environments: Vec<PostmanEnvironmentExport>,
+    pub warning_count: u32,
+    pub unsupported_count: u32,
+    pub warnings: Vec<PostmanImportWarning>,
+    pub unsupported: Vec<PostmanUnsupportedField>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PostmanEnvironmentExport {
+    pub name: String,
+    pub environment_json: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -57,6 +80,48 @@ pub struct PostmanUnsupportedField {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PostmanImportResult {
     pub preview: PostmanImportPreview,
+    pub snapshot: RequestWorkspaceSnapshot,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PostmanReimportPreview {
+    pub import_preview: PostmanImportPreview,
+    pub prior_import: Option<PostmanPriorImport>,
+    pub changes: Vec<PostmanReimportChange>,
+    pub can_update: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PostmanPriorImport {
+    pub id: String,
+    pub source_id: String,
+    pub source_name: String,
+    pub source_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PostmanReimportChange {
+    pub location: String,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PostmanReimportDecision {
+    Update,
+    Duplicate,
+    Cancel,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PostmanReimportInput {
+    pub import: PostmanImportInput,
+    pub decision: PostmanReimportDecision,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PostmanReimportResult {
+    pub preview: PostmanReimportPreview,
     pub snapshot: RequestWorkspaceSnapshot,
 }
 
@@ -100,9 +165,33 @@ pub struct ConvertedVariable {
     pub value: VariableValue,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredPostmanImportRecord {
+    pub id: String,
+    pub source_id: String,
+    pub source_name: String,
+    pub source_hash: String,
+    pub collection_ids: Vec<CollectionId>,
+    pub environment_ids: Vec<EnvironmentId>,
+}
+
 pub trait PostmanImportRepository {
+    fn list_postman_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<RequestWorkspaceSnapshot, PostmanImportError>;
+    fn find_latest_postman_import(
+        &self,
+        workspace_id: WorkspaceId,
+        source_id: &str,
+    ) -> Result<Option<StoredPostmanImportRecord>, PostmanImportError>;
     fn import_postman(
         &mut self,
+        import: ConvertedPostmanImport,
+    ) -> Result<RequestWorkspaceSnapshot, PostmanImportError>;
+    fn update_postman_import(
+        &mut self,
+        prior: &StoredPostmanImportRecord,
         import: ConvertedPostmanImport,
     ) -> Result<RequestWorkspaceSnapshot, PostmanImportError>;
 }
@@ -134,6 +223,14 @@ where
         Ok(converted.preview())
     }
 
+    pub fn export(
+        &self,
+        input: &PostmanExportInput,
+    ) -> Result<PostmanExportResult, PostmanImportError> {
+        let snapshot = self.repository.list_postman_workspace(input.workspace_id)?;
+        export_postman(input, &snapshot)
+    }
+
     pub fn import(
         &mut self,
         input: PostmanImportInput,
@@ -151,6 +248,117 @@ where
             }
         };
         Ok(PostmanImportResult { preview, snapshot })
+    }
+
+    pub fn preview_reimport(
+        &self,
+        input: &PostmanImportInput,
+    ) -> Result<PostmanReimportPreview, PostmanImportError> {
+        let converted = convert_postman(input, None)?;
+        let import_preview = converted.preview();
+        let prior = self
+            .repository
+            .find_latest_postman_import(input.workspace_id, &converted.source_id)?;
+        Ok(reimport_preview(import_preview, prior))
+    }
+
+    pub fn reimport(
+        &mut self,
+        input: PostmanReimportInput,
+    ) -> Result<PostmanReimportResult, PostmanImportError> {
+        let preview = self.preview_reimport(&input.import)?;
+        if input.decision == PostmanReimportDecision::Cancel {
+            let snapshot = self
+                .repository
+                .list_postman_workspace(input.import.workspace_id)?;
+            return Ok(PostmanReimportResult { preview, snapshot });
+        }
+
+        let converted = convert_postman(&input.import, Some(&self.secrets))?;
+        let secret_references = converted.secret_references();
+        let snapshot = match input.decision {
+            PostmanReimportDecision::Duplicate => self.repository.import_postman(converted),
+            PostmanReimportDecision::Update => {
+                let Some(prior) = preview.prior_import.as_ref() else {
+                    return Err(PostmanImportError::InvalidInput(
+                        "postman.reimport.prior.required".to_owned(),
+                    ));
+                };
+                let stored = self
+                    .repository
+                    .find_latest_postman_import(input.import.workspace_id, &prior.source_id)?
+                    .ok_or_else(|| {
+                        PostmanImportError::InvalidInput(
+                            "postman.reimport.prior.required".to_owned(),
+                        )
+                    })?;
+                if stored.collection_ids.is_empty() && stored.environment_ids.is_empty() {
+                    return Err(PostmanImportError::InvalidInput(
+                        "postman.reimport.prior.entities.required".to_owned(),
+                    ));
+                }
+                self.repository.update_postman_import(&stored, converted)
+            }
+            PostmanReimportDecision::Cancel => unreachable!(),
+        };
+        match snapshot {
+            Ok(snapshot) => Ok(PostmanReimportResult { preview, snapshot }),
+            Err(error) => {
+                for reference in secret_references {
+                    let _ = self.secrets.delete(&reference);
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
+fn reimport_preview(
+    import_preview: PostmanImportPreview,
+    prior: Option<StoredPostmanImportRecord>,
+) -> PostmanReimportPreview {
+    let prior_import = prior.as_ref().map(|record| PostmanPriorImport {
+        id: record.id.clone(),
+        source_id: record.source_id.clone(),
+        source_name: record.source_name.clone(),
+        source_hash: record.source_hash.clone(),
+    });
+    let mut changes = Vec::new();
+    if let Some(record) = &prior {
+        if record.source_hash == import_preview.source_hash {
+            changes.push(PostmanReimportChange {
+                location: "$.source".to_owned(),
+                message: "incoming source matches the previous import".to_owned(),
+            });
+        } else {
+            changes.push(PostmanReimportChange {
+                location: "$.source".to_owned(),
+                message: "incoming source differs from the previous import".to_owned(),
+            });
+        }
+        changes.push(PostmanReimportChange {
+            location: "$.workspace".to_owned(),
+            message: format!(
+                "update would replace {} imported collection root(s) and {} environment(s)",
+                record.collection_ids.len(),
+                record.environment_ids.len()
+            ),
+        });
+    } else {
+        changes.push(PostmanReimportChange {
+            location: "$.source".to_owned(),
+            message: "no earlier Import Record was found; duplicate import is available".to_owned(),
+        });
+    }
+    let can_update = prior
+        .as_ref()
+        .map(|record| !record.collection_ids.is_empty() || !record.environment_ids.is_empty())
+        .unwrap_or(false);
+    PostmanReimportPreview {
+        import_preview,
+        prior_import,
+        changes,
+        can_update,
     }
 }
 
@@ -328,6 +536,267 @@ fn convert_postman(
         requests,
         environments,
     })
+}
+
+fn export_postman(
+    input: &PostmanExportInput,
+    snapshot: &RequestWorkspaceSnapshot,
+) -> Result<PostmanExportResult, PostmanImportError> {
+    if input.workspace_id != snapshot.workspace_id {
+        return Err(PostmanImportError::WorkspaceNotFound);
+    }
+    let mut context = ConvertContext::default();
+    let collection_items = export_child_items(snapshot, None, &mut context);
+    let collection = serde_json::json!({
+        "info": {
+            "name": clean_name(&input.source_name),
+            "_postman_id": sha256_hex(format!("postmite:{}:{}", snapshot.workspace_id, input.source_name).as_bytes()),
+            "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+        },
+        "item": collection_items
+    });
+    let collection_json = serde_json::to_string_pretty(&collection)
+        .map_err(|error| PostmanImportError::Persistence(error.to_string()))?;
+    let environments = snapshot
+        .environments
+        .iter()
+        .map(|environment| {
+            let values = snapshot
+                .environment_variables
+                .iter()
+                .filter(|variable| variable.environment_id == environment.id)
+                .map(|variable| match &variable.variable.value {
+                    VariableValue::Plain(value) => serde_json::json!({
+                        "key": variable.variable.name,
+                        "value": value,
+                        "enabled": true,
+                        "type": "text"
+                    }),
+                    VariableValue::SecretReference(_) => {
+                        context.warnings.push(PostmanImportWarning {
+                            location: format!("$.environment.{}.{}", environment.name, variable.variable.name),
+                            message: "Secret value was omitted from Postman export".to_owned(),
+                        });
+                        serde_json::json!({
+                            "key": variable.variable.name,
+                            "value": "",
+                            "enabled": true,
+                            "type": "secret"
+                        })
+                    }
+                })
+                .collect::<Vec<_>>();
+            let document = serde_json::json!({
+                "id": sha256_hex(format!("postmite:{}:{}", snapshot.workspace_id, environment.id).as_bytes()),
+                "name": environment.name,
+                "values": values,
+                "_postman_variable_scope": "environment"
+            });
+            let environment_json = serde_json::to_string_pretty(&document)
+                .map_err(|error| PostmanImportError::Persistence(error.to_string()))?;
+            Ok(PostmanEnvironmentExport {
+                name: environment.name.clone(),
+                environment_json,
+            })
+        })
+        .collect::<Result<Vec<_>, PostmanImportError>>()?;
+    Ok(PostmanExportResult {
+        collection_json,
+        environments,
+        warning_count: context.warnings.len() as u32,
+        unsupported_count: context.unsupported.len() as u32,
+        warnings: context.warnings,
+        unsupported: context.unsupported,
+    })
+}
+
+fn export_child_items(
+    snapshot: &RequestWorkspaceSnapshot,
+    parent_id: Option<CollectionId>,
+    context: &mut ConvertContext,
+) -> Vec<Value> {
+    let mut items = Vec::new();
+    let mut folders = snapshot
+        .collection_folders
+        .iter()
+        .filter(|folder| folder.parent_collection_id == parent_id)
+        .collect::<Vec<_>>();
+    folders.sort_by_key(|folder| (folder.position, folder.name.clone(), folder.id.to_string()));
+    for folder in folders {
+        items.push(serde_json::json!({
+            "name": folder.name,
+            "item": export_child_items(snapshot, Some(folder.id), context)
+        }));
+    }
+    let mut requests = snapshot
+        .saved_requests
+        .iter()
+        .filter(|request| request.collection_id == parent_id)
+        .collect::<Vec<_>>();
+    requests.sort_by_key(|request| {
+        (
+            request.position,
+            request.content.name.clone(),
+            request.id.to_string(),
+        )
+    });
+    for request in requests {
+        items.push(export_request_item(request, context));
+    }
+    items
+}
+
+fn export_request_item(request: &SavedRequest, context: &mut ConvertContext) -> Value {
+    serde_json::json!({
+        "name": request.content.name,
+        "request": {
+            "method": request.content.method,
+            "url": export_url(&request.content),
+            "header": export_fields(&request.content.headers),
+            "body": export_body(&request.content.body, &request.content.name, context),
+            "auth": export_auth(&request.content.auth, &request.content.name, context)
+        }
+    })
+}
+
+fn export_url(content: &RequestContent) -> Value {
+    let query = export_fields(&content.query);
+    if query.as_array().map(Vec::is_empty).unwrap_or(true) {
+        Value::String(content.url.clone())
+    } else {
+        serde_json::json!({
+            "raw": content.url,
+            "query": query
+        })
+    }
+}
+
+fn export_fields(fields: &[OrderedField]) -> Value {
+    let mut rows = fields.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|field| field.order);
+    Value::Array(
+        rows.into_iter()
+            .map(|field| {
+                serde_json::json!({
+                    "key": field.name,
+                    "value": field.value,
+                    "disabled": !field.enabled
+                })
+            })
+            .collect(),
+    )
+}
+
+fn export_body(body: &RequestBody, request_name: &str, context: &mut ConvertContext) -> Value {
+    match body {
+        RequestBody::None => Value::Null,
+        RequestBody::Raw { content } => serde_json::json!({
+            "mode": "raw",
+            "raw": content
+        }),
+        RequestBody::UrlEncoded { fields } => serde_json::json!({
+            "mode": "urlencoded",
+            "urlencoded": export_fields(fields)
+        }),
+        RequestBody::Multipart { parts } => {
+            let rows = parts
+                .iter()
+                .filter_map(|part| match part {
+                    MultipartPart::Field {
+                        enabled,
+                        order: _,
+                        name,
+                        value,
+                    } => Some(serde_json::json!({
+                        "key": name,
+                        "value": value,
+                        "type": "text",
+                        "disabled": !enabled
+                    })),
+                    MultipartPart::File { file, .. } => {
+                        match file.path {
+                            BodyFilePath::Relative { .. } => context.unsupported.push(
+                                PostmanUnsupportedField {
+                                    location: format!("$.collection.item[{request_name}].request.body.formdata"),
+                                    reason: "multipart file references are diagnostic-only in Postman export".to_owned(),
+                                },
+                            ),
+                            BodyFilePath::Absolute { .. } => context.unsupported.push(
+                                PostmanUnsupportedField {
+                                    location: format!("$.collection.item[{request_name}].request.body.formdata"),
+                                    reason: "absolute Body-file paths are excluded from Postman export".to_owned(),
+                                },
+                            ),
+                        }
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "mode": "formdata",
+                "formdata": rows
+            })
+        }
+        RequestBody::Binary { file } => {
+            match file.path {
+                BodyFilePath::Relative { .. } => {
+                    context.unsupported.push(PostmanUnsupportedField {
+                        location: format!("$.collection.item[{request_name}].request.body"),
+                        reason: "binary Body-file references are diagnostic-only in Postman export"
+                            .to_owned(),
+                    })
+                }
+                BodyFilePath::Absolute { .. } => {
+                    context.unsupported.push(PostmanUnsupportedField {
+                        location: format!("$.collection.item[{request_name}].request.body"),
+                        reason: "absolute Body-file paths are excluded from Postman export"
+                            .to_owned(),
+                    })
+                }
+            }
+            Value::Null
+        }
+    }
+}
+
+fn export_auth(auth: &RequestAuth, request_name: &str, context: &mut ConvertContext) -> Value {
+    match auth {
+        RequestAuth::None => serde_json::json!({"type": "noauth"}),
+        RequestAuth::Basic { username, password } => serde_json::json!({
+            "type": "basic",
+            "basic": [
+                {"key": "username", "value": username, "type": "string"},
+                {"key": "password", "value": password, "type": "string"}
+            ]
+        }),
+        RequestAuth::Bearer { token } => serde_json::json!({
+            "type": "bearer",
+            "bearer": [{"key": "token", "value": token, "type": "string"}]
+        }),
+        RequestAuth::ApiKey {
+            placement,
+            name,
+            value,
+        } => serde_json::json!({
+            "type": "apikey",
+            "apikey": [
+                {"key": "key", "value": name, "type": "string"},
+                {"key": "value", "value": value, "type": "string"},
+                {"key": "in", "value": match placement {
+                    ApiKeyPlacement::Header => "header",
+                    ApiKeyPlacement::Query => "query",
+                }, "type": "string"}
+            ]
+        }),
+        RequestAuth::ClientCredentials { .. } => {
+            context.unsupported.push(PostmanUnsupportedField {
+                location: format!("$.collection.item[{request_name}].request.auth"),
+                reason: "OAuth client credentials auth is diagnostic-only in Postman export"
+                    .to_owned(),
+            });
+            serde_json::json!({"type": "noauth"})
+        }
+    }
 }
 
 fn convert_items(
@@ -891,6 +1360,10 @@ mod tests {
     use crate::application::secrets::{
         SecretError, SecretPersistence, SecretStore, SecretWrite, SessionSecretStore,
     };
+    use crate::domain::request::{
+        BodyFilePath, BodyFileReference, CollectionFolder, CollectionId, Environment,
+        EnvironmentId, EnvironmentVariable, SavedRequest, SavedRequestId, Variable,
+    };
 
     fn input(collection: &str, environment: Option<&str>) -> PostmanImportInput {
         PostmanImportInput {
@@ -1004,11 +1477,260 @@ mod tests {
         assert_eq!(secret_view.values.lock().expect("secrets").len(), 0);
     }
 
+    #[test]
+    fn export_generates_postman_v21_json_without_secret_or_absolute_file_leaks() {
+        let workspace_id = WorkspaceId::new();
+        let collection_id = CollectionId::new();
+        let environment_id = EnvironmentId::new();
+        let absolute_path = "/tmp/private/payload.bin";
+        let snapshot = RequestWorkspaceSnapshot {
+            workspace_id,
+            collection_folders: vec![CollectionFolder {
+                id: collection_id,
+                workspace_id,
+                parent_collection_id: None,
+                name: "Imported".to_owned(),
+                position: 0,
+            }],
+            environments: vec![Environment {
+                id: environment_id,
+                workspace_id,
+                name: "Production".to_owned(),
+                position: 0,
+                is_selected: true,
+            }],
+            collection_variables: Vec::new(),
+            environment_variables: vec![EnvironmentVariable {
+                environment_id,
+                workspace_id,
+                variable: Variable {
+                    name: "token".to_owned(),
+                    value: VariableValue::SecretReference("secret://token".to_owned()),
+                },
+            }],
+            saved_requests: vec![SavedRequest {
+                id: SavedRequestId::new(),
+                workspace_id,
+                collection_id: Some(collection_id),
+                position: 0,
+                content: RequestContent {
+                    name: "Upload".to_owned(),
+                    method: "POST".to_owned(),
+                    url: "https://example.test/upload".to_owned(),
+                    body: RequestBody::Binary {
+                        file: BodyFileReference {
+                            path: BodyFilePath::Absolute {
+                                path: absolute_path.to_owned(),
+                            },
+                            file_name: "payload.bin".to_owned(),
+                            size: 1,
+                            modified_at_epoch_seconds: None,
+                            sha256: "payload-hash".to_owned(),
+                        },
+                    },
+                    ..RequestContent::blank()
+                },
+            }],
+            drafts: Vec::new(),
+            tabs: Vec::new(),
+        };
+
+        let result = export_postman(
+            &PostmanExportInput {
+                workspace_id,
+                source_name: "Fixture".to_owned(),
+            },
+            &snapshot,
+        )
+        .expect("export");
+        let collection: Value =
+            serde_json::from_str(&result.collection_json).expect("collection json");
+        let environment: Value =
+            serde_json::from_str(&result.environments[0].environment_json).expect("environment");
+
+        assert_eq!(
+            collection["info"]["schema"],
+            "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+        );
+        assert!(!result.collection_json.contains(absolute_path));
+        assert_eq!(environment["values"][0]["value"], "");
+        assert_eq!(environment["values"][0]["type"], "secret");
+        assert!(result
+            .unsupported
+            .iter()
+            .any(|field| field.reason.contains("absolute Body-file paths")));
+    }
+
+    #[test]
+    fn exported_postman_json_imports_back_to_supported_internal_model() {
+        let workspace_id = WorkspaceId::new();
+        let collection_id = CollectionId::new();
+        let environment_id = EnvironmentId::new();
+        let snapshot = RequestWorkspaceSnapshot {
+            workspace_id,
+            collection_folders: vec![CollectionFolder {
+                id: collection_id,
+                workspace_id,
+                parent_collection_id: None,
+                name: "Imported".to_owned(),
+                position: 0,
+            }],
+            environments: vec![Environment {
+                id: environment_id,
+                workspace_id,
+                name: "Production".to_owned(),
+                position: 0,
+                is_selected: true,
+            }],
+            collection_variables: Vec::new(),
+            environment_variables: vec![EnvironmentVariable {
+                environment_id,
+                workspace_id,
+                variable: Variable {
+                    name: "baseUrl".to_owned(),
+                    value: VariableValue::Plain("https://example.test".to_owned()),
+                },
+            }],
+            saved_requests: vec![SavedRequest {
+                id: SavedRequestId::new(),
+                workspace_id,
+                collection_id: Some(collection_id),
+                position: 0,
+                content: RequestContent {
+                    name: "Create user".to_owned(),
+                    method: "POST".to_owned(),
+                    url: "{{baseUrl}}/users".to_owned(),
+                    headers: vec![OrderedField {
+                        enabled: true,
+                        order: 0,
+                        name: "Content-Type".to_owned(),
+                        value: "application/json".to_owned(),
+                    }],
+                    body: RequestBody::Raw {
+                        content: r#"{"name":"Ada"}"#.to_owned(),
+                    },
+                    ..RequestContent::blank()
+                },
+            }],
+            drafts: Vec::new(),
+            tabs: Vec::new(),
+        };
+        let exported = export_postman(
+            &PostmanExportInput {
+                workspace_id,
+                source_name: "Fixture".to_owned(),
+            },
+            &snapshot,
+        )
+        .expect("export");
+
+        let converted = convert_postman(
+            &PostmanImportInput {
+                workspace_id,
+                source_name: "Fixture".to_owned(),
+                collection_json: exported.collection_json,
+                environment_json: Some(exported.environments[0].environment_json.clone()),
+            },
+            None,
+        )
+        .expect("import exported json");
+
+        assert_eq!(converted.collections.len(), 2);
+        assert_eq!(converted.requests.len(), 1);
+        assert_eq!(converted.environments.len(), 1);
+        assert_eq!(converted.requests[0].content.name, "Create user");
+        assert_eq!(
+            converted.requests[0].content.headers[0].name,
+            "Content-Type"
+        );
+        assert!(matches!(
+            converted.requests[0].content.body,
+            RequestBody::Raw { .. }
+        ));
+    }
+
+    #[test]
+    fn reimport_preview_reports_deterministic_prior_import_changes() {
+        let import_preview = PostmanImportPreview {
+            source_id: "postman-demo".to_owned(),
+            source_name: "Demo".to_owned(),
+            source_hash: "new-hash".to_owned(),
+            collection_count: 1,
+            request_count: 1,
+            environment_count: 1,
+            warning_count: 0,
+            unsupported_count: 0,
+            warnings: Vec::new(),
+            unsupported: Vec::new(),
+        };
+        let preview = reimport_preview(
+            import_preview,
+            Some(StoredPostmanImportRecord {
+                id: "record-1".to_owned(),
+                source_id: "postman-demo".to_owned(),
+                source_name: "Demo".to_owned(),
+                source_hash: "old-hash".to_owned(),
+                collection_ids: vec![CollectionId::new()],
+                environment_ids: vec![EnvironmentId::new()],
+            }),
+        );
+
+        assert!(preview.can_update);
+        assert_eq!(
+            preview
+                .prior_import
+                .as_ref()
+                .map(|prior| prior.source_id.as_str()),
+            Some("postman-demo")
+        );
+        assert_eq!(preview.changes[0].location, "$.source");
+        assert_eq!(
+            preview.changes[0].message,
+            "incoming source differs from the previous import"
+        );
+        assert_eq!(
+            preview.changes[1].message,
+            "update would replace 1 imported collection root(s) and 1 environment(s)"
+        );
+    }
+
     struct FailingRepository;
 
     impl PostmanImportRepository for FailingRepository {
+        fn list_postman_workspace(
+            &self,
+            workspace_id: WorkspaceId,
+        ) -> Result<RequestWorkspaceSnapshot, PostmanImportError> {
+            Ok(RequestWorkspaceSnapshot {
+                workspace_id,
+                collection_folders: Vec::new(),
+                environments: Vec::new(),
+                collection_variables: Vec::new(),
+                environment_variables: Vec::new(),
+                saved_requests: Vec::new(),
+                drafts: Vec::new(),
+                tabs: Vec::new(),
+            })
+        }
+
+        fn find_latest_postman_import(
+            &self,
+            _workspace_id: WorkspaceId,
+            _source_id: &str,
+        ) -> Result<Option<StoredPostmanImportRecord>, PostmanImportError> {
+            Ok(None)
+        }
+
         fn import_postman(
             &mut self,
+            _import: ConvertedPostmanImport,
+        ) -> Result<RequestWorkspaceSnapshot, PostmanImportError> {
+            Err(PostmanImportError::Persistence("forced".to_owned()))
+        }
+
+        fn update_postman_import(
+            &mut self,
+            _prior: &StoredPostmanImportRecord,
             _import: ConvertedPostmanImport,
         ) -> Result<RequestWorkspaceSnapshot, PostmanImportError> {
             Err(PostmanImportError::Persistence("forced".to_owned()))
