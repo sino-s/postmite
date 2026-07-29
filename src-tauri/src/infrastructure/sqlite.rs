@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Transaction};
 use crate::{
     application::postman_import::{
         ConvertedCollection, ConvertedPostmanImport, PostmanImportError, PostmanImportRepository,
+        StoredPostmanImportRecord,
     },
     application::request::{
         CollectionLocation, ExecutionHistorySnapshot, ExecutionRecordDraft, RequestError,
@@ -389,6 +390,14 @@ CREATE TABLE postman_import_records (
 
 CREATE INDEX postman_import_records_workspace_imported
     ON postman_import_records(workspace_id, imported_at DESC, id);
+"#,
+    },
+    Migration {
+        version: 13,
+        name: "track_postman_import_entities",
+        sql: r#"
+ALTER TABLE postman_import_records ADD COLUMN collection_ids_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE postman_import_records ADD COLUMN environment_ids_json TEXT NOT NULL DEFAULT '[]';
 "#,
     },
 ];
@@ -1363,6 +1372,35 @@ impl RequestRepository for SqliteWorkspaceRepository {
 }
 
 impl PostmanImportRepository for SqliteWorkspaceRepository {
+    fn list_postman_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<RequestWorkspaceSnapshot, PostmanImportError> {
+        ensure_request_workspace_exists(&self.connection, workspace_id)
+            .map_err(postman_request_error)?;
+        load_request_snapshot(&self.connection, workspace_id).map_err(postman_request_error)
+    }
+
+    fn find_latest_postman_import(
+        &self,
+        workspace_id: WorkspaceId,
+        source_id: &str,
+    ) -> Result<Option<StoredPostmanImportRecord>, PostmanImportError> {
+        self.connection
+            .query_row(
+                "SELECT id, source_id, source_name, source_hash,
+                        collection_ids_json, environment_ids_json
+                 FROM postman_import_records
+                 WHERE workspace_id = ?1 AND source_id = ?2
+                 ORDER BY imported_at DESC, id DESC
+                 LIMIT 1",
+                params![workspace_id.to_string(), source_id],
+                postman_import_record_from_row,
+            )
+            .optional()
+            .map_err(PostmanImportError::persistence)
+    }
+
     fn import_postman(
         &mut self,
         import: ConvertedPostmanImport,
@@ -1372,104 +1410,160 @@ impl PostmanImportRepository for SqliteWorkspaceRepository {
             .transaction()
             .map_err(PostmanImportError::persistence)?;
         ensure_request_workspace_exists(&tx, import.workspace_id).map_err(postman_request_error)?;
+        insert_converted_postman_import(&tx, &import)?;
+        let snapshot =
+            load_request_snapshot(&tx, import.workspace_id).map_err(postman_request_error)?;
+        tx.commit().map_err(PostmanImportError::persistence)?;
+        Ok(snapshot)
+    }
 
-        let mut collection_ids: Vec<Option<CollectionId>> = vec![None; import.collections.len()];
-        for collection in &import.collections {
-            let collection_id = CollectionId::new();
-            let parent_id = collection
-                .parent_import_index
-                .and_then(|index| collection_ids.get(index).copied().flatten());
-            ensure_import_parent_present(collection, parent_id)?;
-            let position = next_collection_position(&tx, import.workspace_id, parent_id)
-                .map_err(postman_request_error)?;
-            validate_collection_name(&collection.name).map_err(postman_request_error)?;
+    fn update_postman_import(
+        &mut self,
+        prior: &StoredPostmanImportRecord,
+        import: ConvertedPostmanImport,
+    ) -> Result<RequestWorkspaceSnapshot, PostmanImportError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(PostmanImportError::persistence)?;
+        ensure_request_workspace_exists(&tx, import.workspace_id).map_err(postman_request_error)?;
+
+        for environment_id in &prior.environment_ids {
             tx.execute(
-                "INSERT INTO collections
-                    (id, workspace_id, parent_collection_id, name, position)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    collection_id.to_string(),
-                    import.workspace_id.to_string(),
-                    parent_id.map(|id| id.to_string()),
-                    collection.name.trim(),
-                    position,
-                ],
+                "DELETE FROM selected_environments
+                 WHERE workspace_id = ?1 AND environment_id = ?2",
+                params![import.workspace_id.to_string(), environment_id.to_string()],
             )
             .map_err(map_postman_sqlite_error)?;
-            if let Some(slot) = collection_ids.get_mut(collection.import_index) {
-                *slot = Some(collection_id);
+            tx.execute(
+                "DELETE FROM environments WHERE workspace_id = ?1 AND id = ?2",
+                params![import.workspace_id.to_string(), environment_id.to_string()],
+            )
+            .map_err(map_postman_sqlite_error)?;
+        }
+        for collection_id in &prior.collection_ids {
+            if collection_exists(&tx, import.workspace_id, *collection_id)
+                .map_err(postman_request_error)?
+            {
+                delete_collection_subtree(&tx, import.workspace_id, *collection_id)
+                    .map_err(postman_request_error)?;
             }
         }
 
-        for request in &import.requests {
-            let collection_id = request
-                .collection_import_index
-                .and_then(|index| collection_ids.get(index).copied().flatten());
-            insert_saved_request(
-                &tx,
-                import.workspace_id,
-                SavedRequestId::new(),
-                collection_id,
-                &request.content,
-            )
-            .map_err(postman_request_error)?;
-        }
-
-        for environment in &import.environments {
-            validate_collection_name(&environment.name).map_err(postman_request_error)?;
-            let environment_id = EnvironmentId::new();
-            let position = next_environment_position(&tx, import.workspace_id)?;
-            tx.execute(
-                "INSERT INTO environments (id, workspace_id, name, position)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    environment_id.to_string(),
-                    import.workspace_id.to_string(),
-                    environment.name.trim(),
-                    position,
-                ],
-            )
-            .map_err(map_postman_sqlite_error)?;
-            for variable in &environment.variables {
-                insert_environment_variable(
-                    &tx,
-                    import.workspace_id,
-                    environment_id,
-                    &variable.name,
-                    &variable.value,
-                )?;
-            }
-        }
-
-        tx.execute(
-            "INSERT INTO postman_import_records
-                (id, workspace_id, source_id, source_name, source_hash,
-                 collection_json_sha256, environment_json_sha256,
-                 warning_count, unsupported_count, warnings_json, unsupported_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                uuid::Uuid::new_v4().to_string(),
-                import.workspace_id.to_string(),
-                import.source_id,
-                import.source_name,
-                import.source_hash,
-                import.collection_json_sha256,
-                import.environment_json_sha256,
-                import.warnings.len() as i64,
-                import.unsupported.len() as i64,
-                serde_json::to_string(&import.warnings)
-                    .map_err(|error| PostmanImportError::Persistence(error.to_string()))?,
-                serde_json::to_string(&import.unsupported)
-                    .map_err(|error| PostmanImportError::Persistence(error.to_string()))?,
-            ],
-        )
-        .map_err(map_postman_sqlite_error)?;
+        insert_converted_postman_import(&tx, &import)?;
 
         let snapshot =
             load_request_snapshot(&tx, import.workspace_id).map_err(postman_request_error)?;
         tx.commit().map_err(PostmanImportError::persistence)?;
         Ok(snapshot)
     }
+}
+
+fn insert_converted_postman_import(
+    tx: &Transaction<'_>,
+    import: &ConvertedPostmanImport,
+) -> Result<(), PostmanImportError> {
+    let mut collection_ids: Vec<Option<CollectionId>> = vec![None; import.collections.len()];
+    let mut root_collection_ids = Vec::new();
+    for collection in &import.collections {
+        let collection_id = CollectionId::new();
+        let parent_id = collection
+            .parent_import_index
+            .and_then(|index| collection_ids.get(index).copied().flatten());
+        ensure_import_parent_present(collection, parent_id)?;
+        let position = next_collection_position(tx, import.workspace_id, parent_id)
+            .map_err(postman_request_error)?;
+        validate_collection_name(&collection.name).map_err(postman_request_error)?;
+        tx.execute(
+            "INSERT INTO collections
+                (id, workspace_id, parent_collection_id, name, position)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                collection_id.to_string(),
+                import.workspace_id.to_string(),
+                parent_id.map(|id| id.to_string()),
+                collection.name.trim(),
+                position,
+            ],
+        )
+        .map_err(map_postman_sqlite_error)?;
+        if collection.parent_import_index.is_none() {
+            root_collection_ids.push(collection_id);
+        }
+        if let Some(slot) = collection_ids.get_mut(collection.import_index) {
+            *slot = Some(collection_id);
+        }
+    }
+
+    for request in &import.requests {
+        let collection_id = request
+            .collection_import_index
+            .and_then(|index| collection_ids.get(index).copied().flatten());
+        insert_saved_request(
+            tx,
+            import.workspace_id,
+            SavedRequestId::new(),
+            collection_id,
+            &request.content,
+        )
+        .map_err(postman_request_error)?;
+    }
+
+    let mut environment_ids = Vec::new();
+    for environment in &import.environments {
+        validate_collection_name(&environment.name).map_err(postman_request_error)?;
+        let environment_id = EnvironmentId::new();
+        let position = next_environment_position(tx, import.workspace_id)?;
+        tx.execute(
+            "INSERT INTO environments (id, workspace_id, name, position)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                environment_id.to_string(),
+                import.workspace_id.to_string(),
+                environment.name.trim(),
+                position,
+            ],
+        )
+        .map_err(map_postman_sqlite_error)?;
+        environment_ids.push(environment_id);
+        for variable in &environment.variables {
+            insert_environment_variable(
+                tx,
+                import.workspace_id,
+                environment_id,
+                &variable.name,
+                &variable.value,
+            )?;
+        }
+    }
+
+    tx.execute(
+        "INSERT INTO postman_import_records
+            (id, workspace_id, source_id, source_name, source_hash,
+             collection_json_sha256, environment_json_sha256,
+             warning_count, unsupported_count, warnings_json, unsupported_json,
+             collection_ids_json, environment_ids_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            import.workspace_id.to_string(),
+            import.source_id,
+            import.source_name,
+            import.source_hash,
+            import.collection_json_sha256,
+            import.environment_json_sha256,
+            import.warnings.len() as i64,
+            import.unsupported.len() as i64,
+            serde_json::to_string(&import.warnings)
+                .map_err(|error| PostmanImportError::Persistence(error.to_string()))?,
+            serde_json::to_string(&import.unsupported)
+                .map_err(|error| PostmanImportError::Persistence(error.to_string()))?,
+            entity_ids_to_json(&root_collection_ids)?,
+            entity_ids_to_json(&environment_ids)?,
+        ],
+    )
+    .map_err(map_postman_sqlite_error)?;
+    Ok(())
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), WorkspaceError> {
@@ -1647,6 +1741,20 @@ fn ensure_request_workspace_exists(
         .map_err(RequestError::persistence)?;
 
     exists.ok_or(RequestError::WorkspaceNotFound)
+}
+
+fn collection_exists(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    collection_id: CollectionId,
+) -> Result<bool, RequestError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM collections WHERE workspace_id = ?1 AND id = ?2)",
+            params![workspace_id.to_string(), collection_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(RequestError::persistence)
 }
 
 fn ensure_draft_in_workspace(
@@ -3778,12 +3886,59 @@ fn postman_request_error(error: RequestError) -> PostmanImportError {
     }
 }
 
+fn postman_import_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredPostmanImportRecord> {
+    let collection_ids_json: String = row.get(4)?;
+    let environment_ids_json: String = row.get(5)?;
+    Ok(StoredPostmanImportRecord {
+        id: row.get(0)?,
+        source_id: row.get(1)?,
+        source_name: row.get(2)?,
+        source_hash: row.get(3)?,
+        collection_ids: collection_ids_from_json(&collection_ids_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                4,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        environment_ids: environment_ids_from_json(&environment_ids_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                5,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+    })
+}
+
+fn entity_ids_to_json<T: ToString>(ids: &[T]) -> Result<String, PostmanImportError> {
+    serde_json::to_string(&ids.iter().map(ToString::to_string).collect::<Vec<String>>())
+        .map_err(|error| PostmanImportError::Persistence(error.to_string()))
+}
+
+fn collection_ids_from_json(json: &str) -> Result<Vec<CollectionId>, uuid::Error> {
+    let ids: Vec<String> = serde_json::from_str(json).unwrap_or_default();
+    ids.into_iter()
+        .map(|id| CollectionId::from_str(&id))
+        .collect()
+}
+
+fn environment_ids_from_json(json: &str) -> Result<Vec<EnvironmentId>, uuid::Error> {
+    let ids: Vec<String> = serde_json::from_str(json).unwrap_or_default();
+    ids.into_iter()
+        .map(|id| EnvironmentId::from_str(&id))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
     use crate::{
+        application::postman_import::PostmanImportService,
         application::request::{RequestRepository, RequestService},
         application::workspace::WorkspaceRepository,
         domain::request::{
@@ -4200,6 +4355,101 @@ mod tests {
             })
             .expect("count import records");
         assert_eq!(records, 1);
+        let stored = repository
+            .find_latest_postman_import(workspace_id, "postman-fixture")
+            .expect("find prior import")
+            .expect("prior import");
+        assert_eq!(stored.collection_ids.len(), 1);
+        assert_eq!(stored.environment_ids.len(), 1);
+    }
+
+    #[test]
+    fn postman_reimport_update_replaces_prior_imported_entities_transactionally() {
+        let mut repository = repository();
+        let workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        repository
+            .import_postman(converted_postman_import(workspace_id, "postman-fixture"))
+            .expect("initial import");
+        let prior = repository
+            .find_latest_postman_import(workspace_id, "postman-fixture")
+            .expect("find prior import")
+            .expect("prior import");
+        let old_collection_id = prior.collection_ids[0];
+        let mut replacement = converted_postman_import(workspace_id, "postman-fixture");
+        replacement.collections[0].name = "Updated".to_owned();
+        replacement.requests[0].content.name = "Updated request".to_owned();
+        replacement.source_hash = "postman-fixture-updated-hash".to_owned();
+
+        let snapshot = repository
+            .update_postman_import(&prior, replacement)
+            .expect("update import");
+
+        assert_eq!(snapshot.collection_folders.len(), 1);
+        assert_eq!(snapshot.collection_folders[0].name, "Updated");
+        assert_ne!(snapshot.collection_folders[0].id, old_collection_id);
+        assert_eq!(snapshot.saved_requests.len(), 1);
+        assert_eq!(snapshot.saved_requests[0].content.name, "Updated request");
+        assert_eq!(snapshot.environments.len(), 1);
+        let records: i64 = repository
+            .connection()
+            .query_row("SELECT COUNT(*) FROM postman_import_records", [], |row| {
+                row.get(0)
+            })
+            .expect("count import records");
+        assert_eq!(records, 2);
+    }
+
+    #[test]
+    fn postman_reimport_cancel_leaves_workspace_unchanged() {
+        let db = NamedTempFile::new().expect("temporary database");
+        let workspace_id = {
+            let mut repository = SqliteWorkspaceRepository::open(db.path()).expect("open database");
+            let workspace_id = repository
+                .initialize()
+                .expect("initialize")
+                .selected_workspace_id;
+            repository
+                .import_postman(converted_postman_import(workspace_id, "postman-fixture"))
+                .expect("initial import");
+            workspace_id
+        };
+        let before = {
+            let repository = SqliteWorkspaceRepository::open(db.path()).expect("open for before");
+            repository
+                .list_request_workspace(workspace_id)
+                .expect("before snapshot")
+        };
+        let repository = SqliteWorkspaceRepository::open(db.path()).expect("open for service");
+        let service = PostmanImportService::new(
+            repository,
+            std::sync::Arc::new(crate::application::secrets::SessionSecretStore::new()),
+        );
+        let mut service = service;
+        let result = service
+            .reimport(crate::application::postman_import::PostmanReimportInput {
+                import: crate::application::postman_import::PostmanImportInput {
+                    workspace_id,
+                    source_name: "Fixture".to_owned(),
+                    collection_json: r#"{
+                      "info": {"name": "Demo", "_postman_id": "postman-fixture", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                      "item": []
+                    }"#
+                    .to_owned(),
+                    environment_json: None,
+                },
+                decision: crate::application::postman_import::PostmanReimportDecision::Cancel,
+            })
+            .expect("cancel reimport");
+
+        assert_eq!(
+            result.snapshot.collection_folders,
+            before.collection_folders
+        );
+        assert_eq!(result.snapshot.saved_requests, before.saved_requests);
+        assert_eq!(result.snapshot.environments, before.environments);
     }
 
     #[test]

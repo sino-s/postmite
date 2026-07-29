@@ -13,7 +13,9 @@ import type {
   MoveCollectionFolderInput,
   MoveSavedRequestInput,
   OpenSavedRequestTabInput,
+  PostmanExportInput,
   PostmanImportInput,
+  PostmanReimportInput,
   RequestDraftIdInput,
   RelinkBodyFilesInput,
   ResolveRequestContentInput,
@@ -127,6 +129,26 @@ export async function importPostman(
   const result = await requestIpc.importPostman(input);
   queryClient.setQueryData(
     requestWorkspaceQueryKey(input.workspaceId),
+    result.snapshot,
+  );
+  return result;
+}
+
+export async function exportPostman(input: PostmanExportInput) {
+  return requestIpc.exportPostman(input);
+}
+
+export async function previewPostmanReimport(input: PostmanImportInput) {
+  return requestIpc.previewPostmanReimport(input);
+}
+
+export async function reimportPostman(
+  queryClient: QueryClient,
+  input: PostmanReimportInput,
+) {
+  const result = await requestIpc.reimportPostman(input);
+  queryClient.setQueryData(
+    requestWorkspaceQueryKey(input.import.workspaceId),
     result.snapshot,
   );
   return result;

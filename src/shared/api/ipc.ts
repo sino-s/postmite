@@ -16,7 +16,9 @@ import type {
   MoveCollectionFolderInput,
   MoveSavedRequestInput,
   OpenSavedRequestTabInput,
+  PostmanExportInput,
   PostmanImportInput,
+  PostmanReimportInput,
   RequestDraftIdInput,
   RelinkBodyFilesInput,
   ResolveRequestContentInput,
@@ -138,6 +140,12 @@ export const requestIpc = {
     invokeCommand("preview_postman_import", input),
   importPostman: (input: PostmanImportInput) =>
     invokeCommand("import_postman", input),
+  exportPostman: (input: PostmanExportInput) =>
+    invokeCommand("export_postman", input),
+  previewPostmanReimport: (input: PostmanImportInput) =>
+    invokeCommand("preview_postman_reimport", input),
+  reimportPostman: (input: PostmanReimportInput) =>
+    invokeCommand("reimport_postman", input),
   startRequestExecution: (input: StartRequestExecutionInput) =>
     invokeCommand("start_request_execution", input),
   cancelRequestExecution: (input: CancelRequestExecutionInput) =>
