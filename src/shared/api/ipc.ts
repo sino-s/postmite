@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   CloseRequestTabInput,
+  CancelOAuthAuthorizationInput,
   CancelRequestExecutionInput,
   CookieIdInput,
   CollectionFolderIdInput,
@@ -25,6 +26,7 @@ import type {
   SetExecutionHistoryDisabledInput,
   SetExecutionRecordPinnedInput,
   SetWorkspaceBaseDirectoryInput,
+  StartOAuthAuthorizationInput,
   StartRequestExecutionInput,
   UpdateRequestDraftInput,
   UpsertCookieInput,
@@ -135,6 +137,10 @@ export const requestIpc = {
     invokeCommand("start_request_execution", input),
   cancelRequestExecution: (input: CancelRequestExecutionInput) =>
     invokeCommand("cancel_request_execution", input),
+  startOAuthAuthorization: (input: StartOAuthAuthorizationInput) =>
+    invokeCommand("start_oauth_authorization", input),
+  cancelOAuthAuthorization: (input: CancelOAuthAuthorizationInput) =>
+    invokeCommand("cancel_oauth_authorization", input),
 };
 
 type IpcCommandName = keyof IpcCommandContracts;

@@ -12,6 +12,7 @@ use std::{
 
 use application::{
     execution::ExecutionCoordinator,
+    oauth::{OAuthCoordinator, SystemBrowserLauncher},
     request::RequestService,
     secrets::{FallbackSecretStore, SecretStore, SessionSecretStore},
     workspace::WorkspaceService,
@@ -21,6 +22,7 @@ use tauri::{Manager, WindowEvent};
 
 pub struct AppState {
     pub executions: Arc<ExecutionCoordinator>,
+    pub oauth: Arc<OAuthCoordinator>,
     pub workspaces: Mutex<WorkspaceService<SqliteWorkspaceRepository>>,
     pub requests: Mutex<RequestService<SqliteWorkspaceRepository>>,
 }
@@ -28,11 +30,13 @@ pub struct AppState {
 impl AppState {
     fn new(
         executions: Arc<ExecutionCoordinator>,
+        oauth: Arc<OAuthCoordinator>,
         workspaces: WorkspaceService<SqliteWorkspaceRepository>,
         requests: RequestService<SqliteWorkspaceRepository>,
     ) -> Self {
         Self {
             executions,
+            oauth,
             workspaces: Mutex::new(workspaces),
             requests: Mutex::new(requests),
         }
@@ -82,6 +86,8 @@ pub fn run() {
             ipc::relink_body_files,
             ipc::start_request_execution,
             ipc::cancel_request_execution,
+            ipc::start_oauth_authorization,
+            ipc::cancel_oauth_authorization,
         ])
         .setup(move |app| {
             let app_data_dir = diagnostics::app_data_dir(app)?;
@@ -102,9 +108,10 @@ pub fn run() {
                 workspace_snapshot.selected_workspace_id,
             )?;
             let executions = Arc::new(ExecutionCoordinator::new());
+            let oauth = Arc::new(OAuthCoordinator::new(Arc::new(SystemBrowserLauncher)));
 
             diagnostics::configure_e2e_request_smoke(Arc::clone(&executions))?;
-            app.manage(AppState::new(executions, workspaces, requests));
+            app.manage(AppState::new(executions, oauth, workspaces, requests));
             diagnostics::configure_perf(app, started_at.elapsed())?;
             Ok(())
         })
