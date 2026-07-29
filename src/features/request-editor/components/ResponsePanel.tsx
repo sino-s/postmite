@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
 import { saveResponseFile } from "../../../shared/api/execution";
 import type { ResponseExecutionState } from "../../../shared/api/execution";
 import {
@@ -28,7 +30,7 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
       <section
         aria-label={t("response.title")}
         aria-live="polite"
-        className="min-h-40 rounded-md border border-slate-300 bg-white p-3 text-sm text-slate-600"
+        className="min-h-40 min-w-0 rounded-md border border-border bg-card p-3 text-sm text-muted-foreground"
       >
         {t("response.empty")}
       </section>
@@ -44,51 +46,51 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
     <section
       aria-label={t("response.title")}
       aria-live="polite"
-      className="grid min-h-40 gap-3 rounded-md border border-slate-300 bg-white p-3 text-sm"
+      className="grid min-h-40 min-w-0 gap-3 overflow-hidden rounded-md border border-border bg-card p-3 text-sm text-card-foreground"
     >
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700">
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
+        <span className="rounded-md border border-border px-2 py-1 font-medium text-muted-foreground">
           {phaseLabel}
         </span>
         {execution.status ? (
-          <span className="font-semibold text-slate-950">
+          <span className="font-semibold text-foreground">
             {t("response.status", { status: execution.status })}
           </span>
         ) : null}
-        <span className="text-slate-600">{t("response.time", { value: `${formatNumber(Math.max(0, elapsedMs))} ms` })}</span>
+        <span className="text-muted-foreground">{t("response.time", { value: `${formatNumber(Math.max(0, elapsedMs))} ms` })}</span>
         {execution.protocol ? (
-          <span className="text-slate-600">{execution.protocol}</span>
+          <span className="text-muted-foreground">{execution.protocol}</span>
         ) : null}
-        <span className="text-slate-600">
+        <span className="text-muted-foreground">
           {t("response.timing", { value: formatTiming(execution) })}
         </span>
         {execution.downloadProgress ? (
-          <span className="text-slate-600">
+          <span className="text-muted-foreground">
             {t("response.received", { value: formatBytes(execution.downloadProgress.receivedBytes) })}
           </span>
         ) : null}
         {execution.decodedBytes !== null ? (
-          <span className="text-slate-600">
+          <span className="text-muted-foreground">
             {t("response.decoded", { value: formatBytes(execution.decodedBytes) })}
           </span>
         ) : null}
         {execution.wireBytes !== null ? (
-          <span className="text-slate-600">
+          <span className="text-muted-foreground">
             {t("response.wire", { value: formatBytes(execution.wireBytes) })}
           </span>
         ) : null}
         {execution.responseFile ? (
-          <span className="text-slate-600">
+          <span className="text-muted-foreground">
             {formatBytes(execution.responseFile.byteCount)}
           </span>
         ) : null}
         {execution.uploadProgress ? (
-          <span className="text-slate-600">
+          <span className="text-muted-foreground">
             {t("response.sent", { value: formatBytes(execution.uploadProgress.sentBytes) })}
           </span>
         ) : null}
         {execution.proxy ? (
-          <span className="text-slate-600">
+          <span className="text-muted-foreground">
             Proxy {formatProxyMetadata(execution.proxy)}
           </span>
         ) : null}
@@ -127,8 +129,8 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
         </div>
       ) : null}
 
-      <div className="grid min-h-0 gap-3 lg:grid-cols-[minmax(260px,0.45fr)_minmax(0,1fr)]">
-        <div className="min-h-0 overflow-auto rounded-md border border-slate-200">
+      <div className="grid min-h-0 min-w-0 gap-3 lg:grid-cols-[minmax(220px,0.45fr)_minmax(0,1fr)]">
+        <div className="min-h-0 min-w-0 overflow-auto rounded-md border border-slate-200">
           <table className="w-full table-fixed border-collapse text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
@@ -234,8 +236,8 @@ function ResponseBodyViewer({
   const prettyText = structured?.pretty ?? rawText;
 
   return (
-    <div className="grid min-h-0 gap-2 rounded-md border border-slate-200 bg-slate-950 p-3 text-slate-50">
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="grid min-h-0 min-w-0 gap-2 rounded-md border border-slate-700 bg-slate-950 p-3 text-slate-50">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span className="rounded border border-slate-700 px-2 py-1 text-xs font-semibold">
           {viewer.displayName}
         </span>
@@ -250,48 +252,56 @@ function ResponseBodyViewer({
         </span>
         <span className="text-xs text-slate-300">hash {viewer.previewHash}</span>
         {execution.responseFile ? (
-          <button
-            className="ml-auto rounded border border-slate-600 px-2 py-1 text-xs font-semibold text-slate-50 hover:bg-slate-800"
+          <Button
+            className="ml-auto h-7 border-slate-600 bg-slate-950 px-2 text-xs text-slate-50 hover:bg-slate-800 hover:text-slate-50"
             onClick={() => void onSaveResponseFile()}
+            size="sm"
             type="button"
+            variant="outline"
           >
             Save
-          </button>
+          </Button>
         ) : null}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <button
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <Button
           aria-pressed={mode === "pretty"}
           className={modeButtonClass(mode === "pretty")}
           onClick={() => setMode("pretty")}
+          size="sm"
           type="button"
+          variant="outline"
         >
           Pretty
-        </button>
-        <button
+        </Button>
+        <Button
           aria-pressed={mode === "raw"}
           className={modeButtonClass(mode === "raw")}
           onClick={() => setMode("raw")}
+          size="sm"
           type="button"
+          variant="outline"
         >
           Raw
-        </button>
+        </Button>
         {canPreview ? (
-          <button
+          <Button
             aria-pressed={mode === "preview"}
             className={modeButtonClass(mode === "preview")}
             onClick={() => setMode("preview")}
+            size="sm"
             type="button"
+            variant="outline"
           >
             Preview
-          </button>
+          </Button>
         ) : null}
         {isStructured ? (
           <>
-            <input
+            <Input
               aria-label={t("response.search")}
-              className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-50"
+              className="h-7 min-w-32 flex-1 border-slate-700 bg-slate-900 text-xs text-slate-50 placeholder:text-slate-400"
               onChange={(event) => setSearch(event.target.value)}
               placeholder={t("response.search")}
               value={search}
@@ -384,10 +394,10 @@ function ResponseBodyContent({
 
 function modeButtonClass(active: boolean) {
   return [
-    "rounded border px-2 py-1 text-xs font-semibold",
+    "h-7 px-2 text-xs font-semibold",
     active
-      ? "border-slate-100 bg-slate-100 text-slate-950"
-      : "border-slate-700 text-slate-200 hover:bg-slate-800",
+      ? "border-slate-100 bg-slate-100 text-slate-950 hover:bg-slate-200 hover:text-slate-950"
+      : "border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800 hover:text-slate-50",
   ].join(" ");
 }
 

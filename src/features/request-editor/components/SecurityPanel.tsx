@@ -1,4 +1,12 @@
 import type { RequestContentDto, ResolvedRequestContentDto } from "../../../shared/api/generated/ipc";
+import { Input } from "../../../components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../../components/ui/select";
 
 type SecurityPanelProps = {
   content: RequestContentDto;
@@ -11,7 +19,7 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
   return (
     <section
       aria-label="Security policy"
-      className="grid gap-3 rounded-md border border-slate-300 bg-white p-3 text-sm"
+      className="grid shrink-0 gap-3 rounded-md border border-slate-300 bg-white p-3 text-sm"
     >
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-slate-950">Security</h2>
@@ -24,10 +32,8 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
       <div className="grid gap-2 sm:grid-cols-3">
         <label className="grid gap-1 text-xs font-medium text-slate-700">
           Auth
-          <select
-            className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
-            onChange={(event) => {
-              const type = event.currentTarget.value;
+          <Select
+            onValueChange={(type) => {
               onChange((current) => ({
                 ...current,
                 auth:
@@ -55,19 +61,23 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
             }}
             value={authType}
           >
-            <option value="NONE">No Auth</option>
-            <option value="BASIC">Basic</option>
-            <option value="BEARER">Bearer</option>
-            <option value="API_KEY">API Key</option>
-            <option value="CLIENT_CREDENTIALS">Client Credentials</option>
-          </select>
+            <SelectTrigger>
+              <SelectValue placeholder="Auth" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NONE">No Auth</SelectItem>
+              <SelectItem value="BASIC">Basic</SelectItem>
+              <SelectItem value="BEARER">Bearer</SelectItem>
+              <SelectItem value="API_KEY">API Key</SelectItem>
+              <SelectItem value="CLIENT_CREDENTIALS">Client Credentials</SelectItem>
+            </SelectContent>
+          </Select>
         </label>
         {content.auth.type === "BASIC" ? (
           <>
             <label className="grid gap-1 text-xs font-medium text-slate-700">
               Username
-              <input
-                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+              <Input
                 onChange={(event) =>
                   onChange((current) =>
                     current.auth.type === "BASIC"
@@ -86,8 +96,7 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
             </label>
             <label className="grid gap-1 text-xs font-medium text-slate-700">
               Password reference
-              <input
-                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+              <Input
                 onChange={(event) =>
                   onChange((current) =>
                     current.auth.type === "BASIC"
@@ -109,8 +118,7 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
         {content.auth.type === "BEARER" ? (
           <label className="grid gap-1 text-xs font-medium text-slate-700 sm:col-span-2">
             Token reference
-            <input
-              className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+            <Input
               onChange={(event) =>
                 onChange((current) =>
                   current.auth.type === "BEARER"
@@ -129,16 +137,15 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
           <>
             <label className="grid gap-1 text-xs font-medium text-slate-700">
               Placement
-              <select
-                className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
-                onChange={(event) =>
+              <Select
+                onValueChange={(placement) =>
                   onChange((current) =>
                     current.auth.type === "API_KEY"
                       ? {
                           ...current,
                           auth: {
                             ...current.auth,
-                            placement: event.currentTarget.value as "HEADER" | "QUERY",
+                            placement: placement as "HEADER" | "QUERY",
                           },
                         }
                       : current,
@@ -146,14 +153,18 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
                 }
                 value={content.auth.placement}
               >
-                <option value="HEADER">Header</option>
-                <option value="QUERY">Query</option>
-              </select>
+                <SelectTrigger>
+                  <SelectValue placeholder="Placement" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="HEADER">Header</SelectItem>
+                  <SelectItem value="QUERY">Query</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
             <label className="grid gap-1 text-xs font-medium text-slate-700">
               Key name
-              <input
-                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+              <Input
                 onChange={(event) =>
                   onChange((current) =>
                     current.auth.type === "API_KEY"
@@ -169,8 +180,7 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
             </label>
             <label className="grid gap-1 text-xs font-medium text-slate-700">
               Value reference
-              <input
-                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+              <Input
                 onChange={(event) =>
                   onChange((current) =>
                     current.auth.type === "API_KEY"
@@ -190,8 +200,7 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
           <>
             <label className="grid gap-1 text-xs font-medium text-slate-700 sm:col-span-2">
               Token endpoint
-              <input
-                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+              <Input
                 onChange={(event) =>
                   onChange((current) =>
                     current.auth.type === "CLIENT_CREDENTIALS"
@@ -207,8 +216,7 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
             </label>
             <label className="grid gap-1 text-xs font-medium text-slate-700">
               Client ID
-              <input
-                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+              <Input
                 onChange={(event) =>
                   onChange((current) =>
                     current.auth.type === "CLIENT_CREDENTIALS"
@@ -224,8 +232,7 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
             </label>
             <label className="grid gap-1 text-xs font-medium text-slate-700">
               Client secret reference
-              <input
-                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+              <Input
                 onChange={(event) =>
                   onChange((current) =>
                     current.auth.type === "CLIENT_CREDENTIALS"
@@ -241,8 +248,7 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
             </label>
             <label className="grid gap-1 text-xs font-medium text-slate-700">
               Scopes
-              <input
-                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+              <Input
                 onChange={(event) =>
                   onChange((current) =>
                     current.auth.type === "CLIENT_CREDENTIALS"
@@ -284,8 +290,7 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
         </label>
         <label className="grid gap-1 text-xs font-medium text-slate-700">
           Max
-          <input
-            className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          <Input
             max={10}
             min={0}
             onChange={(event) =>
@@ -362,8 +367,8 @@ function TlsReferenceInput({
   return (
     <label className="grid gap-1 text-xs font-medium text-slate-700">
       {label}
-      <input
-        className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+        <Input
+        className="min-w-0"
         onChange={(event) => onChange(event.currentTarget.value)}
         value={value ?? ""}
       />

@@ -1,5 +1,14 @@
 import { Plus, Trash2 } from "lucide-react";
 
+import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../../components/ui/select";
 import { describeBodyFile } from "../../../shared/api/requests";
 import type { BodyFileReferenceDto, MultipartPartDto, RequestBodyDto } from "../../../shared/api/generated/ipc";
 import { RawBodyEditor } from "../RawBodyEditor";
@@ -21,25 +30,27 @@ type BodyEditorProps = {
 export function BodyEditor({ body, onChange, workspaceId }: BodyEditorProps) {
   const { t } = useI18n();
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-3">
+    <section className="flex min-h-60 shrink-0 flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-slate-950">{t("body.title")}</h2>
         <div
           aria-label={t("body.mode")}
-          className="inline-flex flex-wrap rounded-md border border-slate-300 bg-white p-0.5"
+          className="inline-flex flex-wrap rounded-md bg-muted p-1"
           role="group"
         >
           {(["NONE", "RAW", "URL_ENCODED", "MULTIPART", "BINARY"] as const).map(
             (mode) => (
-              <button
+              <Button
                 aria-pressed={body.type === mode}
-                className="rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 aria-pressed:bg-slate-900 aria-pressed:text-white"
+                className="h-7 px-2"
                 key={mode}
                 onClick={() => onChange(emptyBodyForMode(mode, body))}
+                size="sm"
                 type="button"
+                variant={body.type === mode ? "secondary" : "ghost"}
               >
                 {bodyModeLabel(mode)}
-              </button>
+              </Button>
             ),
           )}
         </div>
@@ -110,14 +121,15 @@ function MultipartEditor({
       <div className="grid gap-2 rounded-md border border-slate-300 bg-white p-3">
         <div className="flex items-center justify-between gap-2">
           <h3 className="text-sm font-semibold">{t("body.multipartFiles")}</h3>
-          <button
-            className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 px-2 text-xs font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+          <Button
             onClick={() => onChange([...parts, emptyMultipartFilePart(parts.length)])}
+            size="sm"
             type="button"
+            variant="outline"
           >
             <Plus aria-hidden="true" size={14} />
             {t("body.file")}
-          </button>
+          </Button>
         </div>
         {fileParts.map((part, index) => (
           <BodyFileEditor
@@ -175,17 +187,17 @@ function BodyFileEditor({
     <div className="grid gap-2 rounded-md border border-slate-300 bg-white p-3">
       <div className="grid gap-2 md:grid-cols-[160px_minmax(0,1fr)]">
         {name !== undefined ? (
-          <input
+          <Input
             aria-label="Multipart file field name"
-            className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+            className="min-w-0"
             onChange={(event) => onChange(file, event.currentTarget.value)}
             placeholder="field name"
             value={name}
           />
         ) : null}
-        <input
+        <Input
           aria-label="Body file path"
-          className="h-9 min-w-0 rounded-md border border-slate-300 px-2 font-mono text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          className="min-w-0 font-mono"
           onChange={(event) =>
             onChange({
               ...file,
@@ -200,33 +212,36 @@ function BodyFileEditor({
         />
       </div>
       <div className="grid gap-2 md:grid-cols-[120px_minmax(0,1fr)_120px_160px_minmax(0,1fr)_auto]">
-        <select
-          aria-label="Body file path kind"
-          className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
-          onChange={(event) =>
+        <Select
+          onValueChange={(value) =>
             onChange({
               ...file,
               path:
-                event.currentTarget.value === "RELATIVE"
+                value === "RELATIVE"
                   ? { type: "RELATIVE", path: pathValue }
                   : { type: "ABSOLUTE", path: pathValue },
             })
           }
           value={pathKind}
         >
-          <option value="RELATIVE">Relative</option>
-          <option value="ABSOLUTE">Absolute</option>
-        </select>
-        <input
+          <SelectTrigger aria-label="Body file path kind">
+            <SelectValue placeholder="Path kind" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="RELATIVE">Relative</SelectItem>
+            <SelectItem value="ABSOLUTE">Absolute</SelectItem>
+          </SelectContent>
+        </Select>
+        <Input
           aria-label="Body file name"
-          className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          className="min-w-0"
           onChange={(event) => onChange({ ...file, fileName: event.currentTarget.value })}
           placeholder="body.bin"
           value={file.fileName}
         />
-        <input
+        <Input
           aria-label="Body file size"
-          className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          className="min-w-0"
           min="0"
           onChange={(event) =>
             onChange({ ...file, size: BigInt(event.currentTarget.value || "0") })
@@ -234,9 +249,9 @@ function BodyFileEditor({
           type="number"
           value={file.size.toString()}
         />
-        <input
+        <Input
           aria-label="Body file modified time"
-          className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          className="min-w-0"
           onChange={(event) =>
             onChange({
               ...file,
@@ -248,9 +263,9 @@ function BodyFileEditor({
           placeholder="mtime"
           value={file.modifiedAtEpochSeconds?.toString() ?? ""}
         />
-        <input
+        <Input
           aria-label="Body file hash"
-          className="h-9 min-w-0 rounded-md border border-slate-300 px-2 font-mono text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+          className="min-w-0 font-mono"
           onChange={(event) => onChange({ ...file, sha256: event.currentTarget.value })}
           placeholder="sha256"
           value={file.sha256}
@@ -260,13 +275,14 @@ function BodyFileEditor({
             <Trash2 aria-hidden="true" size={14} />
           </IconButton>
         ) : null}
-        <button
-          className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 px-2 text-xs font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+        <Button
           onClick={() => void handleRefresh()}
+          size="sm"
           type="button"
+          variant="outline"
         >
           {t("body.refresh")}
-        </button>
+        </Button>
       </div>
     </div>
   );

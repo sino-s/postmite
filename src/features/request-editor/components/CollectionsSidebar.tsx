@@ -1,6 +1,9 @@
 import { useMemo } from "react";
 import { ArrowDown, ArrowUp, Copy, Edit3, FileText, Folder, FolderPlus, Trash2 } from "lucide-react";
 
+import { Button } from "../../../components/ui/button";
+import { NativeSelect } from "../../../components/ui/native-select";
+import { ScrollArea } from "../../../components/ui/scroll-area";
 import type { CollectionFolderDto, EnvironmentDto, SavedRequestDto } from "../../../shared/api/generated/ipc";
 import { IconButton } from "./IconButton";
 import { useI18n } from "../../../app/i18n";
@@ -86,26 +89,26 @@ export function CollectionsSidebar({
   return (
     <aside
       aria-label={t("collections.title")}
-      className="flex min-h-0 flex-col border-b border-slate-300 bg-slate-50 md:border-b-0 md:border-r"
+      className="flex min-h-0 flex-col border-b border-border bg-muted md:border-b-0 md:border-r"
     >
-      <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-300 px-3">
+      <div className="flex h-11 shrink-0 items-center justify-between border-b border-border px-3">
         <h2 className="text-sm font-semibold">{t("collections.title")}</h2>
-        <button
+        <Button
           aria-label={t("collections.newRoot")}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-700 hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
           onClick={() => onCreateFolder(null)}
+          size="icon"
           title={t("collections.newRoot")}
           type="button"
+          variant="ghost"
         >
           <FolderPlus aria-hidden="true" size={16} />
-        </button>
+        </Button>
       </div>
-      <div className="border-b border-slate-300 px-3 py-3">
+      <div className="border-b border-border px-3 py-3">
         <label className="mb-1 block text-xs font-semibold text-slate-600" htmlFor="environment-select">
           {t("collections.environment")}
         </label>
-        <select
-          className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+        <NativeSelect
           id="environment-select"
           onChange={(event) =>
             onSelectEnvironment(event.currentTarget.value || null)
@@ -121,9 +124,9 @@ export function CollectionsSidebar({
                 {environment.name}
               </option>
             ))}
-        </select>
+        </NativeSelect>
       </div>
-      <div
+      <ScrollArea
         aria-label={t("collections.tree")}
         className="min-h-32 flex-1 overflow-auto py-2"
         data-collection-tree
@@ -180,7 +183,7 @@ export function CollectionsSidebar({
         {rows.length === 0 ? (
           <p className="px-3 py-6 text-sm text-slate-500">{t("collections.noRequests")}</p>
         ) : null}
-      </div>
+      </ScrollArea>
     </aside>
   );
 }

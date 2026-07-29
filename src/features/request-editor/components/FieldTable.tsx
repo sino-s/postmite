@@ -27,7 +27,7 @@ export function FieldTable({ fields, legend, onChange }: FieldTableProps) {
   }
 
   return (
-    <fieldset className="min-h-0 rounded-md border border-slate-300 bg-white p-3">
+    <fieldset className="shrink-0 rounded-md border border-slate-300 bg-white p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
         <legend className="text-sm font-semibold text-slate-950">{legend}</legend>
         <Button

@@ -1,7 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bug, Folder, Plus, RotateCcw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Plus, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { AppHeader } from "../../app/AppHeader";
+import { Button } from "../../components/ui/button";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "../../components/ui/resizable";
 import {
   closeRequestTab,
   createCollectionFolder,
@@ -67,8 +74,8 @@ import { ResponsePanel } from "./components/ResponsePanel";
 import { SecurityPanel } from "./components/SecurityPanel";
 import { TabStrip } from "./components/TabStrip";
 import { applyQueryToUrl } from "./ordered-fields";
-import { useI18n, type AppLocale } from "../../app/i18n";
-import { usePreferences, type Density, type Theme } from "../../app/preferences";
+import { useI18n } from "../../app/i18n";
+import { usePreferences } from "../../app/preferences";
 import {
   emptyRequestContent,
   isDraftDirty,
@@ -89,11 +96,14 @@ export function RequestEditor({
   onCancel = cancelRequestExecution,
   onExecute = startRequestExecution,
 }: RequestEditorProps) {
+  const isDesktopLayout = useDesktopLayout();
+  const isEditorResizableLayout = useMediaQuery("(min-width: 1024px)", true);
   const { locale, setLocale, t } = useI18n();
   const { density, setDensity, setTheme, theme } = usePreferences();
   const queryClient = useQueryClient();
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<OverrideMap>({});
+  const latestContentRef = useRef<OverrideMap>({});
   const [executions, setExecutions] = useState<
     Record<string, ResponseExecutionState>
   >({});
@@ -132,7 +142,11 @@ export function RequestEditor({
       ? snapshot.drafts.find((draft) => draft.id === activeTab.draftId) ?? null
       : null;
   const activeContent =
-    activeDraft ? overrides[activeDraft.id] ?? activeDraft.content : null;
+    activeDraft
+      ? latestContentRef.current[activeDraft.id] ??
+        overrides[activeDraft.id] ??
+        activeDraft.content
+      : null;
   const selectedEnvironment =
     snapshot?.environments.find((environment) => environment.isSelected) ?? null;
   const activeExecution = activeDraft ? executions[activeDraft.id] ?? null : null;
@@ -313,11 +327,19 @@ export function RequestEditor({
   }
 
   function changeActiveDraft(updater: (content: RequestContentDto) => RequestContentDto) {
-    if (!activeDraft || !activeContent) {
+    if (!activeDraft) {
       return;
     }
 
-    const nextContent = updater(activeContent);
+    const base =
+      latestContentRef.current[activeDraft.id] ??
+      overrides[activeDraft.id] ??
+      activeDraft.content;
+    const nextContent = updater(base);
+    latestContentRef.current = {
+      ...latestContentRef.current,
+      [activeDraft.id]: nextContent,
+    };
     setOverrides((current) => ({
       ...current,
       [activeDraft.id]: nextContent,
@@ -336,6 +358,7 @@ export function RequestEditor({
       draftId: activeDraft.id,
     });
     setOverrides((current) => omitKey(current, activeDraft.id));
+    latestContentRef.current = omitKey(latestContentRef.current, activeDraft.id);
     setActiveTabId(
       nextSnapshot.tabs.find((tab) => tab.draftId === activeDraft.id)?.id ?? activeTabId,
     );
@@ -364,6 +387,7 @@ export function RequestEditor({
       decision,
     });
     setOverrides((current) => omitKey(current, tab.draftId));
+    latestContentRef.current = omitKey(latestContentRef.current, tab.draftId);
     setActiveTabId(
       nextSnapshot.tabs.find((item) => item.isActive)?.id ??
         nextSnapshot.tabs[0]?.id ??
@@ -548,247 +572,301 @@ export function RequestEditor({
           <h1 id="request-editor-error" className="text-base font-semibold">
             {t("app.unavailable")}
           </h1>
-          <button
-            className="mt-4 inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+          <Button
+            className="mt-4"
             onClick={() => {
               void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
             }}
             type="button"
+            variant="outline"
           >
             <RotateCcw aria-hidden="true" size={16} />
             {t("app.retry")}
-          </button>
+          </Button>
         </section>
       </main>
     );
   }
 
+  const sidebar = (
+    <CollectionsSidebar
+      environments={snapshot?.environments ?? []}
+      folders={snapshot?.collectionFolders ?? []}
+      onCreateFolder={(parentCollectionId) =>
+        void handleCreateCollectionFolder(parentCollectionId)
+      }
+      onDeleteFolder={(folder) => void handleDeleteCollectionFolder(folder)}
+      onDeleteRequest={(request) => void handleDeleteSavedRequest(request)}
+      onDuplicateFolder={(folder) => void handleDuplicateCollectionFolder(folder)}
+      onDuplicateRequest={(request) => void handleDuplicateSavedRequest(request)}
+      onMoveFolder={(folder, direction) =>
+        void handleMoveCollectionFolder(folder, direction)
+      }
+      onMoveRequest={(request, direction) =>
+        void handleMoveSavedRequest(request, direction)
+      }
+      onOpenRequest={(request) => void handleOpenSavedRequest(request)}
+      onRenameFolder={(folder) => void handleRenameCollectionFolder(folder)}
+      onSelectEnvironment={(environmentId) =>
+        void handleSelectEnvironment(environmentId)
+      }
+      requests={snapshot?.savedRequests ?? []}
+    />
+  );
+
+  const editorPane = (
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <TabStrip
+        activeTabId={activeTab?.id ?? null}
+        drafts={snapshot?.drafts ?? []}
+        onActivate={setActiveTabId}
+        onClose={(tab) => void handleClose(tab, isDraftDirty(tab.draftId, snapshot?.drafts ?? [], overrides) ? "SAVE" : "DISCARD")}
+        overrides={overrides}
+        tabs={tabs}
+      />
+
+      {activeDraft && activeContent ? (
+        <section
+          aria-label="Request editor"
+          className="flex min-h-0 flex-1 flex-col gap-4 p-4"
+        >
+          <RequestLine
+            content={activeContent}
+            executionPhase={activeExecution?.phase ?? "idle"}
+            executionRunning={activeExecutionRunning}
+            onCancel={() => void handleCancel()}
+            onChange={changeActiveDraft}
+            onExecute={() => void handleExecute()}
+            onSave={() => void handleSave()}
+            saving={false}
+          />
+          {isEditorResizableLayout ? (
+            <ResizablePanelGroup
+              className="min-h-0 flex-1 rounded-md border border-border bg-background"
+              orientation="vertical"
+            >
+              <ResizablePanel className="overflow-hidden" defaultSize="58" minSize="280px">
+                <div className="grid h-full min-h-0 gap-4 overflow-auto p-4 2xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]">
+                  <section className="flex shrink-0 flex-col gap-4">
+                    <SecurityPanel
+                      content={activeContent}
+                      onChange={changeActiveDraft}
+                      resolution={resolution.data ?? null}
+                    />
+                    <FieldTable
+                      fields={activeContent.query}
+                      legend="Params"
+                      onChange={(fields) =>
+                        changeActiveDraft((content) => ({
+                          ...content,
+                          query: fields,
+                          url: applyQueryToUrl(content.url, fields),
+                        }))
+                      }
+                    />
+                    <FieldTable
+                      fields={activeContent.headers}
+                      legend="Headers"
+                      onChange={(fields) =>
+                        changeActiveDraft((content) => ({
+                          ...content,
+                          headers: fields,
+                        }))
+                      }
+                    />
+                  </section>
+                  <BodyEditor
+                    body={activeContent.body}
+                    workspaceId={selectedWorkspaceId}
+                    onChange={(body) =>
+                      changeActiveDraft((content) => ({
+                        ...content,
+                        body,
+                      }))
+                    }
+                  />
+                </div>
+              </ResizablePanel>
+              <ResizableHandle
+                aria-label="Resize request and response panels"
+                orientation="vertical"
+                withHandle
+              />
+              <ResizablePanel className="overflow-hidden" defaultSize="42" minSize="220px">
+                <div className="grid h-full min-h-0 gap-4 overflow-auto p-4 xl:grid-cols-[minmax(260px,0.6fr)_minmax(0,1fr)]">
+                  <ResolutionPanel
+                    resolution={resolution.data ?? null}
+                    resolving={resolution.isFetching}
+                  />
+                  <ResponsePanel execution={activeExecution} />
+                  <HistoryPanel
+                    history={executionHistory.data ?? null}
+                    loading={executionHistory.isFetching}
+                    onOpen={(record) => void handleOpenHistoryRecord(record)}
+                    onToggleDisabled={(disabled) =>
+                      void handleToggleHistoryDisabled(disabled)
+                    }
+                    onTogglePinned={(record) =>
+                      void handleToggleHistoryPinned(record)
+                    }
+                  />
+                  <CookiePanel
+                    cookies={cookieJar.data?.cookies ?? []}
+                    loading={cookieJar.isFetching}
+                    onClear={() => void handleClearCookies()}
+                    onDelete={(cookie) => void handleDeleteCookie(cookie)}
+                    onReveal={(cookie) => handleRevealCookie(cookie)}
+                    onSave={(input) => void handleUpsertCookie(input)}
+                  />
+                </div>
+              </ResizablePanel>
+            </ResizablePanelGroup>
+          ) : (
+          <div className="grid min-h-0 gap-4">
+            <section className="flex min-h-0 flex-col gap-4">
+              <SecurityPanel
+                content={activeContent}
+                onChange={changeActiveDraft}
+                resolution={resolution.data ?? null}
+              />
+              <FieldTable
+                fields={activeContent.query}
+                legend="Params"
+                onChange={(fields) =>
+                  changeActiveDraft((content) => ({
+                    ...content,
+                    query: fields,
+                    url: applyQueryToUrl(content.url, fields),
+                  }))
+                }
+              />
+              <FieldTable
+                fields={activeContent.headers}
+                legend="Headers"
+                onChange={(fields) =>
+                  changeActiveDraft((content) => ({
+                    ...content,
+                    headers: fields,
+                  }))
+                }
+              />
+            </section>
+            <BodyEditor
+              body={activeContent.body}
+              workspaceId={selectedWorkspaceId}
+              onChange={(body) =>
+                changeActiveDraft((content) => ({
+                  ...content,
+                  body,
+                }))
+              }
+            />
+            <ResolutionPanel
+              resolution={resolution.data ?? null}
+              resolving={resolution.isFetching}
+            />
+            <ResponsePanel execution={activeExecution} />
+            <HistoryPanel
+              history={executionHistory.data ?? null}
+              loading={executionHistory.isFetching}
+              onOpen={(record) => void handleOpenHistoryRecord(record)}
+              onToggleDisabled={(disabled) =>
+                void handleToggleHistoryDisabled(disabled)
+              }
+              onTogglePinned={(record) =>
+                void handleToggleHistoryPinned(record)
+              }
+            />
+            <CookiePanel
+              cookies={cookieJar.data?.cookies ?? []}
+              loading={cookieJar.isFetching}
+              onClear={() => void handleClearCookies()}
+              onDelete={(cookie) => void handleDeleteCookie(cookie)}
+              onReveal={(cookie) => handleRevealCookie(cookie)}
+              onSave={(input) => void handleUpsertCookie(input)}
+            />
+          </div>
+          )}
+        </section>
+      ) : (
+        <section className="flex flex-1 items-center justify-center p-6">
+          <Button onClick={() => openTabMutation.mutate()} type="button">
+            <Plus aria-hidden="true" size={16} />
+            New Request
+          </Button>
+        </section>
+      )}
+    </div>
+  );
+
   return (
     <main
-      className="flex min-h-screen flex-col bg-slate-100 text-slate-950"
+      className="flex min-h-screen flex-col bg-muted text-foreground"
       onKeyDown={handleEditorKeyDown}
     >
-      <header className="relative flex min-h-12 items-center justify-between border-b border-slate-300 bg-white px-4">
-        <h1 className="text-sm font-semibold">Postmite</h1>
-        <div className="flex items-center gap-2">
-          <label className="sr-only" htmlFor="app-theme">{t("app.theme")}</label>
-          <select
-            aria-label={t("app.theme")}
-            className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm"
-            id="app-theme"
-            onChange={(event) => setTheme(event.currentTarget.value as Theme)}
-            value={theme}
-          >
-            <option value="light">{t("app.theme.light")}</option>
-            <option value="dark">{t("app.theme.dark")}</option>
-            <option value="system">{t("app.theme.system")}</option>
-          </select>
-          <label className="sr-only" htmlFor="app-density">{t("app.density")}</label>
-          <select
-            aria-label={t("app.density")}
-            className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm"
-            id="app-density"
-            onChange={(event) => setDensity(event.currentTarget.value as Density)}
-            value={density}
-          >
-            <option value="comfortable">{t("app.density.comfortable")}</option>
-            <option value="compact">{t("app.density.compact")}</option>
-          </select>
-          <button
-            aria-live="polite"
-            className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={updateCheckMutation.isPending}
-            onClick={() => updateCheckMutation.mutate()}
-            type="button"
-          >
-            {updateCheckMutation.isPending ? t("app.checkingUpdates") : t("app.checkUpdates")}
-          </button>
-          <button
-            aria-label={t("app.diagnostics")}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-white hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
-            onClick={() => setDiagnosticsOpen((open) => !open)}
-            type="button"
-          >
-            <Bug aria-hidden="true" size={16} />
-          </button>
-          <button
-            className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
-            onClick={() => void handleSetBaseDirectory()}
-            type="button"
-          >
-            <Folder aria-hidden="true" size={16} />
-            {t("app.base")}
-          </button>
-          <button
-            className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
-            onClick={() => void handleRelinkBodyFiles()}
-            type="button"
-          >
-            <RotateCcw aria-hidden="true" size={16} />
-            {t("app.relink")}
-          </button>
-          <button
-            className="inline-flex h-8 items-center gap-2 rounded-md bg-slate-900 px-3 text-sm font-medium text-white hover:bg-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={openTabMutation.isPending}
-            onClick={() => openTabMutation.mutate()}
-            type="button"
-          >
-            <Plus aria-hidden="true" size={16} />
-            {t("app.new")}
-          </button>
-          <label className="sr-only" htmlFor="app-language">{t("app.language")}</label>
-          <select
-            aria-label={t("app.language")}
-            className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
-            id="app-language"
-            onChange={(event) => setLocale(event.currentTarget.value as AppLocale)}
-            value={locale}
-          >
-            <option value="en">English</option>
-            <option value="ja">日本語</option>
-          </select>
-        </div>
+      <AppHeader
+        checkingUpdates={updateCheckMutation.isPending}
+        density={density}
+        diagnosticsOpen={diagnosticsOpen}
+        locale={locale}
+        newRequestPending={openTabMutation.isPending}
+        onCheckUpdates={() => updateCheckMutation.mutate()}
+        onNewRequest={() => openTabMutation.mutate()}
+        onRelinkBodyFiles={() => void handleRelinkBodyFiles()}
+        onSetBaseDirectory={() => void handleSetBaseDirectory()}
+        onToggleDiagnostics={() => setDiagnosticsOpen((open) => !open)}
+        setDensity={setDensity}
+        setLocale={setLocale}
+        setTheme={setTheme}
+        theme={theme}
+        updateError={updateCheckMutation.isError}
+        updateResult={updateCheckMutation.isSuccess ? updateCheckMutation.data : null}
+      />
+      <div className="relative">
         {diagnosticsOpen ? <DiagnosticsPanel onClose={() => setDiagnosticsOpen(false)} /> : null}
-        {updateCheckMutation.isSuccess ? (
-          <p className="absolute right-4 top-14 z-20 border border-slate-300 bg-white px-3 py-2 text-sm shadow-lg" role="status">
-            {updateCheckMutation.data.updateAvailable
-              ? t("app.updateAvailable", { version: updateCheckMutation.data.latestVersion })
-              : t("app.upToDate")}
-          </p>
-        ) : null}
-        {updateCheckMutation.isError ? <p className="absolute right-4 top-14 z-20 border border-red-300 bg-white px-3 py-2 text-sm text-red-700 shadow-lg" role="alert">{t("app.updateCheckFailed")}</p> : null}
-      </header>
-
-      <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)]">
-        <CollectionsSidebar
-          environments={snapshot?.environments ?? []}
-          folders={snapshot?.collectionFolders ?? []}
-          onCreateFolder={(parentCollectionId) =>
-            void handleCreateCollectionFolder(parentCollectionId)
-          }
-          onDeleteFolder={(folder) => void handleDeleteCollectionFolder(folder)}
-          onDeleteRequest={(request) => void handleDeleteSavedRequest(request)}
-          onDuplicateFolder={(folder) => void handleDuplicateCollectionFolder(folder)}
-          onDuplicateRequest={(request) => void handleDuplicateSavedRequest(request)}
-          onMoveFolder={(folder, direction) =>
-            void handleMoveCollectionFolder(folder, direction)
-          }
-          onMoveRequest={(request, direction) =>
-            void handleMoveSavedRequest(request, direction)
-          }
-          onOpenRequest={(request) => void handleOpenSavedRequest(request)}
-          onRenameFolder={(folder) => void handleRenameCollectionFolder(folder)}
-          onSelectEnvironment={(environmentId) =>
-            void handleSelectEnvironment(environmentId)
-          }
-          requests={snapshot?.savedRequests ?? []}
-        />
-        <div className="flex min-h-0 flex-col">
-          <TabStrip
-            activeTabId={activeTab?.id ?? null}
-            drafts={snapshot?.drafts ?? []}
-            onActivate={setActiveTabId}
-            onClose={(tab) => void handleClose(tab, isDraftDirty(tab.draftId, snapshot?.drafts ?? [], overrides) ? "SAVE" : "DISCARD")}
-            tabs={tabs}
-            overrides={overrides}
-          />
-
-          {activeDraft && activeContent ? (
-            <section
-              aria-label="Request editor"
-              className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)_auto] gap-4 p-4"
-            >
-              <RequestLine
-                content={activeContent}
-                executionPhase={activeExecution?.phase ?? "idle"}
-                executionRunning={activeExecutionRunning}
-                onCancel={() => void handleCancel()}
-                onChange={changeActiveDraft}
-                onExecute={() => void handleExecute()}
-                onSave={() => void handleSave()}
-                saving={false}
-              />
-              <div className="grid min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]">
-                <section className="flex min-h-0 flex-col gap-4">
-                  <SecurityPanel
-                    content={activeContent}
-                    onChange={changeActiveDraft}
-                    resolution={resolution.data ?? null}
-                  />
-                  <FieldTable
-                    fields={activeContent.query}
-                    legend="Params"
-                    onChange={(fields) =>
-                      changeActiveDraft((content) => ({
-                        ...content,
-                        query: fields,
-                        url: applyQueryToUrl(content.url, fields),
-                      }))
-                    }
-                  />
-                  <FieldTable
-                    fields={activeContent.headers}
-                    legend="Headers"
-                    onChange={(fields) =>
-                      changeActiveDraft((content) => ({
-                        ...content,
-                        headers: fields,
-                      }))
-                    }
-                  />
-                </section>
-                <BodyEditor
-                  body={activeContent.body}
-                  workspaceId={selectedWorkspaceId}
-                  onChange={(body) =>
-                    changeActiveDraft((content) => ({
-                      ...content,
-                      body,
-                    }))
-                  }
-                />
-              </div>
-              <div className="grid gap-4 xl:grid-cols-[minmax(260px,0.4fr)_minmax(0,1fr)_minmax(300px,0.5fr)_minmax(300px,0.5fr)]">
-                <ResolutionPanel
-                  resolution={resolution.data ?? null}
-                  resolving={resolution.isFetching}
-                />
-                <ResponsePanel execution={activeExecution} />
-                <HistoryPanel
-                  history={executionHistory.data ?? null}
-                  loading={executionHistory.isFetching}
-                  onOpen={(record) => void handleOpenHistoryRecord(record)}
-                  onToggleDisabled={(disabled) =>
-                    void handleToggleHistoryDisabled(disabled)
-                  }
-                  onTogglePinned={(record) =>
-                    void handleToggleHistoryPinned(record)
-                  }
-                />
-                <CookiePanel
-                  cookies={cookieJar.data?.cookies ?? []}
-                  loading={cookieJar.isFetching}
-                  onClear={() => void handleClearCookies()}
-                  onDelete={(cookie) => void handleDeleteCookie(cookie)}
-                  onReveal={(cookie) => handleRevealCookie(cookie)}
-                  onSave={(input) => void handleUpsertCookie(input)}
-                />
-              </div>
-            </section>
-          ) : (
-            <section className="flex flex-1 items-center justify-center p-6">
-              <button
-                className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-900 px-4 text-sm font-medium text-white hover:bg-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
-                onClick={() => openTabMutation.mutate()}
-                type="button"
-              >
-                <Plus aria-hidden="true" size={16} />
-                New Request
-              </button>
-            </section>
-          )}
-        </div>
       </div>
+
+      {isDesktopLayout ? (
+        <ResizablePanelGroup className="min-h-0 flex-1" orientation="horizontal">
+          <ResizablePanel
+            className="overflow-hidden"
+            defaultSize="24"
+            maxSize="36"
+            minSize="220px"
+          >
+            {sidebar}
+          </ResizablePanel>
+          <ResizableHandle aria-label="Resize collections and request workspace" withHandle />
+          <ResizablePanel className="overflow-hidden" minSize="50">
+            {editorPane}
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col">
+          {sidebar}
+          {editorPane}
+        </div>
+      )}
     </main>
   );
+}
+
+function useDesktopLayout() {
+  return useMediaQuery("(min-width: 768px)", true);
+}
+
+function useMediaQuery(query: string, defaultMatches: boolean) {
+  const [matches, setMatches] = useState(() =>
+    typeof window === "undefined" ? defaultMatches : window.matchMedia(query).matches,
+  );
+
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    setMatches(media.matches);
+    const onChange = (event: MediaQueryListEvent) => setMatches(event.matches);
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, [query]);
+
+  return matches;
 }
