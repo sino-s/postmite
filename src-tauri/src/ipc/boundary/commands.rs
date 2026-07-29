@@ -396,6 +396,53 @@ pub fn export_recoverable_database(
 }
 
 #[tauri::command]
+pub fn get_diagnostic_bundle_preview(
+    state: State<'_, AppState>,
+) -> Result<DiagnosticBundlePreviewDto, IpcError> {
+    state
+        .diagnostics
+        .preview_bundle()
+        .map(DiagnosticBundlePreviewDto::from)
+        .map_err(IpcError::from)
+}
+
+#[tauri::command]
+pub fn set_diagnostic_debug_logging(
+    state: State<'_, AppState>,
+    input: DiagnosticDebugLoggingInput,
+) -> Result<DiagnosticDebugLoggingStatusDto, IpcError> {
+    let started_at = Instant::now();
+    let status = if input.enabled {
+        state
+            .diagnostics
+            .set_debug_logging(input.duration_minutes.unwrap_or(15))
+    } else {
+        state.diagnostics.disable_debug_logging()
+    }
+    .map_err(IpcError::from)?;
+    state
+        .diagnostics
+        .record_command("diagnostics", "debug.updated", started_at.elapsed());
+    Ok(DiagnosticDebugLoggingStatusDto::from(status))
+}
+
+#[tauri::command]
+pub fn export_diagnostic_bundle(
+    state: State<'_, AppState>,
+    input: DiagnosticBundleExportInput,
+) -> Result<DiagnosticBundleExportDto, IpcError> {
+    let started_at = Instant::now();
+    let result = state
+        .diagnostics
+        .export_bundle(&input.bundle_path)
+        .map_err(IpcError::from)?;
+    state
+        .diagnostics
+        .record_command("diagnostics", "bundle.exported", started_at.elapsed());
+    Ok(DiagnosticBundleExportDto::from(result))
+}
+
+#[tauri::command]
 pub fn preview_curl_import(input: CurlImportInput) -> Result<CurlImportPreviewDto, IpcError> {
     let input = ApplicationCurlImportInput::try_from(input)?;
     CurlService::preview(&input)

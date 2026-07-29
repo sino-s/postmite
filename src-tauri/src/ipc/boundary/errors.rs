@@ -233,6 +233,25 @@ impl From<NativeBackupError> for IpcError {
     }
 }
 
+impl From<DiagnosticsError> for IpcError {
+    fn from(error: DiagnosticsError) -> Self {
+        match error {
+            DiagnosticsError::InvalidInput(detail) => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "Diagnostic input is invalid.".to_owned(),
+                details: Some(detail.to_owned()),
+                retryable: false,
+            },
+            DiagnosticsError::Storage => Self {
+                code: IpcErrorCode::PersistenceUnavailable,
+                message: "Diagnostic storage is unavailable.".to_owned(),
+                details: None,
+                retryable: true,
+            },
+        }
+    }
+}
+
 impl From<CurlError> for IpcError {
     fn from(error: CurlError) -> Self {
         match error {
