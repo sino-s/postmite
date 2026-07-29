@@ -1,5 +1,7 @@
 import { Ban, Play, Save } from "lucide-react";
 
+import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
 import type { RequestContentDto } from "../../../shared/api/generated/ipc";
 import type { ResponseExecutionPhase } from "../../../shared/api/execution";
 import { queryFromUrl } from "../ordered-fields";
@@ -48,8 +50,8 @@ export function RequestLine({
       <label className="sr-only" htmlFor="request-name">
         {t("request.name")}
       </label>
-      <input
-        className="h-10 min-w-0 rounded-md border border-slate-300 px-3 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+      <Input
+        className="min-w-0"
         id="request-name"
         onChange={(event) =>
           onChange((current) => ({
@@ -64,7 +66,7 @@ export function RequestLine({
         {t("request.method")}
       </label>
       <select
-        className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+        className="h-[var(--control-height)] rounded-md border border-input bg-background px-3 text-sm font-medium text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
         id="request-method"
         onChange={(event) =>
           onChange((current) => ({
@@ -83,8 +85,8 @@ export function RequestLine({
       <label className="sr-only" htmlFor="request-url">
         {t("request.url")}
       </label>
-      <input
-        className="h-10 min-w-0 rounded-md border border-slate-300 px-3 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+      <Input
+        className="min-w-0"
         id="request-url"
         onChange={(event) => {
           const url = event.currentTarget.value;
@@ -97,33 +99,32 @@ export function RequestLine({
         placeholder="https://example.test/resource?tag=one&tag="
         value={content.url}
       />
-      <button
-        className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+      <Button
         disabled={saving}
         onClick={onSave}
         type="button"
+        variant="outline"
       >
         <Save aria-hidden="true" size={16} />
         {t("request.save")}
-      </button>
-      <button
-        className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-sky-700 px-3 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+      </Button>
+      <Button
         disabled={executionRunning}
         onClick={onExecute}
         type="button"
       >
         <Play aria-hidden="true" size={16} />
         {t("request.send")}
-      </button>
-      <button
-        className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-red-300 bg-white px-3 text-sm font-medium text-red-700 hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
+      </Button>
+      <Button
         disabled={!executionRunning}
         onClick={onCancel}
         type="button"
+        variant="destructive"
       >
         <Ban aria-hidden="true" size={16} />
         {t("request.cancel")}
-      </button>
+      </Button>
     </div>
   );
 }
