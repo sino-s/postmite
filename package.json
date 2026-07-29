@@ -31,6 +31,8 @@
     ,"release:artifacts": "node scripts/release-artifacts.mjs collect"
     ,"release:verify-artifacts": "node scripts/release-artifacts.mjs verify"
     ,"release:verify": "node scripts/release-artifacts.mjs verify-source"
+    ,"release:inspect-candidate": "node scripts/release-candidate.mjs inspect"
+    ,"release:verify-candidate": "node --test scripts/release-candidate.node.mjs && node scripts/release-candidate.mjs verify-artifacts"
     ,"release:test-update-check": "cargo test --manifest-path src-tauri/Cargo.toml --locked application::update::tests"
   },
   "dependencies": {
