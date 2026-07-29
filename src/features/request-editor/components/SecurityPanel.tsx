@@ -42,6 +42,14 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
                             name: "",
                             value: "",
                           }
+                        : type === "CLIENT_CREDENTIALS"
+                          ? {
+                              type: "CLIENT_CREDENTIALS",
+                              tokenEndpoint: "",
+                              clientId: "",
+                              clientSecret: "",
+                              scopes: [],
+                            }
                         : { type: "NONE" },
               }));
             }}
@@ -51,6 +59,7 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
             <option value="BASIC">Basic</option>
             <option value="BEARER">Bearer</option>
             <option value="API_KEY">API Key</option>
+            <option value="CLIENT_CREDENTIALS">Client Credentials</option>
           </select>
         </label>
         {content.auth.type === "BASIC" ? (
@@ -173,6 +182,83 @@ export function SecurityPanel({ content, onChange, resolution }: SecurityPanelPr
                   )
                 }
                 value={content.auth.value}
+              />
+            </label>
+          </>
+        ) : null}
+        {content.auth.type === "CLIENT_CREDENTIALS" ? (
+          <>
+            <label className="grid gap-1 text-xs font-medium text-slate-700 sm:col-span-2">
+              Token endpoint
+              <input
+                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+                onChange={(event) =>
+                  onChange((current) =>
+                    current.auth.type === "CLIENT_CREDENTIALS"
+                      ? {
+                          ...current,
+                          auth: { ...current.auth, tokenEndpoint: event.currentTarget.value },
+                        }
+                      : current,
+                  )
+                }
+                value={content.auth.tokenEndpoint}
+              />
+            </label>
+            <label className="grid gap-1 text-xs font-medium text-slate-700">
+              Client ID
+              <input
+                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+                onChange={(event) =>
+                  onChange((current) =>
+                    current.auth.type === "CLIENT_CREDENTIALS"
+                      ? {
+                          ...current,
+                          auth: { ...current.auth, clientId: event.currentTarget.value },
+                        }
+                      : current,
+                  )
+                }
+                value={content.auth.clientId}
+              />
+            </label>
+            <label className="grid gap-1 text-xs font-medium text-slate-700">
+              Client secret reference
+              <input
+                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+                onChange={(event) =>
+                  onChange((current) =>
+                    current.auth.type === "CLIENT_CREDENTIALS"
+                      ? {
+                          ...current,
+                          auth: { ...current.auth, clientSecret: event.currentTarget.value },
+                        }
+                      : current,
+                  )
+                }
+                value={content.auth.clientSecret}
+              />
+            </label>
+            <label className="grid gap-1 text-xs font-medium text-slate-700">
+              Scopes
+              <input
+                className="h-9 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+                onChange={(event) =>
+                  onChange((current) =>
+                    current.auth.type === "CLIENT_CREDENTIALS"
+                      ? {
+                          ...current,
+                          auth: {
+                            ...current.auth,
+                            scopes: event.currentTarget.value
+                              .split(/\s+/)
+                              .filter((scope) => scope.length > 0),
+                          },
+                        }
+                      : current,
+                  )
+                }
+                value={content.auth.scopes.join(" ")}
               />
             </label>
           </>

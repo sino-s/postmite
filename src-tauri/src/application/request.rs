@@ -304,6 +304,18 @@ where
         ))
     }
 
+    pub fn selected_environment_id(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<EnvironmentId>, RequestError> {
+        let snapshot = self.repository.list_request_workspace(workspace_id)?;
+        Ok(snapshot
+            .environments
+            .into_iter()
+            .find(|environment| environment.is_selected)
+            .map(|environment| environment.id))
+    }
+
     pub fn rename_collection_folder(
         &mut self,
         workspace_id: WorkspaceId,
@@ -979,13 +991,38 @@ fn materialize_request_auth_with_secret_resolver(
     mut content: RequestContent,
     secret_resolver: &dyn Fn(&str) -> Option<String>,
 ) -> RequestContent {
+    let auth = content.auth.clone();
     let resolved =
         resolve_request_content_with_secret_resolver(snapshot, &content, secret_resolver);
     content.url = resolved.url.value;
     content.body = materialize_request_body(content.body, &resolved.body_kind);
     content.query = resolved_fields_to_ordered(resolved.query);
     content.headers = resolved_fields_to_ordered(resolved.headers);
-    content.auth = RequestAuth::None;
+    content.auth = match auth {
+        RequestAuth::ClientCredentials {
+            token_endpoint,
+            client_id,
+            client_secret,
+            scopes,
+        } => {
+            let scope = VariableScope::from_snapshot(snapshot);
+            let mut state = ResolutionState::default();
+            RequestAuth::ClientCredentials {
+                token_endpoint: resolve_text(&token_endpoint, &scope, &mut state, secret_resolver)
+                    .value,
+                client_id: resolve_text(&client_id, &scope, &mut state, secret_resolver).value,
+                client_secret: resolve_text(&client_secret, &scope, &mut state, secret_resolver)
+                    .value,
+                scopes: scopes
+                    .into_iter()
+                    .map(|scope_value| {
+                        resolve_text(&scope_value, &scope, &mut state, secret_resolver).value
+                    })
+                    .collect(),
+            }
+        }
+        _ => RequestAuth::None,
+    };
     content
 }
 
@@ -1134,6 +1171,19 @@ fn apply_resolved_auth(
                 ApiKeyPlacement::Query => query.push(field),
             }
         }
+        RequestAuth::ClientCredentials {
+            token_endpoint,
+            client_id,
+            client_secret,
+            scopes,
+        } => {
+            let _ = resolve_text(token_endpoint, scope, state, secret_resolver);
+            let _ = resolve_text(client_id, scope, state, secret_resolver);
+            let _ = resolve_text(client_secret, scope, state, secret_resolver);
+            for scope_value in scopes {
+                let _ = resolve_text(scope_value, scope, state, secret_resolver);
+            }
+        }
     }
 }
 
@@ -1178,6 +1228,17 @@ fn redact_request_auth(auth: RequestAuth) -> RequestAuth {
             placement,
             name,
             value: REDACTED_VALUE.to_owned(),
+        },
+        RequestAuth::ClientCredentials {
+            token_endpoint,
+            client_id,
+            scopes,
+            ..
+        } => RequestAuth::ClientCredentials {
+            token_endpoint,
+            client_id,
+            client_secret: REDACTED_VALUE.to_owned(),
+            scopes,
         },
     }
 }
