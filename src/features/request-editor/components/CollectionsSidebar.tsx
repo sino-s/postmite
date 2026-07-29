@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, Copy, Edit3, FileText, Folder, FolderPlus, Trash2 }
 
 import type { CollectionFolderDto, EnvironmentDto, SavedRequestDto } from "../../../shared/api/generated/ipc";
 import { IconButton } from "./IconButton";
+import { useI18n } from "../../../app/i18n";
 
 type CollectionsSidebarProps = {
   environments: EnvironmentDto[];
@@ -49,6 +50,7 @@ export function CollectionsSidebar({
   onSelectEnvironment,
   requests,
 }: CollectionsSidebarProps) {
+  const { t } = useI18n();
   const rows = useMemo(
     () => buildCollectionRows(folders, requests, null, 0),
     [folders, requests],
@@ -83,16 +85,16 @@ export function CollectionsSidebar({
 
   return (
     <aside
-      aria-label="Collections"
+      aria-label={t("collections.title")}
       className="flex min-h-0 flex-col border-b border-slate-300 bg-slate-50 md:border-b-0 md:border-r"
     >
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-300 px-3">
-        <h2 className="text-sm font-semibold">Collections</h2>
+        <h2 className="text-sm font-semibold">{t("collections.title")}</h2>
         <button
-          aria-label="New root folder"
+          aria-label={t("collections.newRoot")}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-700 hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
           onClick={() => onCreateFolder(null)}
-          title="New root folder"
+          title={t("collections.newRoot")}
           type="button"
         >
           <FolderPlus aria-hidden="true" size={16} />
@@ -100,7 +102,7 @@ export function CollectionsSidebar({
       </div>
       <div className="border-b border-slate-300 px-3 py-3">
         <label className="mb-1 block text-xs font-semibold text-slate-600" htmlFor="environment-select">
-          Environment
+          {t("collections.environment")}
         </label>
         <select
           className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
@@ -110,7 +112,7 @@ export function CollectionsSidebar({
           }
           value={environments.find((environment) => environment.isSelected)?.id ?? ""}
         >
-          <option value="">No environment</option>
+          <option value="">{t("collections.noEnvironment")}</option>
           {environments
             .slice()
             .sort(compareTreeItems)
@@ -122,7 +124,7 @@ export function CollectionsSidebar({
         </select>
       </div>
       <div
-        aria-label="Collection tree"
+        aria-label={t("collections.tree")}
         className="min-h-32 flex-1 overflow-auto py-2"
         data-collection-tree
         role={rows.length > 0 ? "tree" : undefined}
@@ -176,7 +178,7 @@ export function CollectionsSidebar({
           );
         })}
         {rows.length === 0 ? (
-          <p className="px-3 py-6 text-sm text-slate-500">No saved requests</p>
+          <p className="px-3 py-6 text-sm text-slate-500">{t("collections.noRequests")}</p>
         ) : null}
       </div>
     </aside>
@@ -200,24 +202,25 @@ function TreeActions({
   onMoveUp,
   onRename,
 }: TreeActionsProps) {
+  const { t } = useI18n();
   return (
     <div className="flex shrink-0 items-center opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
-      <IconButton label="New subfolder" onClick={onCreate}>
+      <IconButton label={t("actions.newSubfolder")} onClick={onCreate}>
         <FolderPlus aria-hidden="true" size={14} />
       </IconButton>
-      <IconButton label="Rename folder" onClick={onRename}>
+      <IconButton label={t("actions.renameFolder")} onClick={onRename}>
         <Edit3 aria-hidden="true" size={14} />
       </IconButton>
-      <IconButton label="Move folder up" onClick={onMoveUp}>
+      <IconButton label={t("actions.moveFolderUp")} onClick={onMoveUp}>
         <ArrowUp aria-hidden="true" size={14} />
       </IconButton>
-      <IconButton label="Move folder down" onClick={onMoveDown}>
+      <IconButton label={t("actions.moveFolderDown")} onClick={onMoveDown}>
         <ArrowDown aria-hidden="true" size={14} />
       </IconButton>
-      <IconButton label="Duplicate folder" onClick={onDuplicate}>
+      <IconButton label={t("actions.duplicateFolder")} onClick={onDuplicate}>
         <Copy aria-hidden="true" size={14} />
       </IconButton>
-      <IconButton label="Delete folder" onClick={onDelete}>
+      <IconButton label={t("actions.deleteFolder")} onClick={onDelete}>
         <Trash2 aria-hidden="true" size={14} />
       </IconButton>
     </div>
@@ -237,18 +240,19 @@ function RequestTreeActions({
   onMoveDown,
   onMoveUp,
 }: RequestTreeActionsProps) {
+  const { t } = useI18n();
   return (
     <div className="flex shrink-0 items-center opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
-      <IconButton label="Move request up" onClick={onMoveUp}>
+      <IconButton label={t("actions.moveRequestUp")} onClick={onMoveUp}>
         <ArrowUp aria-hidden="true" size={14} />
       </IconButton>
-      <IconButton label="Move request down" onClick={onMoveDown}>
+      <IconButton label={t("actions.moveRequestDown")} onClick={onMoveDown}>
         <ArrowDown aria-hidden="true" size={14} />
       </IconButton>
-      <IconButton label="Duplicate request" onClick={onDuplicate}>
+      <IconButton label={t("actions.duplicateRequest")} onClick={onDuplicate}>
         <Copy aria-hidden="true" size={14} />
       </IconButton>
-      <IconButton label="Delete request" onClick={onDelete}>
+      <IconButton label={t("actions.deleteRequest")} onClick={onDelete}>
         <Trash2 aria-hidden="true" size={14} />
       </IconButton>
     </div>

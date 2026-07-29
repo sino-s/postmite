@@ -7,6 +7,7 @@ import {
   placeholder,
 } from "@codemirror/view";
 import { useEffect, useRef } from "react";
+import { useI18n } from "../../app/i18n";
 
 type CodeMirrorBodyEditorProps = {
   mode: "json" | "text";
@@ -19,6 +20,7 @@ export function CodeMirrorBodyEditor({
   value,
   onChange,
 }: CodeMirrorBodyEditorProps) {
+  const { t } = useI18n();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const initialValueRef = useRef(value);
   const viewRef = useRef<EditorView | null>(null);
@@ -38,7 +40,7 @@ export function CodeMirrorBodyEditor({
         extensions: [
           lineNumbers(),
           keymap.of([]),
-          placeholder("Raw body"),
+          placeholder(t("body.rawPlaceholder")),
           EditorView.lineWrapping,
           mode === "json" ? json() : [],
           EditorView.updateListener.of((update) => {
@@ -71,7 +73,7 @@ export function CodeMirrorBodyEditor({
       view.destroy();
       viewRef.current = null;
     };
-  }, [mode]);
+  }, [mode, t]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -91,7 +93,7 @@ export function CodeMirrorBodyEditor({
   return (
     <div
       ref={hostRef}
-      aria-label="Raw body editor"
+      aria-label={t("body.rawEditor")}
       className="min-h-60 overflow-hidden rounded-md border border-slate-300 bg-white focus-within:border-sky-500 focus-within:outline focus-within:outline-2 focus-within:outline-sky-500"
     />
   );
