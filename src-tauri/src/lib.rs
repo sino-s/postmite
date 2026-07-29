@@ -11,9 +11,12 @@ use std::{
 };
 
 use application::{
-    execution::ExecutionCoordinator, request::RequestService, workspace::WorkspaceService,
+    execution::ExecutionCoordinator,
+    request::RequestService,
+    secrets::{FallbackSecretStore, SecretStore, SessionSecretStore},
+    workspace::WorkspaceService,
 };
-use infrastructure::sqlite::SqliteWorkspaceRepository;
+use infrastructure::{secrets::LinuxSecretServiceStore, sqlite::SqliteWorkspaceRepository};
 use tauri::{Manager, WindowEvent};
 
 pub struct AppState {
@@ -87,9 +90,13 @@ pub fn run() {
 
             let workspace_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let request_repository = SqliteWorkspaceRepository::open(&database_path)?;
-            let mut workspaces = WorkspaceService::new(workspace_repository);
+            let secrets: Arc<dyn SecretStore> = Arc::new(FallbackSecretStore::new(
+                LinuxSecretServiceStore::new(),
+                Arc::new(SessionSecretStore::new()),
+            ));
+            let mut workspaces = WorkspaceService::new(workspace_repository, Arc::clone(&secrets));
             let workspace_snapshot = workspaces.initialize()?;
-            let mut requests = RequestService::new(request_repository);
+            let mut requests = RequestService::new(request_repository, secrets);
             diagnostics::configure_perf_request_tabs(
                 &mut requests,
                 workspace_snapshot.selected_workspace_id,

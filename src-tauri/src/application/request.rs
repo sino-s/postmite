@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use cookie::{Cookie, Expiration, SameSite};
@@ -16,6 +16,8 @@ use crate::domain::{
     },
     workspace::WorkspaceId,
 };
+
+use super::secrets::{SecretClass, SecretOwner, SecretStore};
 
 pub const EXECUTION_HISTORY_RETENTION_DAYS: i64 = 30;
 pub const EXECUTION_HISTORY_RETENTION_LIMIT: usize = 1_000;
@@ -186,6 +188,7 @@ pub trait RequestRepository {
         &mut self,
         draft: CookieDraft,
         has_value: bool,
+        secret_reference: Option<&str>,
         now_epoch_seconds: i64,
     ) -> Result<WorkspaceCookie, RequestError>;
     fn delete_cookie(
@@ -212,6 +215,7 @@ where
     R: RequestRepository,
 {
     repository: R,
+    secrets: Arc<dyn SecretStore>,
     pending_drafts: HashMap<RequestDraftId, PendingDraft>,
     cookie_values: HashMap<CookieId, String>,
 }
@@ -220,12 +224,21 @@ impl<R> RequestService<R>
 where
     R: RequestRepository,
 {
-    pub fn new(repository: R) -> Self {
+    pub fn new(repository: R, secrets: Arc<dyn SecretStore>) -> Self {
         Self {
             repository,
+            secrets,
             pending_drafts: HashMap::new(),
             cookie_values: HashMap::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(repository: R) -> Self {
+        Self::new(
+            repository,
+            Arc::new(super::secrets::SessionSecretStore::new()),
+        )
     }
 
     pub fn list_request_workspace(
@@ -276,6 +289,19 @@ where
     ) -> Result<ResolvedRequestContent, RequestError> {
         let snapshot = self.repository.list_request_workspace(workspace_id)?;
         Ok(resolve_request_content(&snapshot, content))
+    }
+
+    pub fn materialize_request_content(
+        &self,
+        workspace_id: WorkspaceId,
+        content: RequestContent,
+    ) -> Result<RequestContent, RequestError> {
+        let snapshot = self.repository.list_request_workspace(workspace_id)?;
+        Ok(materialize_request_auth_with_secret_resolver(
+            &snapshot,
+            content,
+            &|reference| self.secrets.get(reference).ok(),
+        ))
     }
 
     pub fn rename_collection_folder(
@@ -446,7 +472,10 @@ where
         completed_at_epoch_seconds: i64,
     ) -> Result<(), RequestError> {
         let snapshot = self.repository.list_request_workspace(workspace_id)?;
-        let resolved = resolve_request_content(&snapshot, &content);
+        let resolved =
+            resolve_request_content_with_secret_resolver(&snapshot, &content, &|reference| {
+                self.secrets.get(reference).ok()
+            });
         let redacted = redact_request_content(content, &resolved);
         self.repository
             .insert_execution_record(ExecutionRecordDraft {
@@ -486,19 +515,56 @@ where
         if !cookies.iter().any(|cookie| cookie.id == cookie_id) {
             return Err(RequestError::NotFound);
         }
-        self.cookie_values
-            .get(&cookie_id)
-            .cloned()
+        cookies
+            .iter()
+            .find(|cookie| cookie.id == cookie_id)
+            .and_then(|cookie| self.cookie_value(cookie))
             .ok_or(RequestError::NotFound)
     }
 
     pub fn upsert_cookie(&mut self, draft: CookieDraft) -> Result<CookieJarSnapshot, RequestError> {
         validate_cookie_draft(&draft)?;
         let now = current_epoch_seconds();
-        let cookie = self
+        let existing = self
             .repository
-            .upsert_cookie_metadata(draft.clone(), true, now)?;
-        self.cookie_values.insert(cookie.id, draft.value);
+            .list_cookies(draft.workspace_id)?
+            .into_iter()
+            .find(|cookie| cookie_scope_matches(cookie, &draft));
+        let (has_value, secret_reference) = if draft.expires_at_epoch_seconds.is_some() {
+            let write = self
+                .secrets
+                .put(
+                    &SecretOwner::new(
+                        draft.workspace_id,
+                        SecretClass::CookieValue,
+                        cookie_secret_owner_name(&draft),
+                    ),
+                    &draft.value,
+                )
+                .map_err(secret_request_error)?;
+            (true, Some(write.reference))
+        } else {
+            (true, None)
+        };
+        let cookie = self.repository.upsert_cookie_metadata(
+            draft.clone(),
+            has_value,
+            secret_reference.as_deref(),
+            now,
+        )?;
+        if let Some(reference) = secret_reference.as_deref() {
+            self.cookie_values.remove(&cookie.id);
+            if let Some(old_reference) = existing
+                .and_then(|cookie| cookie.secret_reference)
+                .filter(|old_reference| old_reference != reference)
+            {
+                self.secrets
+                    .delete(&old_reference)
+                    .map_err(secret_request_error)?;
+            }
+        } else {
+            self.cookie_values.insert(cookie.id, draft.value);
+        }
         self.list_cookies(cookie.workspace_id)
     }
 
@@ -507,8 +573,19 @@ where
         workspace_id: WorkspaceId,
         cookie_id: CookieId,
     ) -> Result<CookieJarSnapshot, RequestError> {
+        let secret_reference = self
+            .repository
+            .list_cookies(workspace_id)?
+            .into_iter()
+            .find(|cookie| cookie.id == cookie_id)
+            .and_then(|cookie| cookie.secret_reference);
         self.repository.delete_cookie(workspace_id, cookie_id)?;
         self.cookie_values.remove(&cookie_id);
+        if let Some(reference) = secret_reference {
+            self.secrets
+                .delete(&reference)
+                .map_err(secret_request_error)?;
+        }
         self.list_cookies(workspace_id)
     }
 
@@ -520,6 +597,11 @@ where
         self.repository.clear_cookies(workspace_id)?;
         for cookie in existing {
             self.cookie_values.remove(&cookie.id);
+            if let Some(reference) = cookie.secret_reference {
+                self.secrets
+                    .delete(&reference)
+                    .map_err(secret_request_error)?;
+            }
         }
         self.list_cookies(workspace_id)
     }
@@ -551,7 +633,7 @@ where
         let mut pairs = Vec::new();
         for cookie in cookies {
             if cookie_matches_url(&cookie, &url, now) {
-                if let Some(value) = self.cookie_values.get(&cookie.id) {
+                if let Some(value) = self.cookie_value(&cookie) {
                     pairs.push(format!("{}={}", cookie.name, value));
                 }
             }
@@ -589,12 +671,7 @@ where
                 continue;
             }
             if let Some(draft) = cookie_draft_from_set_cookie(workspace_id, &url, &header.value)? {
-                let cookie = self.repository.upsert_cookie_metadata(
-                    draft.clone(),
-                    true,
-                    current_epoch_seconds(),
-                )?;
-                self.cookie_values.insert(cookie.id, draft.value);
+                let _ = self.upsert_cookie(draft)?;
             }
         }
         Ok(())
@@ -605,20 +682,39 @@ where
         workspace_id: WorkspaceId,
         now_epoch_seconds: i64,
     ) -> Result<Vec<WorkspaceCookie>, RequestError> {
+        let existing = self.repository.list_cookies(workspace_id)?;
         let removed = self
             .repository
             .cleanup_expired_cookies(workspace_id, now_epoch_seconds)?;
         for id in removed {
             self.cookie_values.remove(&id);
+            if let Some(reference) = existing
+                .iter()
+                .find(|cookie| cookie.id == id)
+                .and_then(|cookie| cookie.secret_reference.as_deref())
+            {
+                self.secrets
+                    .delete(reference)
+                    .map_err(secret_request_error)?;
+            }
         }
         self.repository.list_cookies(workspace_id).map(|cookies| {
             cookies
                 .into_iter()
                 .map(|mut cookie| {
-                    cookie.has_value = self.cookie_values.contains_key(&cookie.id);
+                    cookie.has_value = self.cookie_value(&cookie).is_some();
                     cookie
                 })
                 .collect()
+        })
+    }
+
+    fn cookie_value(&self, cookie: &WorkspaceCookie) -> Option<String> {
+        self.cookie_values.get(&cookie.id).cloned().or_else(|| {
+            cookie
+                .secret_reference
+                .as_deref()
+                .and_then(|reference| self.secrets.get(reference).ok())
         })
     }
 }
@@ -741,10 +837,18 @@ pub fn resolve_request_content(
     snapshot: &RequestWorkspaceSnapshot,
     content: &RequestContent,
 ) -> ResolvedRequestContent {
+    resolve_request_content_with_secret_resolver(snapshot, content, &|_| None)
+}
+
+fn resolve_request_content_with_secret_resolver(
+    snapshot: &RequestWorkspaceSnapshot,
+    content: &RequestContent,
+    secret_resolver: &dyn Fn(&str) -> Option<String>,
+) -> ResolvedRequestContent {
     let scope = VariableScope::from_snapshot(snapshot);
     let mut state = ResolutionState::default();
-    let url = resolve_text(&content.url, &scope, &mut state);
-    let body_kind = resolve_request_body(&content.body, &scope, &mut state);
+    let url = resolve_text(&content.url, &scope, &mut state, secret_resolver);
+    let body_kind = resolve_request_body(&content.body, &scope, &mut state, secret_resolver);
     let body = resolved_body_preview(&body_kind);
     let mut query = content
         .query
@@ -752,8 +856,8 @@ pub fn resolve_request_content(
         .map(|field| ResolvedField {
             enabled: field.enabled,
             order: field.order,
-            name: resolve_text(&field.name, &scope, &mut state),
-            value: resolve_text(&field.value, &scope, &mut state),
+            name: resolve_text(&field.name, &scope, &mut state, secret_resolver),
+            value: resolve_text(&field.value, &scope, &mut state, secret_resolver),
         })
         .collect();
     let mut headers = content
@@ -762,11 +866,18 @@ pub fn resolve_request_content(
         .map(|field| ResolvedField {
             enabled: field.enabled,
             order: field.order,
-            name: resolve_text(&field.name, &scope, &mut state),
-            value: resolve_text(&field.value, &scope, &mut state),
+            name: resolve_text(&field.name, &scope, &mut state, secret_resolver),
+            value: resolve_text(&field.value, &scope, &mut state, secret_resolver),
         })
         .collect();
-    apply_resolved_auth(&content.auth, &scope, &mut state, &mut query, &mut headers);
+    apply_resolved_auth(
+        &content.auth,
+        &scope,
+        &mut state,
+        &mut query,
+        &mut headers,
+        secret_resolver,
+    );
 
     let mut references = state.references.into_values().collect::<Vec<_>>();
     references.sort_by(|left, right| left.name.cmp(&right.name));
@@ -858,9 +969,18 @@ fn redact_url_credentials(value: &str) -> String {
 
 pub fn materialize_request_auth(
     snapshot: &RequestWorkspaceSnapshot,
-    mut content: RequestContent,
+    content: RequestContent,
 ) -> RequestContent {
-    let resolved = resolve_request_content(snapshot, &content);
+    materialize_request_auth_with_secret_resolver(snapshot, content, &|_| None)
+}
+
+fn materialize_request_auth_with_secret_resolver(
+    snapshot: &RequestWorkspaceSnapshot,
+    mut content: RequestContent,
+    secret_resolver: &dyn Fn(&str) -> Option<String>,
+) -> RequestContent {
+    let resolved =
+        resolve_request_content_with_secret_resolver(snapshot, &content, secret_resolver);
     content.url = resolved.url.value;
     content.body = materialize_request_body(content.body, &resolved.body_kind);
     content.query = resolved_fields_to_ordered(resolved.query);
@@ -947,12 +1067,13 @@ fn apply_resolved_auth(
     state: &mut ResolutionState,
     query: &mut Vec<ResolvedField>,
     headers: &mut Vec<ResolvedField>,
+    secret_resolver: &dyn Fn(&str) -> Option<String>,
 ) {
     match auth {
         RequestAuth::None => {}
         RequestAuth::Basic { username, password } => {
-            let username = resolve_text(username, scope, state);
-            let password = resolve_text(password, scope, state);
+            let username = resolve_text(username, scope, state, secret_resolver);
+            let password = resolve_text(password, scope, state, secret_resolver);
             let contains_secret = username.contains_secret || password.contains_secret;
             let value = if contains_secret {
                 REDACTED_VALUE.to_owned()
@@ -972,7 +1093,7 @@ fn apply_resolved_auth(
             ));
         }
         RequestAuth::Bearer { token } => {
-            let token = resolve_text(token, scope, state);
+            let token = resolve_text(token, scope, state, secret_resolver);
             headers.push(resolved_auth_field(
                 headers,
                 "Authorization",
@@ -991,8 +1112,8 @@ fn apply_resolved_auth(
             name,
             value,
         } => {
-            let name = resolve_text(name, scope, state);
-            let value = resolve_text(value, scope, state);
+            let name = resolve_text(name, scope, state, secret_resolver);
+            let value = resolve_text(value, scope, state, secret_resolver);
             let field = resolved_auth_field(
                 match placement {
                     ApiKeyPlacement::Header => headers,
@@ -1065,11 +1186,12 @@ fn resolve_request_body(
     body: &RequestBody,
     scope: &VariableScope,
     state: &mut ResolutionState,
+    secret_resolver: &dyn Fn(&str) -> Option<String>,
 ) -> ResolvedRequestBody {
     match body {
         RequestBody::None => ResolvedRequestBody::None,
         RequestBody::Raw { content } => ResolvedRequestBody::Raw {
-            content: resolve_text(content, scope, state),
+            content: resolve_text(content, scope, state, secret_resolver),
         },
         RequestBody::UrlEncoded { fields } => ResolvedRequestBody::UrlEncoded {
             fields: fields
@@ -1077,8 +1199,8 @@ fn resolve_request_body(
                 .map(|field| ResolvedField {
                     enabled: field.enabled,
                     order: field.order,
-                    name: resolve_text(&field.name, scope, state),
-                    value: resolve_text(&field.value, scope, state),
+                    name: resolve_text(&field.name, scope, state, secret_resolver),
+                    value: resolve_text(&field.value, scope, state, secret_resolver),
                 })
                 .collect(),
         },
@@ -1094,8 +1216,8 @@ fn resolve_request_body(
                     } => ResolvedMultipartPart::Field {
                         enabled: *enabled,
                         order: *order,
-                        name: resolve_text(name, scope, state),
-                        value: resolve_text(value, scope, state),
+                        name: resolve_text(name, scope, state, secret_resolver),
+                        value: resolve_text(value, scope, state, secret_resolver),
                     },
                     MultipartPart::File {
                         enabled,
@@ -1105,7 +1227,7 @@ fn resolve_request_body(
                     } => ResolvedMultipartPart::File {
                         enabled: *enabled,
                         order: *order,
-                        name: resolve_text(name, scope, state),
+                        name: resolve_text(name, scope, state, secret_resolver),
                     },
                 })
                 .collect(),
@@ -1343,6 +1465,43 @@ fn current_epoch_seconds() -> i64 {
         .unwrap_or(0)
 }
 
+fn secret_request_error(error: super::secrets::SecretError) -> RequestError {
+    match error {
+        super::secrets::SecretError::Locked => {
+            RequestError::InvalidInput("secret.storage.locked".to_owned())
+        }
+        super::secrets::SecretError::Unavailable => {
+            RequestError::InvalidInput("secret.storage.unavailable".to_owned())
+        }
+        super::secrets::SecretError::NotFound => {
+            RequestError::InvalidInput("secret.reference.notFound".to_owned())
+        }
+        super::secrets::SecretError::Storage(_) => {
+            RequestError::Persistence("secret storage failed".to_owned())
+        }
+    }
+}
+
+fn cookie_scope_matches(cookie: &WorkspaceCookie, draft: &CookieDraft) -> bool {
+    cookie.workspace_id == draft.workspace_id
+        && cookie.name == draft.name.trim()
+        && cookie.domain == normalize_cookie_domain_for_request(&draft.domain)
+        && cookie.path == draft.path
+}
+
+fn cookie_secret_owner_name(draft: &CookieDraft) -> String {
+    format!(
+        "{}:{}:{}",
+        normalize_cookie_domain_for_request(&draft.domain),
+        draft.path,
+        draft.name.trim()
+    )
+}
+
+fn normalize_cookie_domain_for_request(domain: &str) -> String {
+    domain.trim().trim_start_matches('.').to_ascii_lowercase()
+}
+
 #[derive(Clone)]
 struct ScopedVariable {
     source: VariableSource,
@@ -1400,8 +1559,13 @@ struct ResolutionState {
     errors: HashMap<String, VariableResolutionError>,
 }
 
-fn resolve_text(input: &str, scope: &VariableScope, state: &mut ResolutionState) -> ResolvedValue {
-    resolve_text_with_stack(input, scope, state, &mut Vec::new())
+fn resolve_text(
+    input: &str,
+    scope: &VariableScope,
+    state: &mut ResolutionState,
+    secret_resolver: &dyn Fn(&str) -> Option<String>,
+) -> ResolvedValue {
+    resolve_text_with_stack(input, scope, state, &mut Vec::new(), secret_resolver)
 }
 
 fn resolve_text_with_stack(
@@ -1409,6 +1573,7 @@ fn resolve_text_with_stack(
     scope: &VariableScope,
     state: &mut ResolutionState,
     stack: &mut Vec<String>,
+    secret_resolver: &dyn Fn(&str) -> Option<String>,
 ) -> ResolvedValue {
     let mut output = String::new();
     let mut contains_secret = false;
@@ -1426,7 +1591,7 @@ fn resolve_text_with_stack(
         };
         let absolute_end = after_start + end;
         let name = input[after_start..absolute_end].trim();
-        let resolved = resolve_variable(name, scope, state, stack);
+        let resolved = resolve_variable(name, scope, state, stack, secret_resolver);
         if resolved.contains_secret {
             contains_secret = true;
         }
@@ -1446,6 +1611,7 @@ fn resolve_variable(
     scope: &VariableScope,
     state: &mut ResolutionState,
     stack: &mut Vec<String>,
+    secret_resolver: &dyn Fn(&str) -> Option<String>,
 ) -> ResolvedValue {
     if stack.iter().any(|item| item == name) {
         state.errors.insert(
@@ -1477,9 +1643,11 @@ fn resolve_variable(
 
     stack.push(name.to_owned());
     let value = match &variable.value {
-        VariableValue::Plain(value) => resolve_text_with_stack(value, scope, state, stack),
-        VariableValue::SecretReference(_) => ResolvedValue {
-            value: "********".to_owned(),
+        VariableValue::Plain(value) => {
+            resolve_text_with_stack(value, scope, state, stack, secret_resolver)
+        }
+        VariableValue::SecretReference(reference) => ResolvedValue {
+            value: secret_resolver(reference).unwrap_or_else(|| REDACTED_VALUE.to_owned()),
             contains_secret: true,
         },
     };
@@ -1726,6 +1894,7 @@ mod tests {
             &mut self,
             draft: CookieDraft,
             has_value: bool,
+            secret_reference: Option<&str>,
             _now_epoch_seconds: i64,
         ) -> Result<WorkspaceCookie, RequestError> {
             let id = draft.id.unwrap_or_default();
@@ -1741,6 +1910,7 @@ mod tests {
                 expires_at_epoch_seconds: draft.expires_at_epoch_seconds,
                 session: draft.expires_at_epoch_seconds.is_none(),
                 has_value,
+                secret_reference: secret_reference.map(str::to_owned),
             };
             self.cookies.retain(|existing| {
                 !(existing.workspace_id == cookie.workspace_id
@@ -1806,7 +1976,7 @@ mod tests {
     fn queued_draft_updates_flush_only_latest_content() {
         let workspace_id = WorkspaceId::new();
         let draft_id = RequestDraftId::new();
-        let mut service = RequestService::new(FakeRequestRepository::default());
+        let mut service = RequestService::new_for_test(FakeRequestRepository::default());
 
         service.queue_draft_update(workspace_id, draft_id, content("First"));
         service.queue_draft_update(workspace_id, draft_id, content("Second"));
@@ -1848,7 +2018,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let mut service = RequestService::new(repository);
+        let mut service = RequestService::new_for_test(repository);
 
         service.queue_draft_update(workspace_id, draft_id, content("Queued"));
         service
@@ -1864,7 +2034,7 @@ mod tests {
     fn matching_cookie_is_attached_without_cross_workspace_leakage() {
         let workspace_id = WorkspaceId::new();
         let other_workspace_id = WorkspaceId::new();
-        let mut service = RequestService::new(FakeRequestRepository::default());
+        let mut service = RequestService::new_for_test(FakeRequestRepository::default());
         service
             .upsert_cookie(cookie_draft(
                 workspace_id,
@@ -1906,7 +2076,7 @@ mod tests {
     #[test]
     fn explicit_cookie_header_wins_for_one_execution() {
         let workspace_id = WorkspaceId::new();
-        let mut service = RequestService::new(FakeRequestRepository::default());
+        let mut service = RequestService::new_for_test(FakeRequestRepository::default());
         service
             .upsert_cookie(cookie_draft(
                 workspace_id,
@@ -1942,7 +2112,7 @@ mod tests {
     #[test]
     fn secure_and_expired_cookies_are_not_attached() {
         let workspace_id = WorkspaceId::new();
-        let mut service = RequestService::new(FakeRequestRepository::default());
+        let mut service = RequestService::new_for_test(FakeRequestRepository::default());
         service
             .upsert_cookie(cookie_draft(
                 workspace_id,
@@ -1966,6 +2136,7 @@ mod tests {
             expires_at_epoch_seconds: Some(1),
             session: false,
             has_value: true,
+            secret_reference: None,
         });
 
         let content = service
@@ -1984,7 +2155,7 @@ mod tests {
     #[test]
     fn set_cookie_headers_are_captured_with_default_path() {
         let workspace_id = WorkspaceId::new();
-        let mut service = RequestService::new(FakeRequestRepository::default());
+        let mut service = RequestService::new_for_test(FakeRequestRepository::default());
 
         service
             .capture_set_cookie_headers(
@@ -2164,7 +2335,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let mut service = RequestService::new(repository);
+        let mut service = RequestService::new_for_test(repository);
         let content = RequestContent {
             name: "Secret request".to_owned(),
             method: "POST".to_owned(),

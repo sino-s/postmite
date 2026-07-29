@@ -22,11 +22,10 @@ use crate::{
         ExecutionTimingMetadata, StartExecutionResult,
     },
     application::request::{
-        materialize_request_auth, CloseTabDecision, CollectionLocation, CookieJarSnapshot,
-        ExecutionHistorySnapshot, RequestError, RequestRepository, RequestService,
-        RequestWorkspaceSnapshot, ResolvedField, ResolvedRequestContent, ResolvedValue,
-        ResolvedVariableReference, VariableResolutionError, VariableResolutionErrorKind,
-        VariableSource, REDACTED_VALUE,
+        CloseTabDecision, CollectionLocation, CookieJarSnapshot, ExecutionHistorySnapshot,
+        RequestError, RequestRepository, RequestService, RequestWorkspaceSnapshot, ResolvedField,
+        ResolvedRequestContent, ResolvedValue, ResolvedVariableReference, VariableResolutionError,
+        VariableResolutionErrorKind, VariableSource, REDACTED_VALUE,
     },
     application::workspace::{WorkspaceError, WorkspaceService, WorkspaceSnapshot},
     domain::{
@@ -1712,10 +1711,9 @@ pub fn handle_start_request_execution(
     };
     let content = {
         let mut requests = state.requests.lock().map_err(map_poison_error)?;
-        let snapshot = requests
-            .list_request_workspace(workspace_id)
+        let content = requests
+            .materialize_request_content(workspace_id, RequestContent::from(input.content))
             .map_err(|error| IpcError::from(BoundaryError::Request(error)))?;
-        let content = materialize_request_auth(&snapshot, RequestContent::from(input.content));
         requests
             .attach_matching_cookies(workspace_id, content)
             .map_err(|error| IpcError::from(BoundaryError::Request(error)))?
@@ -3387,6 +3385,18 @@ mod tests {
             }
         }
 
+        fn with_two_workspaces() -> Self {
+            let mut repository = Self::new();
+            let workspace = Workspace::new(WorkspaceName::new("Client").expect("valid name"));
+            repository.snapshot.workspaces.push(WorkspaceSummary {
+                id: workspace.id,
+                name: workspace.name,
+                is_selected: false,
+                base_directory: None,
+            });
+            repository
+        }
+
         fn result(&mut self, call: &'static str) -> Result<WorkspaceSnapshot, WorkspaceError> {
             self.calls.push(call);
             match self.next_error.take() {
@@ -3482,7 +3492,9 @@ mod tests {
 
     #[test]
     fn invalid_workspace_id_maps_to_safe_non_retryable_error() {
-        let service = Mutex::new(WorkspaceService::new(FakeWorkspaceRepository::new()));
+        let service = Mutex::new(WorkspaceService::new_for_test(
+            FakeWorkspaceRepository::new(),
+        ));
 
         let error = handle_switch_workspace(
             service.lock().expect("lock service"),
@@ -3550,7 +3562,9 @@ mod tests {
 
     #[test]
     fn commands_delegate_to_workspace_service() {
-        let service = Mutex::new(WorkspaceService::new(FakeWorkspaceRepository::new()));
+        let service = Mutex::new(WorkspaceService::new_for_test(
+            FakeWorkspaceRepository::with_two_workspaces(),
+        ));
         let id = {
             let snapshot = service
                 .lock()
@@ -3567,7 +3581,7 @@ mod tests {
             },
         )
         .expect("create");
-        assert_eq!(created.workspaces.len(), 1);
+        assert_eq!(created.workspaces.len(), 2);
 
         handle_rename_workspace(
             service.lock().expect("lock service"),
