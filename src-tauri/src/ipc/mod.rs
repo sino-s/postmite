@@ -68,6 +68,11 @@ use crate::{
         },
         workspace::{WorkspaceId, WorkspaceNameError},
     },
+    infrastructure::sqlite::{
+        DatabaseRecoveryMode, DatabaseRecoveryState,
+        RecoverableDatabaseExport as ApplicationRecoverableDatabaseExport,
+        SqliteWorkspaceRepository,
+    },
     AppState,
 };
 
@@ -114,6 +119,8 @@ pub const REIMPORT_POSTMAN_COMMAND: &str = "reimport_postman";
 pub const EXPORT_NATIVE_BACKUP_COMMAND: &str = "export_native_backup";
 pub const PREVIEW_NATIVE_BACKUP_RESTORE_COMMAND: &str = "preview_native_backup_restore";
 pub const RESTORE_NATIVE_BACKUP_COMMAND: &str = "restore_native_backup";
+pub const GET_DATABASE_RECOVERY_STATE_COMMAND: &str = "get_database_recovery_state";
+pub const EXPORT_RECOVERABLE_DATABASE_COMMAND: &str = "export_recoverable_database";
 pub const PREVIEW_CURL_IMPORT_COMMAND: &str = "preview_curl_import";
 pub const IMPORT_CURL_AS_DRAFT_COMMAND: &str = "import_curl_as_draft";
 pub const GENERATE_CURL_COMMAND: &str = "generate_curl";
@@ -635,6 +642,39 @@ pub struct NativeBackupManifestEntryDto {
     pub path: String,
     pub sha256: String,
     pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseRecoveryStateDto {
+    pub mode: DatabaseRecoveryModeDto,
+    pub reason: Option<String>,
+    pub snapshots: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DatabaseRecoveryModeDto {
+    Normal,
+    Safe,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoverableDatabaseExportInput {
+    pub source_path: String,
+    pub export_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoverableDatabaseExportDto {
+    pub export_path: String,
+    pub source_path: String,
+    pub repaired_copy_path: String,
+    pub table_count: u32,
+    pub row_count: u32,
+    pub redacted_value_count: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -1570,6 +1610,24 @@ pub fn restore_native_backup(
 ) -> Result<NativeBackupRestoreResultDto, IpcError> {
     let mut service = state.native_backups.lock().map_err(map_poison_error)?;
     handle_restore_native_backup(&mut service, input)
+}
+
+#[tauri::command]
+pub fn get_database_recovery_state(
+    state: State<'_, AppState>,
+) -> Result<DatabaseRecoveryStateDto, IpcError> {
+    Ok(DatabaseRecoveryStateDto::from(
+        state.database_recovery.clone(),
+    ))
+}
+
+#[tauri::command]
+pub fn export_recoverable_database(
+    input: RecoverableDatabaseExportInput,
+) -> Result<RecoverableDatabaseExportDto, IpcError> {
+    SqliteWorkspaceRepository::export_recoverable_database(input.source_path, input.export_path)
+        .map(RecoverableDatabaseExportDto::from)
+        .map_err(|error| BoundaryError::Workspace(error).into())
 }
 
 #[tauri::command]
@@ -2748,6 +2806,10 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         NativeBackupExclusionDto::export_to_string(&cfg)?,
         NativeBackupManifestDto::export_to_string(&cfg)?,
         NativeBackupManifestEntryDto::export_to_string(&cfg)?,
+        DatabaseRecoveryStateDto::export_to_string(&cfg)?,
+        DatabaseRecoveryModeDto::export_to_string(&cfg)?,
+        RecoverableDatabaseExportInput::export_to_string(&cfg)?,
+        RecoverableDatabaseExportDto::export_to_string(&cfg)?,
         CurlImportInput::export_to_string(&cfg)?,
         CurlGenerateInput::export_to_string(&cfg)?,
         CurlImportPreviewDto::export_to_string(&cfg)?,
@@ -2993,6 +3055,14 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \trestore_native_backup: {\n\
          \t\tinput: NativeBackupRestoreInput;\n\
          \t\toutput: NativeBackupRestoreResultDto;\n\
+         \t};\n\
+         \tget_database_recovery_state: {\n\
+         \t\tinput: undefined;\n\
+         \t\toutput: DatabaseRecoveryStateDto;\n\
+         \t};\n\
+         \texport_recoverable_database: {\n\
+         \t\tinput: RecoverableDatabaseExportInput;\n\
+         \t\toutput: RecoverableDatabaseExportDto;\n\
          \t};\n\
          \tpreview_curl_import: {\n\
          \t\tinput: CurlImportInput;\n\
@@ -3406,6 +3476,38 @@ impl From<NativeBackupManifestEntry> for NativeBackupManifestEntryDto {
             path: entry.path,
             sha256: entry.sha256,
             bytes: entry.bytes,
+        }
+    }
+}
+
+impl From<DatabaseRecoveryState> for DatabaseRecoveryStateDto {
+    fn from(state: DatabaseRecoveryState) -> Self {
+        Self {
+            mode: DatabaseRecoveryModeDto::from(state.mode),
+            reason: state.reason,
+            snapshots: state.snapshots,
+        }
+    }
+}
+
+impl From<DatabaseRecoveryMode> for DatabaseRecoveryModeDto {
+    fn from(mode: DatabaseRecoveryMode) -> Self {
+        match mode {
+            DatabaseRecoveryMode::Normal => Self::Normal,
+            DatabaseRecoveryMode::Safe => Self::Safe,
+        }
+    }
+}
+
+impl From<ApplicationRecoverableDatabaseExport> for RecoverableDatabaseExportDto {
+    fn from(export: ApplicationRecoverableDatabaseExport) -> Self {
+        Self {
+            export_path: export.export_path,
+            source_path: export.source_path,
+            repaired_copy_path: export.repaired_copy_path,
+            table_count: export.table_count,
+            row_count: export.row_count,
+            redacted_value_count: export.redacted_value_count,
         }
     }
 }

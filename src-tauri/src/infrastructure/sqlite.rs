@@ -1,11 +1,15 @@
 use std::{
     collections::HashMap,
-    path::Path,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
     str::FromStr,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 
 use crate::{
     application::backup::{
@@ -406,24 +410,122 @@ ALTER TABLE postman_import_records ADD COLUMN environment_ids_json TEXT NOT NULL
     },
 ];
 
+#[derive(Clone, Copy)]
 struct Migration {
     version: i64,
     name: &'static str,
     sql: &'static str,
 }
 
+const PRE_MIGRATION_SNAPSHOT_RETENTION: usize = 3;
+const REDACTED_RECOVERY_VALUE: &str = "excluded";
+const NEWER_SCHEMA_MESSAGE: &str = "database schema is newer than this Postmite build";
+
 pub struct SqliteWorkspaceRepository {
     connection: Connection,
+    recovery: DatabaseRecoveryState,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseRecoveryState {
+    pub mode: DatabaseRecoveryMode,
+    pub reason: Option<String>,
+    pub snapshots: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DatabaseRecoveryMode {
+    Normal,
+    Safe,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoverableDatabaseExport {
+    pub export_path: String,
+    pub source_path: String,
+    pub repaired_copy_path: String,
+    pub table_count: u32,
+    pub row_count: u32,
+    pub redacted_value_count: u32,
 }
 
 impl SqliteWorkspaceRepository {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, WorkspaceError> {
-        let connection = Connection::open(path).map_err(WorkspaceError::persistence)?;
-        configure_connection(&connection)?;
-        apply_migrations(&connection)?;
-        clear_session_cookie_metadata(&connection)?;
+        Self::open_with_migrations(path, MIGRATIONS)
+    }
 
-        Ok(Self { connection })
+    fn open_with_migrations(
+        path: impl AsRef<Path>,
+        migrations: &[Migration],
+    ) -> Result<Self, WorkspaceError> {
+        let path = path.as_ref();
+        let pending = match inspect_database_before_migration(path, migrations) {
+            Ok(pending) => pending,
+            Err(WorkspaceError::Persistence(message)) if message == NEWER_SCHEMA_MESSAGE => {
+                return Err(WorkspaceError::Persistence(message));
+            }
+            Err(error) => {
+                return Self::open_safe(path, format!("preflight failed: {error}"), Vec::new())
+            }
+        };
+        let mut snapshots = Vec::new();
+        if pending {
+            snapshots = create_pre_migration_snapshot(path)?;
+        }
+
+        let connection = Connection::open(path).map_err(WorkspaceError::persistence)?;
+        configure_migration_connection(&connection)?;
+        if let Err(error) = apply_migrations(&connection, migrations) {
+            return Self::open_safe(path, format!("migration failed: {error}"), snapshots);
+        }
+        configure_connection(&connection)?;
+        if let Err(error) = clear_session_cookie_metadata(&connection) {
+            return Self::open_safe(path, format!("startup cleanup failed: {error}"), snapshots);
+        }
+
+        Ok(Self {
+            connection,
+            recovery: DatabaseRecoveryState {
+                mode: DatabaseRecoveryMode::Normal,
+                reason: None,
+                snapshots: snapshots_to_strings(snapshots),
+            },
+        })
+    }
+
+    fn open_safe(
+        path: &Path,
+        reason: String,
+        snapshots: Vec<PathBuf>,
+    ) -> Result<Self, WorkspaceError> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(WorkspaceError::persistence)?;
+        configure_readonly_connection(&connection)?;
+        Ok(Self {
+            connection,
+            recovery: DatabaseRecoveryState {
+                mode: DatabaseRecoveryMode::Safe,
+                reason: Some(reason),
+                snapshots: snapshots_to_strings(snapshots),
+            },
+        })
+    }
+
+    pub fn recovery_state(&self) -> DatabaseRecoveryState {
+        self.recovery.clone()
+    }
+
+    pub fn export_recoverable_database(
+        source_path: impl AsRef<Path>,
+        export_path: impl AsRef<Path>,
+    ) -> Result<RecoverableDatabaseExport, WorkspaceError> {
+        export_recoverable_database(source_path.as_ref(), export_path.as_ref())
     }
 
     #[cfg(test)]
@@ -2032,23 +2134,198 @@ fn configure_connection(connection: &Connection) -> Result<(), WorkspaceError> {
     Ok(())
 }
 
-fn apply_migrations(connection: &Connection) -> Result<(), WorkspaceError> {
+fn configure_readonly_connection(connection: &Connection) -> Result<(), WorkspaceError> {
     connection
-        .execute_batch(
-            r#"
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(WorkspaceError::persistence)?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(WorkspaceError::persistence)?;
+    Ok(())
+}
+
+fn configure_migration_connection(connection: &Connection) -> Result<(), WorkspaceError> {
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(WorkspaceError::persistence)?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(WorkspaceError::persistence)?;
+    Ok(())
+}
+
+fn inspect_database_before_migration(
+    path: &Path,
+    migrations: &[Migration],
+) -> Result<bool, WorkspaceError> {
+    if !path.exists()
+        || fs::metadata(path)
+            .map_err(WorkspaceError::persistence)?
+            .len()
+            == 0
+    {
+        return Ok(false);
+    }
+
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(WorkspaceError::persistence)?;
+    configure_readonly_connection(&connection)?;
+    ensure_integrity(&connection)?;
+
+    let latest = latest_migration_version(migrations);
+    let applied = applied_migration_versions(&connection)?;
+    if applied.iter().any(|version| *version > latest) {
+        return Err(WorkspaceError::Persistence(NEWER_SCHEMA_MESSAGE.to_owned()));
+    }
+
+    Ok(migrations
+        .iter()
+        .any(|migration| !applied.contains(&migration.version)))
+}
+
+fn ensure_integrity(connection: &Connection) -> Result<(), WorkspaceError> {
+    let status: String = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(WorkspaceError::persistence)?;
+    if status == "ok" {
+        Ok(())
+    } else {
+        Err(WorkspaceError::Persistence(format!(
+            "database integrity check failed: {status}"
+        )))
+    }
+}
+
+fn latest_migration_version(migrations: &[Migration]) -> i64 {
+    migrations
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .unwrap_or(0)
+}
+
+fn applied_migration_versions(connection: &Connection) -> Result<Vec<i64>, WorkspaceError> {
+    let has_table = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(WorkspaceError::persistence)?
+        .is_some();
+    if !has_table {
+        return Ok(Vec::new());
+    }
+
+    let mut statement = connection
+        .prepare("SELECT version FROM schema_migrations ORDER BY version")
+        .map_err(WorkspaceError::persistence)?;
+    let versions = statement
+        .query_map([], |row| row.get(0))
+        .map_err(WorkspaceError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(WorkspaceError::persistence)?;
+    Ok(versions)
+}
+
+fn create_pre_migration_snapshot(path: &Path) -> Result<Vec<PathBuf>, WorkspaceError> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let snapshot_path = next_snapshot_path(path)?;
+    fs::copy(path, &snapshot_path).map_err(WorkspaceError::persistence)?;
+    rotate_pre_migration_snapshots(path)
+}
+
+fn next_snapshot_path(path: &Path) -> Result<PathBuf, WorkspaceError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| WorkspaceError::Persistence("database path is invalid".to_owned()))?;
+    let now = current_epoch_millis();
+    for index in 0..100_u32 {
+        let candidate = parent.join(format!("{file_name}.pre-migration-{now}-{index}.snapshot"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(WorkspaceError::Persistence(
+        "could not allocate migration snapshot path".to_owned(),
+    ))
+}
+
+fn rotate_pre_migration_snapshots(path: &Path) -> Result<Vec<PathBuf>, WorkspaceError> {
+    let mut snapshots = list_pre_migration_snapshots(path)?;
+    if snapshots.len() > PRE_MIGRATION_SNAPSHOT_RETENTION {
+        let remove_count = snapshots.len() - PRE_MIGRATION_SNAPSHOT_RETENTION;
+        for snapshot in snapshots.iter().take(remove_count) {
+            fs::remove_file(snapshot).map_err(WorkspaceError::persistence)?;
+        }
+        snapshots = list_pre_migration_snapshots(path)?;
+    }
+    Ok(snapshots)
+}
+
+fn list_pre_migration_snapshots(path: &Path) -> Result<Vec<PathBuf>, WorkspaceError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| WorkspaceError::Persistence("database path is invalid".to_owned()))?;
+    let prefix = format!("{file_name}.pre-migration-");
+    let mut snapshots = Vec::new();
+    for entry in fs::read_dir(parent).map_err(WorkspaceError::persistence)? {
+        let entry = entry.map_err(WorkspaceError::persistence)?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with(&prefix) && name.ends_with(".snapshot") {
+            snapshots.push(path);
+        }
+    }
+    snapshots.sort();
+    Ok(snapshots)
+}
+
+fn snapshots_to_strings(snapshots: Vec<PathBuf>) -> Vec<String> {
+    snapshots
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
+fn current_epoch_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn apply_migrations(
+    connection: &Connection,
+    migrations: &[Migration],
+) -> Result<(), WorkspaceError> {
+    let tx = connection
+        .unchecked_transaction()
+        .map_err(WorkspaceError::persistence)?;
+    tx.execute_batch(
+        r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 "#,
-        )
-        .map_err(WorkspaceError::persistence)?;
+    )
+    .map_err(WorkspaceError::persistence)?;
 
-    for migration in MIGRATIONS {
-        let tx = connection
-            .unchecked_transaction()
-            .map_err(WorkspaceError::persistence)?;
+    for migration in migrations {
         let already_applied = tx
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
@@ -2066,11 +2343,151 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
             )
             .map_err(WorkspaceError::persistence)?;
         }
-
-        tx.commit().map_err(WorkspaceError::persistence)?;
     }
 
+    tx.commit().map_err(WorkspaceError::persistence)?;
     Ok(())
+}
+
+fn export_recoverable_database(
+    source_path: &Path,
+    export_path: &Path,
+) -> Result<RecoverableDatabaseExport, WorkspaceError> {
+    if let Some(parent) = export_path.parent() {
+        fs::create_dir_all(parent).map_err(WorkspaceError::persistence)?;
+    }
+    let copy_path = export_path.with_extension("repair-copy.sqlite3");
+    fs::copy(source_path, &copy_path).map_err(WorkspaceError::persistence)?;
+
+    let connection = Connection::open(&copy_path).map_err(WorkspaceError::persistence)?;
+    connection
+        .execute_batch("PRAGMA writable_schema = OFF; VACUUM;")
+        .map_err(WorkspaceError::persistence)?;
+    let (tables, redacted_value_count) = recover_tables_as_json(&connection)?;
+    let row_count = tables
+        .values()
+        .map(|rows| rows.as_array().map(|rows| rows.len() as u32).unwrap_or(0))
+        .sum();
+    let table_count = tables.len() as u32;
+    let export_json = json!({
+        "format": "postmite.recoverable-data",
+        "sourcePath": source_path.to_string_lossy(),
+        "repairedCopyPath": copy_path.to_string_lossy(),
+        "tables": tables,
+    });
+    let mut file = fs::File::create(export_path).map_err(WorkspaceError::persistence)?;
+    file.write_all(export_json.to_string().as_bytes())
+        .map_err(WorkspaceError::persistence)?;
+
+    Ok(RecoverableDatabaseExport {
+        export_path: export_path.to_string_lossy().into_owned(),
+        source_path: source_path.to_string_lossy().into_owned(),
+        repaired_copy_path: copy_path.to_string_lossy().into_owned(),
+        table_count,
+        row_count,
+        redacted_value_count,
+    })
+}
+
+fn recover_tables_as_json(
+    connection: &Connection,
+) -> Result<(Map<String, Value>, u32), WorkspaceError> {
+    let mut tables = Map::new();
+    let mut redacted = 0;
+    let mut statement = connection
+        .prepare(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+             ORDER BY name",
+        )
+        .map_err(WorkspaceError::persistence)?;
+    let table_names = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(WorkspaceError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(WorkspaceError::persistence)?;
+
+    for table in table_names {
+        let columns = table_columns(connection, &table)?;
+        let sql = format!("SELECT * FROM {}", quote_identifier(&table));
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(WorkspaceError::persistence)?;
+        let rows = statement
+            .query_map([], |row| {
+                let mut object = Map::new();
+                let mut row_redacted = 0;
+                for (index, column) in columns.iter().enumerate() {
+                    let mut value = sqlite_value_to_json(row.get_ref(index)?);
+                    if is_secret_column(column) && !matches!(value, Value::Null) {
+                        value = Value::String(REDACTED_RECOVERY_VALUE.to_owned());
+                        row_redacted += 1;
+                    }
+                    object.insert(column.clone(), value);
+                }
+                Ok((Value::Object(object), row_redacted))
+            })
+            .map_err(WorkspaceError::persistence)?;
+        let mut values = Vec::new();
+        for row in rows {
+            let (value, row_redacted) = row.map_err(WorkspaceError::persistence)?;
+            values.push(value);
+            redacted += row_redacted;
+        }
+        tables.insert(table, Value::Array(values));
+    }
+
+    Ok((tables, redacted))
+}
+
+fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>, WorkspaceError> {
+    let sql = format!("PRAGMA table_info({})", quote_string_literal(table));
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(WorkspaceError::persistence)?;
+    let columns = statement
+        .query_map([], |row| row.get(1))
+        .map_err(WorkspaceError::persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(WorkspaceError::persistence)?;
+    Ok(columns)
+}
+
+fn sqlite_value_to_json(value: rusqlite::types::ValueRef<'_>) -> Value {
+    match value {
+        rusqlite::types::ValueRef::Null => Value::Null,
+        rusqlite::types::ValueRef::Integer(value) => Value::Number(value.into()),
+        rusqlite::types::ValueRef::Real(value) => serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        rusqlite::types::ValueRef::Text(value) => {
+            Value::String(String::from_utf8_lossy(value).into_owned())
+        }
+        rusqlite::types::ValueRef::Blob(value) => {
+            Value::String(format!("<{} bytes blob>", value.len()))
+        }
+    }
+}
+
+fn is_secret_column(column: &str) -> bool {
+    matches!(
+        column,
+        "password"
+            | "token"
+            | "client_secret"
+            | "secret_ref"
+            | "client_key_reference"
+            | "custom_ca_reference"
+            | "client_certificate_reference"
+    )
+}
+
+fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn quote_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn clear_session_cookie_metadata(connection: &Connection) -> Result<(), WorkspaceError> {
@@ -4423,7 +4840,8 @@ fn environment_ids_from_json(json: &str) -> Result<Vec<EnvironmentId>, uuid::Err
 
 #[cfg(test)]
 mod tests {
-    use tempfile::NamedTempFile;
+    use sha2::{Digest, Sha256};
+    use tempfile::{NamedTempFile, TempDir};
 
     use super::*;
     use crate::{
@@ -4441,6 +4859,178 @@ mod tests {
     fn repository() -> SqliteWorkspaceRepository {
         let db = NamedTempFile::new().expect("temporary database");
         SqliteWorkspaceRepository::open(db.path()).expect("open database")
+    }
+
+    fn sha256_path(path: &Path) -> String {
+        let bytes = fs::read(path).expect("read database bytes");
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    fn initialize_old_database(path: &Path) {
+        {
+            let mut repository =
+                SqliteWorkspaceRepository::open_with_migrations(path, &MIGRATIONS[..12])
+                    .expect("open old database");
+            repository.initialize().expect("initialize old database");
+        }
+        let connection = Connection::open(path).expect("open old database for checkpoint");
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint old database");
+    }
+
+    #[test]
+    fn failed_migration_reopens_unchanged_database_in_safe_mode() {
+        let db = NamedTempFile::new().expect("temporary database");
+        initialize_old_database(db.path());
+        let before = sha256_path(db.path());
+        let mut destructive = MIGRATIONS[..12].to_vec();
+        destructive.push(Migration {
+            version: 13,
+            name: "destructive_failure",
+            sql: "DROP TABLE workspaces; SELECT missing_column FROM missing_table;",
+        });
+
+        let repository = SqliteWorkspaceRepository::open_with_migrations(db.path(), &destructive)
+            .expect("open safe database after failed migration");
+
+        assert_eq!(repository.recovery_state().mode, DatabaseRecoveryMode::Safe);
+        assert_eq!(sha256_path(db.path()), before);
+        let workspace_count: i64 = repository
+            .connection()
+            .query_row("SELECT COUNT(*) FROM workspaces", [], |row| row.get(0))
+            .expect("query safe database");
+        assert_eq!(workspace_count, 1);
+    }
+
+    #[test]
+    fn newer_schema_is_rejected_without_writes() {
+        let db = NamedTempFile::new().expect("temporary database");
+        {
+            let mut repository = SqliteWorkspaceRepository::open(db.path()).expect("open database");
+            repository.initialize().expect("initialize");
+            repository
+                .connection()
+                .execute(
+                    "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
+                    params![latest_migration_version(MIGRATIONS) + 1, "future"],
+                )
+                .expect("mark future schema");
+        }
+        let connection = Connection::open(db.path()).expect("open database for checkpoint");
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint database");
+        drop(connection);
+        let before = sha256_path(db.path());
+
+        let result = SqliteWorkspaceRepository::open(db.path());
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceError::Persistence(message)) if message == NEWER_SCHEMA_MESSAGE
+        ));
+        assert_eq!(sha256_path(db.path()), before);
+    }
+
+    #[test]
+    fn pre_migration_snapshots_rotate_to_three_newest() {
+        let db = NamedTempFile::new().expect("temporary database");
+        initialize_old_database(db.path());
+        let mut failing = MIGRATIONS[..12].to_vec();
+        failing.push(Migration {
+            version: 13,
+            name: "always_fails",
+            sql: "SELECT missing_column FROM missing_table;",
+        });
+
+        for _ in 0..5 {
+            let repository = SqliteWorkspaceRepository::open_with_migrations(db.path(), &failing)
+                .expect("open safe database");
+            assert_eq!(repository.recovery_state().mode, DatabaseRecoveryMode::Safe);
+        }
+
+        let snapshots = list_pre_migration_snapshots(db.path()).expect("list snapshots");
+        assert_eq!(snapshots.len(), 3);
+    }
+
+    #[test]
+    fn recoverable_export_uses_copy_and_redacts_secret_values() {
+        let db = NamedTempFile::new().expect("temporary database");
+        let export_dir = TempDir::new().expect("export directory");
+        let export_path = export_dir.path().join("recoverable.json");
+        let workspace_id = {
+            let mut repository = SqliteWorkspaceRepository::open(db.path()).expect("open database");
+            let workspace_id = repository
+                .initialize()
+                .expect("initialize")
+                .selected_workspace_id;
+            repository
+                .connection()
+                .execute(
+                    "INSERT INTO collection_variables (workspace_id, name, plain_value, secret_ref)
+                     VALUES (?1, 'token', NULL, 'secret://token-value')",
+                    params![workspace_id.to_string()],
+                )
+                .expect("insert secret reference");
+            workspace_id
+        };
+        assert!(!workspace_id.to_string().is_empty());
+        let connection = Connection::open(db.path()).expect("open database for checkpoint");
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint database");
+        drop(connection);
+        let before = sha256_path(db.path());
+
+        let result =
+            SqliteWorkspaceRepository::export_recoverable_database(db.path(), &export_path)
+                .expect("export recoverable database");
+
+        assert_ne!(result.repaired_copy_path, db.path().to_string_lossy());
+        assert_eq!(sha256_path(db.path()), before);
+        assert!(result.redacted_value_count > 0);
+        let export = fs::read_to_string(export_path).expect("read export");
+        assert!(!export.contains("secret://token-value"));
+        assert!(export.contains(REDACTED_RECOVERY_VALUE));
+    }
+
+    #[test]
+    fn recoverable_export_write_failure_preserves_source_database() {
+        let db = NamedTempFile::new().expect("temporary database");
+        let export_dir = TempDir::new().expect("export directory");
+        {
+            let mut repository = SqliteWorkspaceRepository::open(db.path()).expect("open database");
+            repository.initialize().expect("initialize");
+        }
+        let connection = Connection::open(db.path()).expect("open database for checkpoint");
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint database");
+        drop(connection);
+        let before = sha256_path(db.path());
+
+        let result =
+            SqliteWorkspaceRepository::export_recoverable_database(db.path(), export_dir.path());
+
+        assert!(result.is_err());
+        assert_eq!(sha256_path(db.path()), before);
+    }
+
+    #[test]
+    fn recoverable_export_corruption_fixture_preserves_source_database() {
+        let db = NamedTempFile::new().expect("temporary database");
+        let export_dir = TempDir::new().expect("export directory");
+        fs::write(db.path(), b"not a sqlite database").expect("write corrupt database");
+        let before = sha256_path(db.path());
+
+        let result = SqliteWorkspaceRepository::export_recoverable_database(
+            db.path(),
+            export_dir.path().join("recoverable.json"),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(sha256_path(db.path()), before);
     }
 
     #[test]

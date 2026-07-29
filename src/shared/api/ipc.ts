@@ -24,6 +24,7 @@ import type {
   PostmanExportInput,
   PostmanImportInput,
   PostmanReimportInput,
+  RecoverableDatabaseExportInput,
   RequestDraftIdInput,
   RelinkBodyFilesInput,
   ResolveRequestContentInput,
@@ -158,6 +159,10 @@ export const requestIpc = {
     invokeCommand("preview_native_backup_restore", input),
   restoreNativeBackup: (input: NativeBackupRestoreInput) =>
     invokeCommand("restore_native_backup", input),
+  getDatabaseRecoveryState: () =>
+    invokeCommand("get_database_recovery_state", undefined),
+  exportRecoverableDatabase: (input: RecoverableDatabaseExportInput) =>
+    invokeCommand("export_recoverable_database", input),
   previewCurlImport: (input: CurlImportInput) =>
     invokeCommand("preview_curl_import", input),
   importCurlAsDraft: (input: CurlImportInput) =>
