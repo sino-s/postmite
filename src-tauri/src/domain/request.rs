@@ -542,6 +542,7 @@ pub struct WorkspaceCookie {
     pub expires_at_epoch_seconds: Option<i64>,
     pub session: bool,
     pub has_value: bool,
+    pub secret_reference: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

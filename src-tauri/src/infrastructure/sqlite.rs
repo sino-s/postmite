@@ -356,6 +356,13 @@ ALTER TABLE request_drafts ADD COLUMN transport_policy TEXT NOT NULL DEFAULT '{"
 ALTER TABLE execution_records ADD COLUMN transport_policy TEXT NOT NULL DEFAULT '{"proxy":{"source":"PROCESS_ENVIRONMENT","url":null,"noProxy":[]},"timeouts":{"connectMs":10000,"overallMs":300000,"idleMs":60000}}';
 "#,
     },
+    Migration {
+        version: 11,
+        name: "add_cookie_secret_references",
+        sql: r#"
+ALTER TABLE workspace_cookies ADD COLUMN secret_ref TEXT;
+"#,
+    },
 ];
 
 struct Migration {
@@ -1166,6 +1173,7 @@ impl RequestRepository for SqliteWorkspaceRepository {
         &mut self,
         draft: CookieDraft,
         has_value: bool,
+        secret_reference: Option<&str>,
         now_epoch_seconds: i64,
     ) -> Result<WorkspaceCookie, RequestError> {
         let tx = self
@@ -1197,8 +1205,8 @@ impl RequestRepository for SqliteWorkspaceRepository {
         tx.execute(
             "INSERT INTO workspace_cookies
                 (id, workspace_id, name, domain, path, secure, http_only, same_site,
-                 expires_at_epoch_seconds, session, has_value)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 expires_at_epoch_seconds, session, has_value, secret_ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(workspace_id, name, domain, path) DO UPDATE SET
                  secure = excluded.secure,
                  http_only = excluded.http_only,
@@ -1206,6 +1214,7 @@ impl RequestRepository for SqliteWorkspaceRepository {
                  expires_at_epoch_seconds = excluded.expires_at_epoch_seconds,
                  session = excluded.session,
                  has_value = excluded.has_value,
+                 secret_ref = excluded.secret_ref,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
             params![
                 id.to_string(),
@@ -1219,6 +1228,7 @@ impl RequestRepository for SqliteWorkspaceRepository {
                 draft.expires_at_epoch_seconds,
                 bool_to_i64(session),
                 bool_to_i64(has_value),
+                secret_reference,
             ],
         )
         .map_err(map_request_sqlite_error)?;
@@ -2574,7 +2584,7 @@ fn load_workspace_cookies(
     let mut statement = connection
         .prepare(
             "SELECT id, workspace_id, name, domain, path, secure, http_only, same_site,
-                    expires_at_epoch_seconds, session, has_value
+                    expires_at_epoch_seconds, session, has_value, secret_ref
              FROM workspace_cookies
              WHERE workspace_id = ?1
              ORDER BY domain, path, name",
@@ -2598,7 +2608,7 @@ fn load_workspace_cookie_by_scope(
     connection
         .query_row(
             "SELECT id, workspace_id, name, domain, path, secure, http_only, same_site,
-                    expires_at_epoch_seconds, session, has_value
+                    expires_at_epoch_seconds, session, has_value, secret_ref
              FROM workspace_cookies
              WHERE workspace_id = ?1 AND name = ?2 AND domain = ?3 AND path = ?4",
             params![workspace_id.to_string(), name, domain, path],
@@ -3242,6 +3252,7 @@ fn workspace_cookie_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Worksp
         expires_at_epoch_seconds: row.get(8)?,
         session: row.get::<_, i64>(9)? != 0,
         has_value: row.get::<_, i64>(10)? != 0,
+        secret_reference: row.get(11)?,
     })
 }
 
@@ -3976,7 +3987,7 @@ mod tests {
         };
         {
             let repository = SqliteWorkspaceRepository::open(db.path()).expect("open requests");
-            let mut service = RequestService::new(repository);
+            let mut service = RequestService::new_for_test(repository);
             service
                 .record_execution(
                     workspace_id,
@@ -4173,8 +4184,8 @@ mod tests {
                 .create_workspace(WorkspaceName::new("Second").expect("valid name"))
                 .expect("create second workspace")
                 .selected_workspace_id;
-            let mut service = RequestService::new(repository);
-            service
+            let mut service = RequestService::new_for_test(repository);
+            let first = service
                 .upsert_cookie(cookie_draft(
                     first_workspace_id,
                     "sid",
@@ -4184,6 +4195,13 @@ mod tests {
                     Some(1_900_000_000),
                 ))
                 .expect("store first cookie");
+            assert!(first.cookies[0].has_value);
+            assert_eq!(
+                service
+                    .reveal_cookie_value(first_workspace_id, first.cookies[0].id)
+                    .expect("reveal first cookie"),
+                "first-cookie-marker"
+            );
             service
                 .upsert_cookie(cookie_draft(
                     second_workspace_id,
@@ -4198,7 +4216,7 @@ mod tests {
         };
 
         let repository = SqliteWorkspaceRepository::open(db.path()).expect("reopen database");
-        let mut service = RequestService::new(repository);
+        let mut service = RequestService::new_for_test(repository);
         let first = service
             .list_cookies(first_workspace_id)
             .expect("list first workspace cookies");
@@ -4216,12 +4234,23 @@ mod tests {
             .is_err());
 
         let connection = Connection::open(db.path()).expect("inspect database");
+        let secret_ref: String = connection
+            .query_row(
+                "SELECT secret_ref FROM workspace_cookies
+                 WHERE workspace_id = ?1 AND name = 'sid'",
+                params![first_workspace_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("load cookie secret reference");
+        assert!(secret_ref.starts_with("secret://postmite/"));
+        assert!(!secret_ref.contains("first-cookie-marker"));
         let leaked: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM workspace_cookies
                  WHERE name LIKE '%cookie-marker%'
                     OR domain LIKE '%cookie-marker%'
-                    OR path LIKE '%cookie-marker%'",
+                    OR path LIKE '%cookie-marker%'
+                    OR secret_ref LIKE '%cookie-marker%'",
                 [],
                 |row| row.get(0),
             )
@@ -4238,7 +4267,7 @@ mod tests {
                 .initialize()
                 .expect("initialize")
                 .selected_workspace_id;
-            let mut service = RequestService::new(repository);
+            let mut service = RequestService::new_for_test(repository);
             service
                 .upsert_cookie(cookie_draft(
                     workspace_id,
@@ -4263,7 +4292,7 @@ mod tests {
         };
 
         let repository = SqliteWorkspaceRepository::open(db.path()).expect("reopen database");
-        let mut service = RequestService::new(repository);
+        let mut service = RequestService::new_for_test(repository);
         let snapshot = service.list_cookies(workspace_id).expect("list cookies");
 
         assert_eq!(snapshot.cookies.len(), 1);
@@ -4546,7 +4575,7 @@ mod tests {
         };
         let draft_id = {
             let repository = SqliteWorkspaceRepository::open(db.path()).expect("open requests");
-            let mut service = RequestService::new(repository);
+            let mut service = RequestService::new_for_test(repository);
             let opened = service
                 .open_unsaved_tab(workspace_id)
                 .expect("open unsaved tab");

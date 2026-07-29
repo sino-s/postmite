@@ -1,7 +1,11 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::domain::workspace::{Workspace, WorkspaceId, WorkspaceName, WorkspaceNameError};
+
+use super::secrets::SecretStore;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WorkspaceSummary {
@@ -40,14 +44,26 @@ pub trait WorkspaceRepository {
 
 pub struct WorkspaceService<R> {
     repository: R,
+    secrets: Arc<dyn SecretStore>,
 }
 
 impl<R> WorkspaceService<R>
 where
     R: WorkspaceRepository,
 {
-    pub fn new(repository: R) -> Self {
-        Self { repository }
+    pub fn new(repository: R, secrets: Arc<dyn SecretStore>) -> Self {
+        Self {
+            repository,
+            secrets,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(repository: R) -> Self {
+        Self::new(
+            repository,
+            Arc::new(super::secrets::SessionSecretStore::new()),
+        )
     }
 
     pub fn initialize(&mut self) -> Result<WorkspaceSnapshot, WorkspaceError> {
@@ -97,6 +113,20 @@ where
         &mut self,
         id: WorkspaceId,
     ) -> Result<WorkspaceSnapshot, WorkspaceError> {
+        let snapshot = self.repository.list_workspaces()?;
+        if !snapshot
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.id == id)
+        {
+            return Err(WorkspaceError::NotFound);
+        }
+        if snapshot.workspaces.len() <= 1 {
+            return Err(WorkspaceError::CannotDeleteLastWorkspace);
+        }
+        self.secrets
+            .delete_workspace(id)
+            .map_err(|error| WorkspaceError::Persistence(error.to_string()))?;
         self.repository.delete_workspace(id)
     }
 }
