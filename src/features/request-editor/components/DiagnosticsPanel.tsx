@@ -1,5 +1,6 @@
 import { Archive, Bug, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useI18n } from "../../../app/i18n";
 
 import {
   exportDiagnosticBundle,
@@ -13,6 +14,7 @@ type DiagnosticsPanelProps = {
 };
 
 export function DiagnosticsPanel({ onClose }: DiagnosticsPanelProps) {
+  const { t } = useI18n();
   const [preview, setPreview] = useState<DiagnosticBundlePreviewDto | null>(null);
   const [debugEnabled, setDebugEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,12 +56,12 @@ export function DiagnosticsPanel({ onClose }: DiagnosticsPanelProps) {
 
   return (
     <section
-      aria-label="Diagnostics"
+      aria-label={t("diagnostics.title")}
       className="absolute right-4 top-14 z-20 w-[min(28rem,calc(100vw-2rem))] border border-slate-300 bg-white p-4 shadow-lg"
     >
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">Diagnostics</h2>
-        <button aria-label="Close diagnostics" className="p-1 hover:bg-slate-100" onClick={onClose} type="button">
+        <h2 className="text-sm font-semibold">{t("diagnostics.title")}</h2>
+        <button aria-label={t("diagnostics.close")} className="p-1 hover:bg-slate-100" onClick={onClose} type="button">
           <X aria-hidden="true" size={16} />
         </button>
       </div>

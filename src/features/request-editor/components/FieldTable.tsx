@@ -2,6 +2,7 @@ import { Plus, Trash2 } from "lucide-react";
 
 import type { OrderedFieldDto } from "../../../shared/api/generated/ipc";
 import { createEmptyField, normalizeFieldOrders, sortOrderedFields } from "../ordered-fields";
+import { useI18n } from "../../../app/i18n";
 
 type FieldTableProps = {
   fields: OrderedFieldDto[];
@@ -10,6 +11,7 @@ type FieldTableProps = {
 };
 
 export function FieldTable({ fields, legend, onChange }: FieldTableProps) {
+  const { t } = useI18n();
   const orderedFields = sortOrderedFields(fields);
 
   function updateField(
@@ -37,18 +39,18 @@ export function FieldTable({ fields, legend, onChange }: FieldTableProps) {
           type="button"
         >
           <Plus aria-hidden="true" size={14} />
-          Add
+          {t("fields.add")}
         </button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[560px] table-fixed border-collapse text-sm">
           <thead>
             <tr className="border-y border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase text-slate-600">
-              <th className="w-14 px-2 py-2">On</th>
-              <th className="px-2 py-2">Name</th>
-              <th className="px-2 py-2">Value</th>
+              <th className="w-14 px-2 py-2">{t("fields.on")}</th>
+              <th className="px-2 py-2">{t("fields.name")}</th>
+              <th className="px-2 py-2">{t("fields.value")}</th>
               <th className="w-12 px-2 py-2">
-                <span className="sr-only">Actions</span>
+                <span className="sr-only">{t("fields.actions")}</span>
               </th>
             </tr>
           </thead>
@@ -57,7 +59,7 @@ export function FieldTable({ fields, legend, onChange }: FieldTableProps) {
               <tr className="border-b border-slate-200" key={field.order}>
                 <td className="px-2 py-2">
                   <input
-                    aria-label={`${legend} row ${index + 1} enabled`}
+                    aria-label={t("fields.enabled", { legend, index: index + 1 })}
                     checked={field.enabled}
                     className="h-4 w-4 rounded border-slate-300 text-sky-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
                     onChange={(event) =>
@@ -97,7 +99,7 @@ export function FieldTable({ fields, legend, onChange }: FieldTableProps) {
                 </td>
                 <td className="px-2 py-2">
                   <button
-                    aria-label={`Remove ${legend} row ${index + 1}`}
+                    aria-label={t("fields.remove", { legend, index: index + 1 })}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-600 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
                     onClick={() =>
                       onChange(
@@ -116,7 +118,7 @@ export function FieldTable({ fields, legend, onChange }: FieldTableProps) {
             {orderedFields.length === 0 ? (
               <tr>
                 <td className="px-2 py-5 text-center text-sm text-slate-500" colSpan={4}>
-                  No {legend.toLowerCase()}
+                  {t("fields.none", { legend: legend.toLowerCase() })}
                 </td>
               </tr>
             ) : null}

@@ -13,6 +13,7 @@ import {
 } from "../response-viewer-worker-client";
 import { formatBodyPreview, formatProxyMetadata } from "../request-editor-model";
 import type { StructuredViewerResult } from "../response-viewer-worker-core";
+import { useI18n } from "../../../app/i18n";
 
 type ResponsePanelProps = {
   execution: ResponseExecutionState | null;
@@ -21,14 +22,15 @@ type ResponsePanelProps = {
 type BodyViewMode = "pretty" | "raw" | "preview";
 
 export function ResponsePanel({ execution }: ResponsePanelProps) {
+  const { formatBytes, formatNumber, t } = useI18n();
   if (!execution) {
     return (
       <section
-        aria-label="Response"
+        aria-label={t("response.title")}
         aria-live="polite"
         className="min-h-40 rounded-md border border-slate-300 bg-white p-3 text-sm text-slate-600"
       >
-        No response yet.
+        {t("response.empty")}
       </section>
     );
   }
@@ -40,7 +42,7 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
 
   return (
     <section
-      aria-label="Response"
+      aria-label={t("response.title")}
       aria-live="polite"
       className="grid min-h-40 gap-3 rounded-md border border-slate-300 bg-white p-3 text-sm"
     >
@@ -50,39 +52,39 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
         </span>
         {execution.status ? (
           <span className="font-semibold text-slate-950">
-            Status {execution.status}
+            {t("response.status", { status: execution.status })}
           </span>
         ) : null}
-        <span className="text-slate-600">Time {Math.max(0, elapsedMs)} ms</span>
+        <span className="text-slate-600">{t("response.time", { value: `${formatNumber(Math.max(0, elapsedMs))} ms` })}</span>
         {execution.protocol ? (
           <span className="text-slate-600">{execution.protocol}</span>
         ) : null}
         <span className="text-slate-600">
-          Timing {formatTiming(execution)}
+          {t("response.timing", { value: formatTiming(execution) })}
         </span>
         {execution.downloadProgress ? (
           <span className="text-slate-600">
-            Received {execution.downloadProgress.receivedBytes.toString()} bytes
+            {t("response.received", { value: formatBytes(execution.downloadProgress.receivedBytes) })}
           </span>
         ) : null}
         {execution.decodedBytes !== null ? (
           <span className="text-slate-600">
-            Decoded {execution.decodedBytes.toString()} bytes
+            {t("response.decoded", { value: formatBytes(execution.decodedBytes) })}
           </span>
         ) : null}
         {execution.wireBytes !== null ? (
           <span className="text-slate-600">
-            Wire {execution.wireBytes.toString()} bytes
+            {t("response.wire", { value: formatBytes(execution.wireBytes) })}
           </span>
         ) : null}
         {execution.responseFile ? (
           <span className="text-slate-600">
-            File {execution.responseFile.byteCount.toString()} bytes
+            {formatBytes(execution.responseFile.byteCount)}
           </span>
         ) : null}
         {execution.uploadProgress ? (
           <span className="text-slate-600">
-            Sent {execution.uploadProgress.sentBytes.toString()} bytes
+            {t("response.sent", { value: formatBytes(execution.uploadProgress.sentBytes) })}
           </span>
         ) : null}
         {execution.proxy ? (
@@ -130,8 +132,8 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
           <table className="w-full table-fixed border-collapse text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-                <th className="w-40 px-2 py-2 font-semibold">Header</th>
-                <th className="px-2 py-2 font-semibold">Value</th>
+                <th className="w-40 px-2 py-2 font-semibold">{t("response.headers")}</th>
+                <th className="px-2 py-2 font-semibold">{t("fields.value")}</th>
               </tr>
             </thead>
             <tbody>
@@ -148,7 +150,7 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
               {execution.headers.length === 0 ? (
                 <tr>
                   <td className="px-2 py-5 text-center text-slate-500" colSpan={2}>
-                    No response headers
+                    {t("response.noHeaders")}
                   </td>
                 </tr>
               ) : null}
@@ -168,6 +170,7 @@ function ResponseBodyViewer({
   execution: ResponseExecutionState;
   viewer: ReturnType<typeof createResponseViewerModel>;
 }) {
+  const { formatError, formatNumber, t } = useI18n();
   const [mode, setMode] = useState<BodyViewMode>("pretty");
   const [search, setSearch] = useState("");
   const [structured, setStructured] = useState<StructuredViewerResult | null>(null);
@@ -216,12 +219,12 @@ function ResponseBodyViewer({
         sourcePath: execution.responseFile.path,
         destinationPath,
       });
-      setSaveMessage(
-        `Saved ${result.byteCount.toString()} bytes to ${result.destinationPath}`,
-      );
+      setSaveMessage(t("response.saved", {
+        value: formatNumber(result.byteCount),
+        destination: result.destinationPath,
+      }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Save failed.";
-      setSaveMessage(message);
+      setSaveMessage(formatError(error));
     }
   }
 
@@ -287,10 +290,10 @@ function ResponseBodyViewer({
         {isStructured ? (
           <>
             <input
-              aria-label="Search response"
+              aria-label={t("response.search")}
               className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-50"
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search"
+              placeholder={t("response.search")}
               value={search}
             />
             <span className="text-xs text-slate-300">
@@ -314,7 +317,7 @@ function ResponseBodyViewer({
       />
 
       {viewer.bodyTruncated ? (
-        <p className="text-xs text-amber-200">Response preview truncated.</p>
+        <p className="text-xs text-amber-200">{t("response.truncated")}</p>
       ) : null}
       {execution.responseFile ? (
         <p className="break-words text-xs text-slate-300">
@@ -347,8 +350,9 @@ function ResponseBodyContent({
   rawText: string;
   viewerKind: ReturnType<typeof createResponseViewerModel>["kind"];
 }) {
+  const { t } = useI18n();
   if (viewerKind === "empty") {
-    return <p className="py-8 text-center text-sm text-slate-300">No response body</p>;
+    return <p className="py-8 text-center text-sm text-slate-300">{t("response.noBody")}</p>;
   }
   if (mode === "preview" && viewerKind === "html") {
     return (
@@ -373,7 +377,7 @@ function ResponseBodyContent({
 
   return (
     <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words text-xs leading-5">
-      {mode === "raw" ? rawText : prettyText || "No response body"}
+      {mode === "raw" ? rawText : prettyText || t("response.noBody")}
     </pre>
   );
 }

@@ -10,6 +10,7 @@ import {
 } from "../request-editor-model";
 import { FieldTable } from "./FieldTable";
 import { IconButton } from "./IconButton";
+import { useI18n } from "../../../app/i18n";
 
 type BodyEditorProps = {
   body: RequestBodyDto;
@@ -18,12 +19,13 @@ type BodyEditorProps = {
 };
 
 export function BodyEditor({ body, onChange, workspaceId }: BodyEditorProps) {
+  const { t } = useI18n();
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-slate-950">Body</h2>
+        <h2 className="text-sm font-semibold text-slate-950">{t("body.title")}</h2>
         <div
-          aria-label="Body mode"
+          aria-label={t("body.mode")}
           className="inline-flex flex-wrap rounded-md border border-slate-300 bg-white p-0.5"
           role="group"
         >
@@ -54,7 +56,7 @@ export function BodyEditor({ body, onChange, workspaceId }: BodyEditorProps) {
       {body.type === "URL_ENCODED" ? (
         <FieldTable
           fields={body.fields}
-          legend="URL-encoded Body"
+          legend={t("body.urlEncoded")}
           onChange={(fields) => onChange({ type: "URL_ENCODED", fields })}
         />
       ) : null}
@@ -85,6 +87,7 @@ function MultipartEditor({
   parts: MultipartPartDto[];
   workspaceId: string;
 }) {
+  const { t } = useI18n();
   const fieldParts = parts.filter((part) => part.type === "FIELD");
   const fileParts = parts.filter((part) => part.type === "FILE");
   return (
@@ -96,7 +99,7 @@ function MultipartEditor({
           name: part.name,
           value: part.value,
         }))}
-        legend="Multipart Fields"
+        legend={t("body.multipartFields")}
         onChange={(fields) =>
           onChange([
             ...fields.map((field) => ({ type: "FIELD" as const, ...field })),
@@ -106,14 +109,14 @@ function MultipartEditor({
       />
       <div className="grid gap-2 rounded-md border border-slate-300 bg-white p-3">
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold">Multipart Files</h3>
+          <h3 className="text-sm font-semibold">{t("body.multipartFiles")}</h3>
           <button
             className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 px-2 text-xs font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
             onClick={() => onChange([...parts, emptyMultipartFilePart(parts.length)])}
             type="button"
           >
             <Plus aria-hidden="true" size={14} />
-            File
+            {t("body.file")}
           </button>
         </div>
         {fileParts.map((part, index) => (
@@ -150,13 +153,14 @@ function BodyFileEditor({
   onDelete?: () => void;
   workspaceId: string;
 }) {
+  const { t } = useI18n();
   const pathValue = file.path.path;
   const pathKind = file.path.type;
   async function handleRefresh() {
     const absolutePath =
       pathKind === "ABSOLUTE"
         ? pathValue
-        : window.prompt("Absolute file path", pathValue)?.trim();
+        : window.prompt(t("app.replacementBodyPath"), pathValue)?.trim();
     if (!absolutePath) {
       return;
     }
@@ -261,7 +265,7 @@ function BodyFileEditor({
           onClick={() => void handleRefresh()}
           type="button"
         >
-          Refresh
+          {t("body.refresh")}
         </button>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState } from "react";
+import { useI18n } from "../../app/i18n";
 
 const CodeMirrorBodyEditor = lazy(async () => {
   const module = await import("./CodeMirrorBodyEditor");
@@ -11,12 +12,13 @@ type RawBodyEditorProps = {
 };
 
 export function RawBodyEditor({ value, onChange }: RawBodyEditorProps) {
+  const { t } = useI18n();
   const [mode, setMode] = useState<"json" | "text">("json");
 
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-slate-950">Raw Body</h2>
+        <h2 className="text-sm font-semibold text-slate-950">{t("body.raw")}</h2>
         <div
           aria-label="Body editor mode"
           className="inline-flex rounded-md border border-slate-300 bg-white p-0.5"
@@ -38,7 +40,7 @@ export function RawBodyEditor({ value, onChange }: RawBodyEditorProps) {
       <Suspense
         fallback={
           <textarea
-            aria-label="Raw body"
+            aria-label={t("body.raw")}
             className="min-h-60 resize-none rounded-md border border-slate-300 bg-white p-3 font-mono text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
             onChange={(event) => onChange(event.currentTarget.value)}
             value={value}

@@ -66,6 +66,7 @@ import { ResponsePanel } from "./components/ResponsePanel";
 import { SecurityPanel } from "./components/SecurityPanel";
 import { TabStrip } from "./components/TabStrip";
 import { applyQueryToUrl } from "./ordered-fields";
+import { useI18n, type AppLocale } from "../../app/i18n";
 import {
   emptyRequestContent,
   isDraftDirty,
@@ -86,6 +87,7 @@ export function RequestEditor({
   onCancel = cancelRequestExecution,
   onExecute = startRequestExecution,
 }: RequestEditorProps) {
+  const { locale, setLocale, t } = useI18n();
   const queryClient = useQueryClient();
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<OverrideMap>({});
@@ -183,7 +185,7 @@ export function RequestEditor({
   const openTabMutation = useMutation({
     mutationFn: async () => {
       if (!selectedWorkspaceId) {
-        throw new Error("No workspace is selected.");
+        throw new Error(t("app.unavailable"));
       }
       return openUnsavedRequestTab(queryClient, {
         workspaceId: selectedWorkspaceId,
@@ -201,7 +203,7 @@ export function RequestEditor({
     if (!selectedWorkspaceId) {
       return;
     }
-    const name = window.prompt("Folder name", "New Folder")?.trim();
+    const name = window.prompt(t("app.folderName"), t("app.newFolder"))?.trim();
     if (!name) {
       return;
     }
@@ -223,7 +225,7 @@ export function RequestEditor({
   }
 
   async function handleRenameCollectionFolder(folder: CollectionFolderDto) {
-    const name = window.prompt("Folder name", folder.name)?.trim();
+    const name = window.prompt(t("app.folderName"), folder.name)?.trim();
     if (!name || name === folder.name) {
       return;
     }
@@ -341,7 +343,7 @@ export function RequestEditor({
     const tabExecution = executions[tab.draftId] ?? null;
     if (tabExecution && !isTerminalResponseExecution(tabExecution)) {
       const shouldCancel = window.confirm(
-        "This request is still running. Cancel it and close the tab?",
+        t("app.runningClose"),
       );
       if (!shouldCancel) {
         return;
@@ -399,7 +401,7 @@ export function RequestEditor({
           ...activeExecution,
           phase: "failed",
           completedAtMs: Date.now(),
-          error: "Execution was already finished.",
+          error: t("app.executionFinished"),
         },
       }));
     }
@@ -467,7 +469,7 @@ export function RequestEditor({
       return;
     }
     const baseDirectory = window
-      .prompt("Workspace Base Directory", selectedWorkspace?.baseDirectory ?? "")
+      .prompt(t("app.baseDirectory"), selectedWorkspace?.baseDirectory ?? "")
       ?.trim();
     if (baseDirectory === undefined) {
       return;
@@ -482,11 +484,11 @@ export function RequestEditor({
     if (!selectedWorkspaceId) {
       return;
     }
-    const fromPath = window.prompt("Stored Body file path")?.trim();
+    const fromPath = window.prompt(t("app.storedBodyPath"))?.trim();
     if (!fromPath) {
       return;
     }
-    const replacementPath = window.prompt("Replacement absolute file path")?.trim();
+    const replacementPath = window.prompt(t("app.replacementBodyPath"))?.trim();
     if (!replacementPath) {
       return;
     }
@@ -527,7 +529,7 @@ export function RequestEditor({
   if (workspaces.isPending || requestWorkspace.isPending) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-100 text-slate-950">
-        <p className="text-sm">Loading Postmite</p>
+        <p className="text-sm">{t("app.loading")}</p>
       </main>
     );
   }
@@ -540,7 +542,7 @@ export function RequestEditor({
           className="w-full max-w-xl rounded-md border border-red-300 bg-white p-5"
         >
           <h1 id="request-editor-error" className="text-base font-semibold">
-            Request workspace unavailable
+            {t("app.unavailable")}
           </h1>
           <button
             className="mt-4 inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
@@ -550,7 +552,7 @@ export function RequestEditor({
             type="button"
           >
             <RotateCcw aria-hidden="true" size={16} />
-            Retry
+            {t("app.retry")}
           </button>
         </section>
       </main>
@@ -566,7 +568,7 @@ export function RequestEditor({
         <h1 className="text-sm font-semibold">Postmite</h1>
         <div className="flex items-center gap-2">
           <button
-            aria-label="Diagnostics"
+            aria-label={t("app.diagnostics")}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-white hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
             onClick={() => setDiagnosticsOpen((open) => !open)}
             type="button"
@@ -579,7 +581,7 @@ export function RequestEditor({
             type="button"
           >
             <Folder aria-hidden="true" size={16} />
-            Base
+            {t("app.base")}
           </button>
           <button
             className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
@@ -587,7 +589,7 @@ export function RequestEditor({
             type="button"
           >
             <RotateCcw aria-hidden="true" size={16} />
-            Relink
+            {t("app.relink")}
           </button>
           <button
             className="inline-flex h-8 items-center gap-2 rounded-md bg-slate-900 px-3 text-sm font-medium text-white hover:bg-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
@@ -596,8 +598,19 @@ export function RequestEditor({
             type="button"
           >
             <Plus aria-hidden="true" size={16} />
-            New
+            {t("app.new")}
           </button>
+          <label className="sr-only" htmlFor="app-language">{t("app.language")}</label>
+          <select
+            aria-label={t("app.language")}
+            className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+            id="app-language"
+            onChange={(event) => setLocale(event.currentTarget.value as AppLocale)}
+            value={locale}
+          >
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+          </select>
         </div>
         {diagnosticsOpen ? <DiagnosticsPanel onClose={() => setDiagnosticsOpen(false)} /> : null}
       </header>

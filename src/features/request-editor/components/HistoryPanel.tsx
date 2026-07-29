@@ -1,7 +1,7 @@
 import { History, Pin, PinOff } from "lucide-react";
 
 import type { ExecutionHistorySnapshotDto, ExecutionRecordDto } from "../../../shared/api/generated/ipc";
-import { formatHistoryTime } from "../request-editor-model";
+import { useI18n } from "../../../app/i18n";
 
 type HistoryPanelProps = {
   history: ExecutionHistorySnapshotDto | null;
@@ -18,19 +18,20 @@ export function HistoryPanel({
   onToggleDisabled,
   onTogglePinned,
 }: HistoryPanelProps) {
+  const { formatDate, formatNumber, t } = useI18n();
   const records = history?.records ?? [];
 
   return (
     <section
-      aria-label="Execution history"
+      aria-label={t("history.title")}
       className="grid min-h-40 gap-3 rounded-md border border-slate-300 bg-white p-3 text-sm"
     >
       <div className="flex items-center justify-between gap-3">
         <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
           <History aria-hidden="true" size={16} />
-          History
+          {t("history.title")}
         </h2>
-        {loading ? <span className="text-xs text-slate-500">Loading</span> : null}
+        {loading ? <span className="text-xs text-slate-500">{t("history.loading")}</span> : null}
       </div>
       {history ? (
         <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700">
@@ -81,10 +82,10 @@ export function HistoryPanel({
               </button>
             </div>
             <div className="flex flex-wrap gap-2 text-xs text-slate-600">
-              <span>{formatHistoryTime(record.createdAtEpochSeconds)}</span>
-              {record.response.status ? <span>Status {record.response.status}</span> : null}
+              <span>{formatDate(Number(record.createdAtEpochSeconds) * 1000)}</span>
+              {record.response.status ? <span>{t("response.status", { status: record.response.status })}</span> : null}
               {record.response.durationMs !== null ? (
-                <span>{record.response.durationMs.toString()} ms</span>
+                <span>{formatNumber(record.response.durationMs)} ms</span>
               ) : null}
               {record.response.error ? <span>{record.response.error}</span> : null}
             </div>
@@ -92,7 +93,7 @@ export function HistoryPanel({
         ))}
         {records.length === 0 ? (
           <p className="px-2 py-6 text-center text-sm text-slate-500">
-            No execution history
+            {t("history.title")}
           </p>
         ) : null}
       </div>
