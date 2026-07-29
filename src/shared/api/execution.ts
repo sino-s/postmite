@@ -5,6 +5,7 @@ import type {
   ExecutionEventDto,
   ExecutionProxyMetadataDto,
   ResponseFileMetadataDto,
+  SaveResponseFileInput,
   ExecutionTimingMetadataDto,
   ExecutionTimeoutMetadataDto,
   StartRequestExecutionInput,
@@ -78,6 +79,10 @@ export async function cancelRequestExecution(
   input: CancelRequestExecutionInput,
 ) {
   return requestIpc.cancelRequestExecution(input);
+}
+
+export async function saveResponseFile(input: SaveResponseFileInput) {
+  return requestIpc.saveResponseFile(input);
 }
 
 export async function listenToRequestExecutionEvents(

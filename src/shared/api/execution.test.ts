@@ -5,6 +5,7 @@ import type { ExecutionEventDto } from "./generated/ipc";
 const listenMock = vi.hoisted(() => vi.fn());
 const requestIpcMock = vi.hoisted(() => ({
   cancelRequestExecution: vi.fn(),
+  saveResponseFile: vi.fn(),
   startRequestExecution: vi.fn(),
 }));
 
@@ -23,6 +24,7 @@ import {
   listenToRequestExecutionEvents,
   reduceRequestExecutionEvent,
   reduceResponseExecutionStates,
+  saveResponseFile,
   startRequestExecution,
 } from "./execution";
 
@@ -101,6 +103,28 @@ describe("request execution API", () => {
 
     expect(requestIpcMock.cancelRequestExecution).toHaveBeenCalledWith({
       executionId: "execution-1",
+    });
+  });
+
+  it("saves a spooled response file through typed Rust IPC", async () => {
+    requestIpcMock.saveResponseFile.mockResolvedValue({
+      destinationPath: "/home/sino/downloads/response.bin",
+      byteCount: 4096n,
+    });
+
+    await expect(
+      saveResponseFile({
+        sourcePath: "/tmp/postmite-response-files/response.fixture.tmp",
+        destinationPath: "/home/sino/downloads/response.bin",
+      }),
+    ).resolves.toEqual({
+      destinationPath: "/home/sino/downloads/response.bin",
+      byteCount: 4096n,
+    });
+
+    expect(requestIpcMock.saveResponseFile).toHaveBeenCalledWith({
+      sourcePath: "/tmp/postmite-response-files/response.fixture.tmp",
+      destinationPath: "/home/sino/downloads/response.bin",
     });
   });
 

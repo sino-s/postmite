@@ -119,6 +119,7 @@ pub const IMPORT_CURL_AS_DRAFT_COMMAND: &str = "import_curl_as_draft";
 pub const GENERATE_CURL_COMMAND: &str = "generate_curl";
 pub const START_REQUEST_EXECUTION_COMMAND: &str = "start_request_execution";
 pub const CANCEL_REQUEST_EXECUTION_COMMAND: &str = "cancel_request_execution";
+pub const SAVE_RESPONSE_FILE_COMMAND: &str = "save_response_file";
 pub const START_OAUTH_AUTHORIZATION_COMMAND: &str = "start_oauth_authorization";
 pub const CANCEL_OAUTH_AUTHORIZATION_COMMAND: &str = "cancel_oauth_authorization";
 pub const REQUEST_EXECUTION_EVENT: &str = "request_execution_event";
@@ -1003,6 +1004,20 @@ pub struct CancelRequestExecutionOutput {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct SaveResponseFileInput {
+    pub source_path: String,
+    pub destination_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveResponseFileOutput {
+    pub destination_path: String,
+    pub byte_count: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct StartOAuthAuthorizationInput {
     pub flow_id: String,
     pub authorization_endpoint: String,
@@ -1603,6 +1618,13 @@ pub fn cancel_request_execution(
     input: CancelRequestExecutionInput,
 ) -> Result<CancelRequestExecutionOutput, IpcError> {
     handle_cancel_request_execution(state, input)
+}
+
+#[tauri::command]
+pub fn save_response_file(
+    input: SaveResponseFileInput,
+) -> Result<SaveResponseFileOutput, IpcError> {
+    handle_save_response_file(input)
 }
 
 #[tauri::command]
@@ -2592,6 +2614,51 @@ pub fn handle_cancel_request_execution(
         .map_err(|error| BoundaryError::Execution(error).into())
 }
 
+pub fn handle_save_response_file(
+    input: SaveResponseFileInput,
+) -> Result<SaveResponseFileOutput, IpcError> {
+    if input.source_path.trim().is_empty() || input.destination_path.trim().is_empty() {
+        return Err(IpcError {
+            code: IpcErrorCode::InvalidInput,
+            message: "Response file path is invalid.".to_owned(),
+            details: Some("responseFile".to_owned()),
+            retryable: false,
+        });
+    }
+
+    let byte_count = crate::infrastructure::http::save_response_file(
+        Path::new(&input.source_path),
+        Path::new(&input.destination_path),
+        SystemTime::now(),
+    )
+    .map_err(map_http_response_file_error)?;
+
+    Ok(SaveResponseFileOutput {
+        destination_path: input.destination_path,
+        byte_count,
+    })
+}
+
+fn map_http_response_file_error(
+    error: crate::infrastructure::http::HttpExecutionError,
+) -> IpcError {
+    let details = error.safe_message();
+    match error {
+        crate::infrastructure::http::HttpExecutionError::InvalidInput(_) => IpcError {
+            code: IpcErrorCode::InvalidInput,
+            message: "Response file path is invalid.".to_owned(),
+            details: Some(details),
+            retryable: false,
+        },
+        _ => IpcError {
+            code: IpcErrorCode::PersistenceUnavailable,
+            message: "Response file could not be saved.".to_owned(),
+            details: Some(details),
+            retryable: true,
+        },
+    }
+}
+
 pub async fn handle_start_oauth_authorization(
     state: State<'_, AppState>,
     input: StartOAuthAuthorizationInput,
@@ -2726,6 +2793,8 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         StartRequestExecutionOutput::export_to_string(&cfg)?,
         CancelRequestExecutionInput::export_to_string(&cfg)?,
         CancelRequestExecutionOutput::export_to_string(&cfg)?,
+        SaveResponseFileInput::export_to_string(&cfg)?,
+        SaveResponseFileOutput::export_to_string(&cfg)?,
         StartOAuthAuthorizationInput::export_to_string(&cfg)?,
         OAuthAuthorizationResultDto::export_to_string(&cfg)?,
         CancelOAuthAuthorizationInput::export_to_string(&cfg)?,
@@ -2944,6 +3013,10 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \tcancel_request_execution: {\n\
          \t\tinput: CancelRequestExecutionInput;\n\
          \t\toutput: CancelRequestExecutionOutput;\n\
+         \t};\n\
+         \tsave_response_file: {\n\
+         \t\tinput: SaveResponseFileInput;\n\
+         \t\toutput: SaveResponseFileOutput;\n\
          \t};\n\
          \tstart_oauth_authorization: {\n\
          \t\tinput: StartOAuthAuthorizationInput;\n\
