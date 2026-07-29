@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::Path,
     str::FromStr,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -7,6 +8,9 @@ use std::{
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Transaction};
 
 use crate::{
+    application::backup::{
+        NativeBackupData, NativeBackupError, NativeBackupRepository, NativeBackupWorkspace,
+    },
     application::postman_import::{
         ConvertedCollection, ConvertedPostmanImport, PostmanImportError, PostmanImportRepository,
         StoredPostmanImportRecord,
@@ -1378,6 +1382,60 @@ impl RequestRepository for SqliteWorkspaceRepository {
     }
 }
 
+impl NativeBackupRepository for SqliteWorkspaceRepository {
+    fn export_native_backup(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<NativeBackupData, NativeBackupError> {
+        ensure_request_workspace_exists(&self.connection, workspace_id)
+            .map_err(native_backup_request_error)?;
+        let workspace = load_backup_workspace(&self.connection, workspace_id)?;
+        Ok(NativeBackupData {
+            workspace,
+            requests: load_request_snapshot(&self.connection, workspace_id)
+                .map_err(native_backup_request_error)?,
+            execution_history: load_execution_history_snapshot(&self.connection, workspace_id)
+                .map_err(native_backup_request_error)?,
+            cookies: load_workspace_cookies(&self.connection, workspace_id)
+                .map_err(native_backup_request_error)?,
+        })
+    }
+
+    fn restore_native_backup(
+        &mut self,
+        backup: NativeBackupData,
+        workspace_name: WorkspaceName,
+    ) -> Result<(WorkspaceSnapshot, RequestWorkspaceSnapshot), NativeBackupError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(NativeBackupError::persistence)?;
+        let workspace = Workspace::new(workspace_name);
+        insert_workspace(&tx, &workspace).map_err(native_backup_workspace_error)?;
+        tx.execute(
+            "UPDATE workspaces
+             SET base_directory = ?1
+             WHERE id = ?2",
+            params![
+                backup.workspace.base_directory.as_deref(),
+                workspace.id.to_string()
+            ],
+        )
+        .map_err(native_backup_sqlite_error)?;
+
+        let id_map = restore_backup_requests(&tx, workspace.id, backup.requests)?;
+        restore_backup_execution_history(&tx, workspace.id, backup.execution_history)?;
+        restore_backup_cookies(&tx, workspace.id, backup.cookies)?;
+        let _ = id_map;
+        select_workspace(&tx, workspace.id).map_err(native_backup_workspace_error)?;
+        let workspace_snapshot = load_snapshot(&tx).map_err(native_backup_workspace_error)?;
+        let request_snapshot =
+            load_request_snapshot(&tx, workspace.id).map_err(native_backup_request_error)?;
+        tx.commit().map_err(NativeBackupError::persistence)?;
+        Ok((workspace_snapshot, request_snapshot))
+    }
+}
+
 impl PostmanImportRepository for SqliteWorkspaceRepository {
     fn list_postman_workspace(
         &self,
@@ -1571,6 +1629,394 @@ fn insert_converted_postman_import(
     )
     .map_err(map_postman_sqlite_error)?;
     Ok(())
+}
+
+#[derive(Default)]
+struct BackupIdMap {
+    collections: HashMap<CollectionId, CollectionId>,
+    environments: HashMap<EnvironmentId, EnvironmentId>,
+    saved_requests: HashMap<SavedRequestId, SavedRequestId>,
+    drafts: HashMap<RequestDraftId, RequestDraftId>,
+}
+
+fn load_backup_workspace(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> Result<NativeBackupWorkspace, NativeBackupError> {
+    connection
+        .query_row(
+            "SELECT id, name, base_directory FROM workspaces WHERE id = ?1",
+            params![workspace_id.to_string()],
+            |row| {
+                Ok(NativeBackupWorkspace {
+                    id: workspace_id_from_row(row)?,
+                    name: row.get(1)?,
+                    base_directory: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(NativeBackupError::persistence)?
+        .ok_or(NativeBackupError::WorkspaceNotFound)
+}
+
+fn restore_backup_requests(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    snapshot: RequestWorkspaceSnapshot,
+) -> Result<BackupIdMap, NativeBackupError> {
+    let mut map = BackupIdMap::default();
+    for folder in &snapshot.collection_folders {
+        map.collections.insert(folder.id, CollectionId::new());
+    }
+    for environment in &snapshot.environments {
+        map.environments
+            .insert(environment.id, EnvironmentId::new());
+    }
+    for request in &snapshot.saved_requests {
+        map.saved_requests.insert(request.id, SavedRequestId::new());
+    }
+    for draft in &snapshot.drafts {
+        map.drafts.insert(draft.id, RequestDraftId::new());
+    }
+
+    for folder in snapshot.collection_folders {
+        let new_id = map.collections[&folder.id];
+        let parent_id = folder
+            .parent_collection_id
+            .map(|id| {
+                map.collections
+                    .get(&id)
+                    .copied()
+                    .ok_or_else(invalid_backup_reference)
+            })
+            .transpose()?;
+        insert_backup_collection(tx, workspace_id, new_id, parent_id, &folder)?;
+    }
+    for environment in &snapshot.environments {
+        let new_id = map.environments[&environment.id];
+        insert_backup_environment(tx, workspace_id, new_id, environment)?;
+    }
+    for variable in snapshot.collection_variables {
+        insert_backup_collection_variable(tx, workspace_id, variable)?;
+    }
+    for variable in snapshot.environment_variables {
+        let environment_id = map
+            .environments
+            .get(&variable.environment_id)
+            .copied()
+            .ok_or_else(invalid_backup_reference)?;
+        insert_backup_environment_variable(tx, workspace_id, environment_id, variable)?;
+    }
+    for environment in &snapshot.environments {
+        if environment.is_selected {
+            let environment_id = map.environments[&environment.id];
+            tx.execute(
+                "INSERT INTO selected_environments (workspace_id, environment_id)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(workspace_id) DO UPDATE SET
+                    environment_id = excluded.environment_id,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+                params![workspace_id.to_string(), environment_id.to_string()],
+            )
+            .map_err(native_backup_sqlite_error)?;
+        }
+    }
+    for request in snapshot.saved_requests {
+        let new_id = map.saved_requests[&request.id];
+        let collection_id = request
+            .collection_id
+            .map(|id| {
+                map.collections
+                    .get(&id)
+                    .copied()
+                    .ok_or_else(invalid_backup_reference)
+            })
+            .transpose()?;
+        insert_saved_request_at(
+            tx,
+            workspace_id,
+            new_id,
+            collection_id,
+            request.position,
+            &request.content,
+        )
+        .map_err(native_backup_request_error)?;
+    }
+    for draft in snapshot.drafts {
+        let new_id = map.drafts[&draft.id];
+        let saved_request_id = draft
+            .saved_request_id
+            .map(|id| {
+                map.saved_requests
+                    .get(&id)
+                    .copied()
+                    .ok_or_else(invalid_backup_reference)
+            })
+            .transpose()?;
+        insert_draft(
+            tx,
+            workspace_id,
+            new_id,
+            saved_request_id,
+            &draft.content,
+            draft.is_dirty,
+        )
+        .map_err(native_backup_request_error)?;
+    }
+    for tab in snapshot.tabs {
+        let draft_id = map
+            .drafts
+            .get(&tab.draft_id)
+            .copied()
+            .ok_or_else(invalid_backup_reference)?;
+        let saved_request_id = tab
+            .saved_request_id
+            .map(|id| {
+                map.saved_requests
+                    .get(&id)
+                    .copied()
+                    .ok_or_else(invalid_backup_reference)
+            })
+            .transpose()?;
+        insert_backup_tab(tx, workspace_id, saved_request_id, draft_id, tab)?;
+    }
+    Ok(map)
+}
+
+fn restore_backup_execution_history(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    snapshot: ExecutionHistorySnapshot,
+) -> Result<(), NativeBackupError> {
+    tx.execute(
+        "INSERT INTO execution_history_settings (workspace_id, disabled)
+         VALUES (?1, ?2)
+         ON CONFLICT(workspace_id) DO UPDATE SET
+            disabled = excluded.disabled,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        params![workspace_id.to_string(), bool_to_i64(snapshot.disabled)],
+    )
+    .map_err(native_backup_sqlite_error)?;
+    for record in snapshot.records {
+        insert_backup_execution_record(tx, workspace_id, record)?;
+    }
+    Ok(())
+}
+
+fn restore_backup_cookies(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    cookies: Vec<WorkspaceCookie>,
+) -> Result<(), NativeBackupError> {
+    for cookie in cookies {
+        tx.execute(
+            "INSERT INTO workspace_cookies
+                (id, workspace_id, name, domain, path, secure, http_only, same_site,
+                 expires_at_epoch_seconds, session, has_value, secret_ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, NULL)",
+            params![
+                CookieId::new().to_string(),
+                workspace_id.to_string(),
+                cookie.name,
+                cookie.domain,
+                cookie.path,
+                bool_to_i64(cookie.secure),
+                bool_to_i64(cookie.http_only),
+                cookie.same_site.map(cookie_same_site_to_sql),
+                cookie.expires_at_epoch_seconds,
+                bool_to_i64(cookie.session),
+            ],
+        )
+        .map_err(native_backup_sqlite_error)?;
+    }
+    Ok(())
+}
+
+fn insert_backup_collection(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    collection_id: CollectionId,
+    parent_collection_id: Option<CollectionId>,
+    folder: &CollectionFolder,
+) -> Result<(), NativeBackupError> {
+    validate_collection_name(&folder.name).map_err(native_backup_request_error)?;
+    tx.execute(
+        "INSERT INTO collections (id, workspace_id, parent_collection_id, name, position)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            collection_id.to_string(),
+            workspace_id.to_string(),
+            parent_collection_id.map(|id| id.to_string()),
+            folder.name.trim(),
+            i64::from(folder.position),
+        ],
+    )
+    .map_err(native_backup_sqlite_error)?;
+    Ok(())
+}
+
+fn insert_backup_environment(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    environment_id: EnvironmentId,
+    environment: &Environment,
+) -> Result<(), NativeBackupError> {
+    validate_collection_name(&environment.name).map_err(native_backup_request_error)?;
+    tx.execute(
+        "INSERT INTO environments (id, workspace_id, name, position)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            environment_id.to_string(),
+            workspace_id.to_string(),
+            environment.name.trim(),
+            i64::from(environment.position),
+        ],
+    )
+    .map_err(native_backup_sqlite_error)?;
+    Ok(())
+}
+
+fn insert_backup_collection_variable(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    variable: CollectionVariable,
+) -> Result<(), NativeBackupError> {
+    let (plain_value, secret_ref) = variable_value_columns(&variable.variable.value);
+    tx.execute(
+        "INSERT INTO collection_variables (workspace_id, name, plain_value, secret_ref)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            workspace_id.to_string(),
+            variable.variable.name,
+            plain_value,
+            secret_ref,
+        ],
+    )
+    .map_err(native_backup_sqlite_error)?;
+    Ok(())
+}
+
+fn insert_backup_environment_variable(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    environment_id: EnvironmentId,
+    variable: EnvironmentVariable,
+) -> Result<(), NativeBackupError> {
+    let (plain_value, secret_ref) = variable_value_columns(&variable.variable.value);
+    tx.execute(
+        "INSERT INTO environment_variables
+            (environment_id, workspace_id, name, plain_value, secret_ref)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            environment_id.to_string(),
+            workspace_id.to_string(),
+            variable.variable.name,
+            plain_value,
+            secret_ref,
+        ],
+    )
+    .map_err(native_backup_sqlite_error)?;
+    Ok(())
+}
+
+fn variable_value_columns(value: &VariableValue) -> (Option<&str>, Option<&str>) {
+    match value {
+        VariableValue::Plain(value) => (Some(value.as_str()), None),
+        VariableValue::SecretReference(reference) => (None, Some(reference.as_str())),
+    }
+}
+
+fn insert_backup_tab(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    saved_request_id: Option<SavedRequestId>,
+    draft_id: RequestDraftId,
+    tab: RequestTab,
+) -> Result<(), NativeBackupError> {
+    tx.execute(
+        "INSERT INTO request_tabs
+            (id, workspace_id, saved_request_id, draft_id, position, title, is_active)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            RequestTabId::new().to_string(),
+            workspace_id.to_string(),
+            saved_request_id.map(|id| id.to_string()),
+            draft_id.to_string(),
+            i64::from(tab.position),
+            tab.title,
+            bool_to_i64(tab.is_active),
+        ],
+    )
+    .map_err(native_backup_sqlite_error)?;
+    Ok(())
+}
+
+fn insert_backup_execution_record(
+    tx: &Transaction<'_>,
+    workspace_id: WorkspaceId,
+    record: ExecutionRecord,
+) -> Result<(), NativeBackupError> {
+    validate_request_content(&record.request).map_err(native_backup_request_error)?;
+    let record_id = ExecutionRecordId::new();
+    tx.execute(
+        "INSERT INTO execution_records
+            (id, workspace_id, created_at_epoch_seconds, pinned, name, method, url, body,
+             auth, redirect_policy, tls_policy, transport_policy, response_status,
+             response_body_preview, response_body_truncated, response_error, response_duration_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        params![
+            record_id.to_string(),
+            workspace_id.to_string(),
+            record.created_at_epoch_seconds,
+            bool_to_i64(record.pinned),
+            record.request.name.as_str(),
+            record.request.method.as_str(),
+            record.request.url.as_str(),
+            request_body_to_sql(&record.request.body).map_err(native_backup_request_error)?,
+            request_auth_to_sql(&record.request.auth).map_err(native_backup_request_error)?,
+            redirect_policy_to_sql(&record.request.redirect)
+                .map_err(native_backup_request_error)?,
+            tls_policy_to_sql(&record.request.tls).map_err(native_backup_request_error)?,
+            transport_policy_to_sql(&record.request.transport)
+                .map_err(native_backup_request_error)?,
+            record.response.status.map(i64::from),
+            record.response.body_preview.as_str(),
+            bool_to_i64(record.response.body_truncated),
+            record.response.error.as_deref(),
+            record.response.duration_ms.map(|value| value as i64),
+        ],
+    )
+    .map_err(native_backup_sqlite_error)?;
+    replace_fields(
+        tx,
+        "execution_record_query_rows",
+        "execution_record_id",
+        &record_id.to_string(),
+        &record.request.query,
+    )
+    .map_err(native_backup_request_error)?;
+    replace_fields(
+        tx,
+        "execution_record_header_rows",
+        "execution_record_id",
+        &record_id.to_string(),
+        &record.request.headers,
+    )
+    .map_err(native_backup_request_error)?;
+    replace_fields(
+        tx,
+        "execution_record_response_header_rows",
+        "execution_record_id",
+        &record_id.to_string(),
+        &record.response.headers,
+    )
+    .map_err(native_backup_request_error)?;
+    Ok(())
+}
+
+fn invalid_backup_reference() -> NativeBackupError {
+    NativeBackupError::InvalidArchive("backup.reference.invalid".to_owned())
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), WorkspaceError> {
@@ -3893,6 +4339,42 @@ fn postman_request_error(error: RequestError) -> PostmanImportError {
     }
 }
 
+fn native_backup_request_error(error: RequestError) -> NativeBackupError {
+    match error {
+        RequestError::WorkspaceNotFound => NativeBackupError::WorkspaceNotFound,
+        RequestError::InvalidInput(detail) => NativeBackupError::InvalidInput(detail),
+        RequestError::Persistence(error) => NativeBackupError::Persistence(error.to_string()),
+        RequestError::NotFound | RequestError::SavedRequestAlreadyOpen => {
+            NativeBackupError::InvalidArchive("backup.reference.invalid".to_owned())
+        }
+    }
+}
+
+fn native_backup_workspace_error(error: WorkspaceError) -> NativeBackupError {
+    match error {
+        WorkspaceError::NotFound => NativeBackupError::WorkspaceNotFound,
+        WorkspaceError::AlreadyExists => NativeBackupError::WorkspaceAlreadyExists,
+        WorkspaceError::InvalidName(error) => {
+            NativeBackupError::InvalidInput(format!("workspace.name.{error}"))
+        }
+        WorkspaceError::CannotDeleteLastWorkspace => {
+            NativeBackupError::InvalidInput("workspace.cannotDeleteLast".to_owned())
+        }
+        WorkspaceError::Persistence(error) => NativeBackupError::Persistence(error.to_string()),
+    }
+}
+
+fn native_backup_sqlite_error(error: rusqlite::Error) -> NativeBackupError {
+    match &error {
+        rusqlite::Error::SqliteFailure(failure, _)
+            if failure.code == ErrorCode::ConstraintViolation =>
+        {
+            NativeBackupError::InvalidInput("backup.restore.constraint".to_owned())
+        }
+        _ => NativeBackupError::persistence(error),
+    }
+}
+
 fn postman_import_record_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<StoredPostmanImportRecord> {
@@ -3945,6 +4427,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        application::backup::NativeBackupRepository,
         application::postman_import::PostmanImportService,
         application::request::{RequestRepository, RequestService},
         application::workspace::WorkspaceRepository,
@@ -3952,6 +4435,7 @@ mod tests {
             CookieDraft, CookieSameSite, EnvironmentId, OrderedField, RequestBody, RequestContent,
             RequestDraftId, VariableValue,
         },
+        domain::workspace::WorkspaceName,
     };
 
     fn repository() -> SqliteWorkspaceRepository {
@@ -4496,6 +4980,77 @@ mod tests {
             })
             .expect("count import records");
         assert_eq!(records, 0);
+    }
+
+    #[test]
+    fn native_backup_restores_into_new_workspace_without_secret_cookie_values() {
+        let mut repository = repository();
+        let workspace_id = repository
+            .initialize()
+            .expect("initialize")
+            .selected_workspace_id;
+        let snapshot = repository
+            .create_saved_request(
+                workspace_id,
+                RequestContent {
+                    name: "Backed up".to_owned(),
+                    method: "POST".to_owned(),
+                    url: "https://example.test".to_owned(),
+                    body: RequestBody::Raw {
+                        content: "body".to_owned(),
+                    },
+                    query: vec![OrderedField {
+                        enabled: true,
+                        order: 0,
+                        name: "a".to_owned(),
+                        value: "1".to_owned(),
+                    }],
+                    headers: Vec::new(),
+                    ..RequestContent::blank()
+                },
+            )
+            .expect("create saved request");
+        repository
+            .upsert_cookie_metadata(
+                CookieDraft {
+                    id: None,
+                    workspace_id,
+                    name: "sid".to_owned(),
+                    value: "cookie-value".to_owned(),
+                    domain: "example.test".to_owned(),
+                    path: "/".to_owned(),
+                    secure: true,
+                    http_only: true,
+                    same_site: Some(CookieSameSite::Lax),
+                    expires_at_epoch_seconds: None,
+                },
+                true,
+                Some("secret://cookie-value"),
+                1_800_000_000,
+            )
+            .expect("insert cookie metadata");
+        let original_request_id = snapshot.saved_requests[0].id;
+        let backup = repository
+            .export_native_backup(workspace_id)
+            .expect("export backup");
+
+        let (workspace_snapshot, restored) = repository
+            .restore_native_backup(
+                backup,
+                WorkspaceName::new("Restored").expect("workspace name"),
+            )
+            .expect("restore backup");
+
+        assert_eq!(workspace_snapshot.workspaces.len(), 2);
+        assert_eq!(restored.saved_requests.len(), 1);
+        assert_eq!(restored.saved_requests[0].content.name, "Backed up");
+        assert_ne!(restored.saved_requests[0].id, original_request_id);
+        let restored_cookies = repository
+            .list_cookies(restored.workspace_id)
+            .expect("list restored cookies");
+        assert_eq!(restored_cookies.len(), 1);
+        assert!(!restored_cookies[0].has_value);
+        assert_eq!(restored_cookies[0].secret_reference, None);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::{
 };
 
 use application::{
+    backup::NativeBackupService,
     execution::ExecutionCoordinator,
     oauth::{OAuthCoordinator, SystemBrowserLauncher},
     postman_import::PostmanImportService,
@@ -30,6 +31,7 @@ pub struct AppState {
     pub workspaces: Mutex<WorkspaceService<SqliteWorkspaceRepository>>,
     pub requests: Mutex<RequestService<SqliteWorkspaceRepository>>,
     pub postman_imports: Mutex<PostmanImportService<SqliteWorkspaceRepository>>,
+    pub native_backups: Mutex<NativeBackupService<SqliteWorkspaceRepository>>,
 }
 
 impl AppState {
@@ -40,6 +42,7 @@ impl AppState {
         workspaces: WorkspaceService<SqliteWorkspaceRepository>,
         requests: RequestService<SqliteWorkspaceRepository>,
         postman_imports: PostmanImportService<SqliteWorkspaceRepository>,
+        native_backups: NativeBackupService<SqliteWorkspaceRepository>,
     ) -> Self {
         Self {
             executions,
@@ -48,6 +51,7 @@ impl AppState {
             workspaces: Mutex::new(workspaces),
             requests: Mutex::new(requests),
             postman_imports: Mutex::new(postman_imports),
+            native_backups: Mutex::new(native_backups),
         }
     }
 }
@@ -98,6 +102,9 @@ pub fn run() {
             ipc::export_postman,
             ipc::preview_postman_reimport,
             ipc::reimport_postman,
+            ipc::export_native_backup,
+            ipc::preview_native_backup_restore,
+            ipc::restore_native_backup,
             ipc::preview_curl_import,
             ipc::import_curl_as_draft,
             ipc::generate_curl,
@@ -114,6 +121,7 @@ pub fn run() {
             let workspace_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let request_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let postman_import_repository = SqliteWorkspaceRepository::open(&database_path)?;
+            let native_backup_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let secrets: Arc<dyn SecretStore> = if env::var_os(SESSION_ONLY_SECRETS_ENV).is_some() {
                 Arc::new(SessionSecretStore::new())
             } else {
@@ -127,6 +135,7 @@ pub fn run() {
             let mut requests = RequestService::new(request_repository, Arc::clone(&secrets));
             let postman_imports =
                 PostmanImportService::new(postman_import_repository, Arc::clone(&secrets));
+            let native_backups = NativeBackupService::new(native_backup_repository);
             diagnostics::configure_perf_request_tabs(
                 &mut requests,
                 workspace_snapshot.selected_workspace_id,
@@ -147,6 +156,7 @@ pub fn run() {
                 workspaces,
                 requests,
                 postman_imports,
+                native_backups,
             ));
             diagnostics::configure_perf(app, started_at.elapsed())?;
             Ok(())

@@ -1,5 +1,6 @@
 //! Application use cases and ports.
 
+pub mod backup;
 pub mod curl;
 pub mod execution;
 pub mod oauth;

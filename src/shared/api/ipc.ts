@@ -17,6 +17,9 @@ import type {
   IpcError,
   MoveCollectionFolderInput,
   MoveSavedRequestInput,
+  NativeBackupExportInput,
+  NativeBackupRestoreInput,
+  NativeBackupRestorePreviewInput,
   OpenSavedRequestTabInput,
   PostmanExportInput,
   PostmanImportInput,
@@ -148,6 +151,12 @@ export const requestIpc = {
     invokeCommand("preview_postman_reimport", input),
   reimportPostman: (input: PostmanReimportInput) =>
     invokeCommand("reimport_postman", input),
+  exportNativeBackup: (input: NativeBackupExportInput) =>
+    invokeCommand("export_native_backup", input),
+  previewNativeBackupRestore: (input: NativeBackupRestorePreviewInput) =>
+    invokeCommand("preview_native_backup_restore", input),
+  restoreNativeBackup: (input: NativeBackupRestoreInput) =>
+    invokeCommand("restore_native_backup", input),
   previewCurlImport: (input: CurlImportInput) =>
     invokeCommand("preview_curl_import", input),
   importCurlAsDraft: (input: CurlImportInput) =>
