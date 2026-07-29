@@ -23,6 +23,8 @@
     "ci:build": "pnpm build:tauri:ci",
     "e2e:request": "node scripts/e2e-request.mjs",
     "e2e:request:transport": "node scripts/e2e-request-transport.mjs",
+    "e2e:security": "node scripts/e2e-security.mjs",
+    "security:scan-fixtures": "node scripts/security-scan-fixtures.mjs",
     "perf:release": "node scripts/perf-release.mjs",
     "perf:release:strict": "POSTMITE_PERF_STRICT=1 node scripts/perf-release.mjs"
   },

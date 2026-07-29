@@ -605,6 +605,7 @@ describe("App request editor", () => {
 
   it("inspects edits deletes and clears cookies without exposing values by default", async () => {
     const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const queryClient = renderApp(
       requestSnapshot({ content: requestContent(), isDirty: true }),
       emptyExecutionHistorySnapshot(),
@@ -646,6 +647,27 @@ describe("App request editor", () => {
     expect(requestApiMock.clearCookies).toHaveBeenCalledWith(queryClient, {
       workspaceId: "workspace-1",
     });
+    expect(confirmSpy).toHaveBeenCalledWith(
+      "Reveal the sid cookie value? This may expose a Secret on screen.",
+    );
+    confirmSpy.mockRestore();
+  });
+
+  it("requires confirmation before revealing cookie values", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderApp(
+      requestSnapshot({ content: requestContent(), isDirty: true }),
+      emptyExecutionHistorySnapshot(),
+      cookieJarSnapshot(),
+    );
+
+    expect(await screen.findByText("Value ********")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Inspect sid cookie" }));
+
+    expect(requestApiMock.revealCookieValue).not.toHaveBeenCalled();
+    expect(screen.queryByText("Value sid-value")).not.toBeInTheDocument();
+    confirmSpy.mockRestore();
   });
 
   it("has no automated accessibility violations in the editor shell", async () => {
