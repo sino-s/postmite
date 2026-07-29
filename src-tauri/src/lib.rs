@@ -7,7 +7,7 @@ pub mod ipc;
 use std::{
     env, fs,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Instant, SystemTime},
 };
 
 use application::{
@@ -19,7 +19,11 @@ use application::{
     secrets::{FallbackSecretStore, SecretStore, SessionSecretStore},
     workspace::WorkspaceService,
 };
-use infrastructure::{secrets::LinuxSecretServiceStore, sqlite::SqliteWorkspaceRepository};
+use infrastructure::{
+    http::{cleanup_all_response_temp_files, cleanup_expired_response_temp_files},
+    secrets::LinuxSecretServiceStore,
+    sqlite::SqliteWorkspaceRepository,
+};
 use tauri::{Manager, WindowEvent};
 
 const SESSION_ONLY_SECRETS_ENV: &str = "POSTMITE_SESSION_ONLY_SECRETS";
@@ -116,6 +120,7 @@ pub fn run() {
         .setup(move |app| {
             let app_data_dir = diagnostics::app_data_dir(app)?;
             fs::create_dir_all(&app_data_dir)?;
+            cleanup_expired_response_temp_files(SystemTime::now());
             let database_path = app_data_dir.join("postmite.sqlite3");
 
             let workspace_repository = SqliteWorkspaceRepository::open(&database_path)?;
@@ -166,6 +171,7 @@ pub fn run() {
                 let app = window.app_handle();
                 let state = app.state::<AppState>();
                 state.executions.cancel_all();
+                cleanup_all_response_temp_files();
             }
         })
         .run(tauri::generate_context!())

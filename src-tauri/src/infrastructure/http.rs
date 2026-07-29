@@ -1,12 +1,13 @@
 use std::{
     env,
-    io::Read,
+    fs::{self, File as StdFile, OpenOptions as StdOpenOptions},
+    io::{BufReader, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
@@ -27,7 +28,8 @@ use crate::{
     application::execution::{
         ExecutionCoordinator, ExecutionEvent, ExecutionEventKind, ExecutionHeader, ExecutionId,
         ExecutionProxyMetadata, ExecutionRequest, ExecutionTimeoutMetadata,
-        ExecutionTimingMetadata, MAX_RESPONSE_PREVIEW_BYTES,
+        ExecutionTimingMetadata, ResponseFileMetadata, MAX_NORMAL_RESPONSE_DECODED_BYTES,
+        MAX_RESPONSE_PREVIEW_BYTES, RESPONSE_TEMP_RETENTION_SECONDS,
     },
     domain::request::{
         BodyFilePath, BodyFileReference, MultipartPart, OrderedField, ProxySource, RequestBody,
@@ -36,6 +38,7 @@ use crate::{
 };
 
 const UPLOAD_CHUNK_BYTES: usize = 16 * 1024;
+static RESPONSE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub async fn run_http_execution(
     execution_id: ExecutionId,
@@ -67,6 +70,7 @@ pub async fn run_http_execution(
                 body_truncated: completed.body_truncated,
                 decoded_bytes: completed.decoded_bytes,
                 wire_bytes: completed.wire_bytes,
+                response_file: completed.response_file,
                 timing: completed.timing,
             },
         ),
@@ -227,8 +231,18 @@ async fn execute_http(
         },
     );
 
+    let encoded_response = content_encoding.is_some();
     let mut stream = response.bytes_stream();
-    let mut raw_body = Vec::new();
+    let mut response_body = ResponseBodyCollector::new(
+        execution_id,
+        ResponseCollectionLimits::normal(),
+        SystemTime::now(),
+    )?;
+    let mut encoded_body_file = if encoded_response {
+        Some(TemporaryResponseFile::create(execution_id, "encoded")?)
+    } else {
+        None
+    };
     let mut received_bytes = 0_u64;
     let download_started_at = Instant::now();
 
@@ -251,7 +265,11 @@ async fn execute_http(
             }
         })?;
         received_bytes += chunk.len() as u64;
-        raw_body.extend_from_slice(&chunk);
+        if let Some(file) = encoded_body_file.as_mut() {
+            file.write_all(&chunk)?;
+        } else {
+            response_body.push(&chunk)?;
+        }
 
         emit(
             &coordinator,
@@ -264,18 +282,23 @@ async fn execute_http(
         );
     }
 
-    let decoded_body = decode_response_body(&raw_body, content_encoding.as_deref())?;
-    let decoded_bytes = decoded_body.len() as u64;
-    let body_truncated = decoded_body.len() > MAX_RESPONSE_PREVIEW_BYTES;
-    let preview_len = decoded_body.len().min(MAX_RESPONSE_PREVIEW_BYTES);
-    let preview = &decoded_body[..preview_len];
+    if let Some(mut file) = encoded_body_file.take() {
+        file.flush()?;
+        decode_response_body_from_path(
+            file.path(),
+            content_encoding.as_deref(),
+            &mut response_body,
+        )?;
+    }
+    let collected_body = response_body.finish()?;
 
     Ok(CompletedHttpExecution {
         status,
-        body_preview: String::from_utf8_lossy(preview).into_owned(),
-        body_truncated,
-        decoded_bytes,
+        body_preview: String::from_utf8_lossy(&collected_body.preview).into_owned(),
+        body_truncated: collected_body.truncated,
+        decoded_bytes: collected_body.decoded_bytes,
         wire_bytes: wire_bytes.or(Some(received_bytes)),
+        response_file: collected_body.response_file,
         timing: ExecutionTimingMetadata {
             queued_ms: coordinator.queued_ms(execution_id),
             dns_ms: None,
@@ -286,6 +309,207 @@ async fn execute_http(
             total_ms: started_at.elapsed().as_millis() as u64,
         },
     })
+}
+
+pub fn cleanup_expired_response_temp_files(now: SystemTime) {
+    let _ = cleanup_response_temp_files(response_temp_dir(), now, response_temp_retention());
+}
+
+pub fn cleanup_all_response_temp_files() {
+    let _ = cleanup_response_temp_files(response_temp_dir(), SystemTime::now(), Duration::ZERO);
+}
+
+fn cleanup_response_temp_files(
+    directory: PathBuf,
+    now: SystemTime,
+    retention: Duration,
+) -> Result<(), HttpExecutionError> {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry.map_err(|_| HttpExecutionError::Response)?;
+        let metadata = entry.metadata().map_err(|_| HttpExecutionError::Response)?;
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if now
+            .duration_since(modified)
+            .unwrap_or_default()
+            .ge(&retention)
+        {
+            fs::remove_file(entry.path()).map_err(|_| HttpExecutionError::Response)?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct ResponseCollectionLimits {
+    preview_bytes: usize,
+    normal_decoded_bytes: u64,
+}
+
+impl ResponseCollectionLimits {
+    fn normal() -> Self {
+        Self {
+            preview_bytes: MAX_RESPONSE_PREVIEW_BYTES,
+            normal_decoded_bytes: MAX_NORMAL_RESPONSE_DECODED_BYTES,
+        }
+    }
+}
+
+struct CollectedResponseBody {
+    preview: Vec<u8>,
+    truncated: bool,
+    decoded_bytes: u64,
+    response_file: Option<ResponseFileMetadata>,
+}
+
+struct ResponseBodyCollector {
+    execution_id: ExecutionId,
+    limits: ResponseCollectionLimits,
+    created_at: SystemTime,
+    preview: Vec<u8>,
+    decoded_bytes: u64,
+    spool: Option<TemporaryResponseFile>,
+}
+
+impl ResponseBodyCollector {
+    fn new(
+        execution_id: ExecutionId,
+        limits: ResponseCollectionLimits,
+        created_at: SystemTime,
+    ) -> Result<Self, HttpExecutionError> {
+        fs::create_dir_all(response_temp_dir()).map_err(|_| HttpExecutionError::Response)?;
+        Ok(Self {
+            execution_id,
+            limits,
+            created_at,
+            preview: Vec::new(),
+            decoded_bytes: 0,
+            spool: None,
+        })
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> Result<(), HttpExecutionError> {
+        let next_decoded_bytes = self
+            .decoded_bytes
+            .checked_add(bytes.len() as u64)
+            .ok_or(HttpExecutionError::ResponseTooLarge)?;
+        if next_decoded_bytes > self.limits.normal_decoded_bytes {
+            return Err(HttpExecutionError::ResponseTooLarge);
+        }
+
+        if self.spool.is_none()
+            && self.decoded_bytes as usize + bytes.len() > self.limits.preview_bytes
+        {
+            let mut spool = TemporaryResponseFile::create(self.execution_id, "decoded")?;
+            spool.write_all(&self.preview)?;
+            self.spool = Some(spool);
+        }
+
+        if let Some(spool) = self.spool.as_mut() {
+            spool.write_all(bytes)?;
+        }
+
+        let remaining_preview = self.limits.preview_bytes.saturating_sub(self.preview.len());
+        if remaining_preview > 0 {
+            let preview_len = bytes.len().min(remaining_preview);
+            self.preview.extend_from_slice(&bytes[..preview_len]);
+        }
+        self.decoded_bytes = next_decoded_bytes;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<CollectedResponseBody, HttpExecutionError> {
+        let response_file = if let Some(mut spool) = self.spool.take() {
+            spool.flush()?;
+            let path = spool.path().to_path_buf();
+            spool.persist();
+            Some(ResponseFileMetadata {
+                path: path.to_string_lossy().into_owned(),
+                byte_count: self.decoded_bytes,
+                expires_at_epoch_seconds: expires_at_epoch_seconds(self.created_at),
+            })
+        } else {
+            None
+        };
+        Ok(CollectedResponseBody {
+            preview: self.preview,
+            truncated: response_file.is_some(),
+            decoded_bytes: self.decoded_bytes,
+            response_file,
+        })
+    }
+}
+
+struct TemporaryResponseFile {
+    path: PathBuf,
+    file: StdFile,
+    delete_on_drop: bool,
+}
+
+impl TemporaryResponseFile {
+    fn create(execution_id: ExecutionId, purpose: &str) -> Result<Self, HttpExecutionError> {
+        fs::create_dir_all(response_temp_dir()).map_err(|_| HttpExecutionError::Response)?;
+        let counter = RESPONSE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path =
+            response_temp_dir().join(format!("response-{execution_id}-{counter}-{purpose}.tmp"));
+        let file = StdOpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .read(true)
+            .open(&path)
+            .map_err(|_| HttpExecutionError::Response)?;
+        Ok(Self {
+            path,
+            file,
+            delete_on_drop: true,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> Result<(), HttpExecutionError> {
+        self.file
+            .write_all(bytes)
+            .map_err(|_| HttpExecutionError::Response)
+    }
+
+    fn flush(&mut self) -> Result<(), HttpExecutionError> {
+        self.file.flush().map_err(|_| HttpExecutionError::Response)
+    }
+
+    fn persist(&mut self) {
+        self.delete_on_drop = false;
+    }
+}
+
+impl Drop for TemporaryResponseFile {
+    fn drop(&mut self) {
+        if self.delete_on_drop {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn response_temp_dir() -> PathBuf {
+    env::temp_dir().join("postmite-response-files")
+}
+
+fn response_temp_retention() -> Duration {
+    Duration::from_secs(RESPONSE_TEMP_RETENTION_SECONDS)
+}
+
+fn expires_at_epoch_seconds(created_at: SystemTime) -> u64 {
+    created_at
+        .checked_add(response_temp_retention())
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(RESPONSE_TEMP_RETENTION_SECONDS)
 }
 
 fn resolve_url(content: &RequestContent) -> Result<Url, HttpExecutionError> {
@@ -351,34 +575,53 @@ fn response_content_encoding(headers: &HeaderMap) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn decode_response_body(
-    body: &[u8],
+fn decode_response_body_from_path(
+    path: &Path,
     content_encoding: Option<&str>,
-) -> Result<Vec<u8>, HttpExecutionError> {
+    collector: &mut ResponseBodyCollector,
+) -> Result<(), HttpExecutionError> {
+    let file = StdFile::open(path).map_err(|_| HttpExecutionError::Response)?;
+    let reader = BufReader::new(file);
     match content_encoding {
         Some("gzip") => {
-            let mut decoder = flate2::read::GzDecoder::new(body);
-            read_decoded_body(&mut decoder)
+            let mut decoder = flate2::read::GzDecoder::new(reader);
+            read_decoded_body(&mut decoder, collector)
         }
         Some("deflate") => {
-            let mut decoder = flate2::read::ZlibDecoder::new(body);
-            read_decoded_body(&mut decoder)
+            let mut decoder = flate2::read::ZlibDecoder::new(reader);
+            read_decoded_body(&mut decoder, collector)
         }
         Some("br") => {
-            let mut decoder = brotli::Decompressor::new(body, 4096);
-            read_decoded_body(&mut decoder)
+            let mut decoder = brotli::Decompressor::new(reader, 4096);
+            read_decoded_body(&mut decoder, collector)
         }
-        Some("zstd") => zstd::stream::decode_all(body).map_err(|_| HttpExecutionError::Response),
-        _ => Ok(body.to_vec()),
+        Some("zstd") => {
+            let mut decoder =
+                zstd::stream::Decoder::new(reader).map_err(|_| HttpExecutionError::Response)?;
+            read_decoded_body(&mut decoder, collector)
+        }
+        _ => read_decoded_body(
+            &mut BufReader::new(StdFile::open(path).map_err(|_| HttpExecutionError::Response)?),
+            collector,
+        ),
     }
 }
 
-fn read_decoded_body(reader: &mut impl Read) -> Result<Vec<u8>, HttpExecutionError> {
-    let mut decoded = Vec::new();
-    reader
-        .read_to_end(&mut decoded)
-        .map_err(|_| HttpExecutionError::Response)?;
-    Ok(decoded)
+fn read_decoded_body(
+    reader: &mut impl Read,
+    collector: &mut ResponseBodyCollector,
+) -> Result<(), HttpExecutionError> {
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|_| HttpExecutionError::Response)?;
+        if read == 0 {
+            break;
+        }
+        collector.push(&buffer[..read])?;
+    }
+    Ok(())
 }
 
 fn http_version(version: Version) -> &'static str {
@@ -970,6 +1213,7 @@ struct CompletedHttpExecution {
     body_truncated: bool,
     decoded_bytes: u64,
     wire_bytes: Option<u64>,
+    response_file: Option<ResponseFileMetadata>,
     timing: ExecutionTimingMetadata,
 }
 
@@ -982,6 +1226,7 @@ enum HttpExecutionError {
     Transport,
     Timeout(TimeoutKind),
     Response,
+    ResponseTooLarge,
     Cancelled,
 }
 
@@ -1004,6 +1249,7 @@ impl HttpExecutionError {
             Self::Timeout(TimeoutKind::Overall) => "timeout.overall".to_owned(),
             Self::Timeout(TimeoutKind::Idle) => "timeout.idle".to_owned(),
             Self::Response => "response.failed".to_owned(),
+            Self::ResponseTooLarge => "response.too_large".to_owned(),
             Self::Cancelled => "cancelled".to_owned(),
         }
     }
@@ -1014,7 +1260,7 @@ mod tests {
     use std::{
         io::Write,
         sync::{Arc, Mutex},
-        time::Duration,
+        time::{Duration, SystemTime},
     };
 
     use rcgen::{
@@ -1375,6 +1621,188 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn response_above_preview_limit_spools_to_temporary_file() {
+        let body = vec![b'a'; MAX_RESPONSE_PREVIEW_BYTES + 1];
+        let expected_len = body.len() as u64;
+        let (server, _captured) = start_fixture(FixtureMode::Body { body }).await;
+        let events = run_fixture_request(RequestContent {
+            method: "GET".to_owned(),
+            url: server.url("/large"),
+            ..RequestContent::blank()
+        })
+        .await;
+
+        let response_file = events.iter().find_map(|event| match &event.kind {
+            ExecutionEventKind::Completed {
+                body_preview,
+                body_truncated,
+                decoded_bytes,
+                response_file,
+                ..
+            } => {
+                assert_eq!(body_preview.len(), MAX_RESPONSE_PREVIEW_BYTES);
+                assert!(*body_truncated);
+                assert_eq!(*decoded_bytes, expected_len);
+                response_file.clone()
+            }
+            _ => None,
+        });
+        let response_file = response_file.expect("spooled response file metadata");
+        assert_eq!(response_file.byte_count, expected_len);
+        assert_eq!(
+            std::fs::metadata(&response_file.path)
+                .expect("spooled response file")
+                .len(),
+            expected_len
+        );
+        std::fs::remove_file(response_file.path).expect("remove spooled response");
+    }
+
+    #[tokio::test]
+    async fn response_at_preview_limit_does_not_create_temporary_file() {
+        let body = vec![b'b'; MAX_RESPONSE_PREVIEW_BYTES];
+        let expected_len = body.len() as u64;
+        let (server, _captured) = start_fixture(FixtureMode::Body { body }).await;
+        let events = run_fixture_request(RequestContent {
+            method: "GET".to_owned(),
+            url: server.url("/preview-limit"),
+            ..RequestContent::blank()
+        })
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            ExecutionEventKind::Completed {
+                body_preview,
+                body_truncated: false,
+                decoded_bytes,
+                response_file: None,
+                ..
+            } if body_preview.len() == MAX_RESPONSE_PREVIEW_BYTES
+                && *decoded_bytes == expected_len
+        )));
+    }
+
+    #[tokio::test]
+    async fn compressed_decoded_response_spools_without_unbounded_ipc_body() {
+        let decoded = vec![b'z'; MAX_RESPONSE_PREVIEW_BYTES + 1];
+        let expected_len = decoded.len() as u64;
+        let encoded = encode_fixture_body("gzip", &decoded);
+        let (server, _captured) = start_fixture(FixtureMode::Compressed {
+            encoding: "gzip",
+            body: encoded,
+        })
+        .await;
+        let events = run_fixture_request(RequestContent {
+            method: "GET".to_owned(),
+            url: server.url("/compressed-large"),
+            ..RequestContent::blank()
+        })
+        .await;
+
+        let response_file = events.iter().find_map(|event| match &event.kind {
+            ExecutionEventKind::Completed {
+                body_preview,
+                body_truncated,
+                decoded_bytes,
+                response_file,
+                ..
+            } => {
+                assert_eq!(body_preview.len(), MAX_RESPONSE_PREVIEW_BYTES);
+                assert!(*body_truncated);
+                assert_eq!(*decoded_bytes, expected_len);
+                response_file.clone()
+            }
+            _ => None,
+        });
+        let response_file = response_file.expect("spooled compressed response file metadata");
+        assert_eq!(response_file.byte_count, expected_len);
+        std::fs::remove_file(response_file.path).expect("remove spooled compressed response");
+    }
+
+    #[test]
+    fn collector_removes_incomplete_temporary_output_after_limit_failure() {
+        let mut collector = ResponseBodyCollector::new(
+            ExecutionId::new(),
+            ResponseCollectionLimits {
+                preview_bytes: 4,
+                normal_decoded_bytes: 8,
+            },
+            SystemTime::now(),
+        )
+        .expect("collector");
+        collector.push(b"abcdef").expect("spool response");
+        let path = collector
+            .spool
+            .as_ref()
+            .expect("spool file")
+            .path()
+            .to_path_buf();
+
+        let error = collector.push(b"ghi").expect_err("limit failure");
+        assert!(matches!(error, HttpExecutionError::ResponseTooLarge));
+        drop(collector);
+
+        assert!(!path.exists(), "incomplete spool file should be deleted");
+    }
+
+    #[test]
+    fn collector_rejects_decoded_body_at_normal_execution_boundary() {
+        let mut collector = ResponseBodyCollector::new(
+            ExecutionId::new(),
+            ResponseCollectionLimits {
+                preview_bytes: 4,
+                normal_decoded_bytes: 8,
+            },
+            SystemTime::now(),
+        )
+        .expect("collector");
+
+        collector.push(b"abcdefgh").expect("boundary body");
+        let error = collector.push(b"i").expect_err("decoded boundary");
+
+        assert!(matches!(error, HttpExecutionError::ResponseTooLarge));
+    }
+
+    #[tokio::test]
+    #[ignore = "streams more than 1 GiB to verify the normal execution boundary"]
+    async fn near_one_gib_response_stops_at_normal_execution_boundary() {
+        cleanup_all_response_temp_files();
+        let (server, _captured) = start_fixture(FixtureMode::NearOneGibBoundary).await;
+        let events = run_fixture_request(RequestContent {
+            method: "GET".to_owned(),
+            url: server.url("/near-one-gib"),
+            ..RequestContent::blank()
+        })
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            ExecutionEventKind::Failed { message } if message == "response.too_large"
+        )));
+        cleanup_all_response_temp_files();
+    }
+
+    #[test]
+    fn cleanup_removes_response_temp_files_after_retention_window() {
+        let directory = tempfile::TempDir::new().expect("response temp directory");
+        let file_path = directory.path().join("response-expired.tmp");
+        std::fs::write(&file_path, b"expired").expect("write expired file");
+
+        cleanup_response_temp_files(
+            directory.path().to_path_buf(),
+            SystemTime::now() + Duration::from_secs(RESPONSE_TEMP_RETENTION_SECONDS + 1),
+            response_temp_retention(),
+        )
+        .expect("cleanup response temp files");
+
+        assert!(
+            !file_path.exists(),
+            "expired response temp file should be removed"
+        );
+    }
+
+    #[tokio::test]
     async fn eight_concurrent_responses_complete_with_timing_metadata() {
         let server = start_multi_response_fixture(8).await;
         let coordinator = Arc::new(ExecutionCoordinator::new());
@@ -1693,6 +2121,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_during_spooled_download_removes_incomplete_temporary_output() {
+        cleanup_all_response_temp_files();
+        let (server, _captured) = start_fixture(FixtureMode::SlowLargeDownload).await;
+        let coordinator = Arc::new(ExecutionCoordinator::new());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let request = ExecutionRequest {
+            draft_id: RequestDraftId::new(),
+            workspace_base_directory: None,
+            content: RequestContent {
+                url: server.url("/large-download"),
+                ..RequestContent::blank()
+            },
+        };
+        let sink = event_sink(&events);
+        let started = coordinator
+            .start(request, sink, run_http_execution)
+            .expect("start execution");
+
+        wait_until(&events, |events| {
+            events.iter().any(|event| {
+                matches!(
+                    event.kind,
+                    ExecutionEventKind::DownloadProgress { received_bytes, .. }
+                        if received_bytes > MAX_RESPONSE_PREVIEW_BYTES as u64
+                )
+            })
+        })
+        .await;
+        coordinator
+            .cancel(started.execution_id)
+            .expect("cancel execution");
+        let events = wait_for_terminal(events).await;
+
+        assert_one_cancelled_terminal(&events);
+        assert!(!response_temp_files_for_execution(started.execution_id)
+            .expect("list response temp files")
+            .iter()
+            .any(|path| path.exists()));
+    }
+
+    #[tokio::test]
     async fn cancel_during_upload_emits_one_terminal_event() {
         let (server, _captured) = start_fixture(FixtureMode::SlowUploadRead).await;
         let coordinator = Arc::new(ExecutionCoordinator::new());
@@ -1773,7 +2242,7 @@ mod tests {
         events: &Arc<Mutex<Vec<ExecutionEvent>>>,
         predicate: impl Fn(&[ExecutionEvent]) -> bool,
     ) {
-        for _ in 0..300 {
+        for _ in 0..3_000 {
             {
                 let events = events.lock().expect("lock events");
                 if predicate(&events) {
@@ -2007,7 +2476,12 @@ mod tests {
         Echo,
         SlowHeaders,
         SlowDownload,
+        SlowLargeDownload,
         SlowUploadRead,
+        NearOneGibBoundary,
+        Body {
+            body: Vec<u8>,
+        },
         Compressed {
             encoding: &'static str,
             body: Vec<u8>,
@@ -2051,11 +2525,54 @@ mod tests {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     let _ = stream.write_all(b"two").await;
                 }
+                FixtureMode::SlowLargeDownload => {
+                    let total_bytes = MAX_RESPONSE_PREVIEW_BYTES + 2;
+                    let response =
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {total_bytes}\r\n\r\n");
+                    stream
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("write large download headers");
+                    stream
+                        .write_all(&vec![b'x'; MAX_RESPONSE_PREVIEW_BYTES + 1])
+                        .await
+                        .expect("write first large chunk");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let _ = stream.write_all(b"y").await;
+                }
+                FixtureMode::NearOneGibBoundary => {
+                    let total_bytes = MAX_NORMAL_RESPONSE_DECODED_BYTES + 1;
+                    let response =
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {total_bytes}\r\n\r\n");
+                    stream
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("write near-boundary headers");
+                    let chunk = vec![b'g'; 1024 * 1024];
+                    let mut sent = 0_u64;
+                    while sent < total_bytes {
+                        let remaining = (total_bytes - sent) as usize;
+                        let next_len = remaining.min(chunk.len());
+                        if stream.write_all(&chunk[..next_len]).await.is_err() {
+                            break;
+                        }
+                        sent += next_len as u64;
+                    }
+                }
                 FixtureMode::SlowUploadRead => {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     let _ = stream
                         .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
                         .await;
+                }
+                FixtureMode::Body { body } => {
+                    let response =
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                    stream
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("write body headers");
+                    stream.write_all(&body).await.expect("write body");
                 }
                 FixtureMode::Compressed { encoding, body } => {
                     let response = format!(
@@ -2240,5 +2757,26 @@ mod tests {
         }
 
         String::from_utf8_lossy(&buffer).into_owned()
+    }
+
+    fn response_temp_files_for_execution(
+        execution_id: ExecutionId,
+    ) -> Result<Vec<PathBuf>, std::io::Error> {
+        let Ok(entries) = std::fs::read_dir(response_temp_dir()) else {
+            return Ok(Vec::new());
+        };
+        let execution_id = execution_id.to_string();
+        let mut paths = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(&execution_id))
+            {
+                paths.push(path);
+            }
+        }
+        Ok(paths)
     }
 }

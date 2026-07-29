@@ -60,6 +60,11 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
             Wire {execution.wireBytes.toString()} bytes
           </span>
         ) : null}
+        {execution.responseFile ? (
+          <span className="text-slate-600">
+            File {execution.responseFile.byteCount.toString()} bytes
+          </span>
+        ) : null}
         {execution.uploadProgress ? (
           <span className="text-slate-600">
             Sent {execution.uploadProgress.sentBytes.toString()} bytes
@@ -141,6 +146,11 @@ export function ResponsePanel({ execution }: ResponsePanelProps) {
           </pre>
           {execution.bodyTruncated ? (
             <p className="mt-2 text-xs text-amber-200">Response preview truncated.</p>
+          ) : null}
+          {execution.responseFile ? (
+            <p className="mt-2 break-words text-xs text-slate-300">
+              Temporary response file: {execution.responseFile.path}
+            </p>
           ) : null}
         </div>
       </div>

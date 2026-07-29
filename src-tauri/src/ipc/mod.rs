@@ -33,7 +33,7 @@ use crate::{
     application::execution::{
         CancelExecutionResult, ExecutionError, ExecutionEvent, ExecutionEventKind, ExecutionHeader,
         ExecutionId, ExecutionProxyMetadata, ExecutionRequest, ExecutionTimeoutMetadata,
-        ExecutionTimingMetadata, StartExecutionResult,
+        ExecutionTimingMetadata, ResponseFileMetadata, StartExecutionResult,
     },
     application::oauth::{
         CancelOAuthAuthorizationResult, OAuthAuthorizationResult, OAuthError, OAuthFlowId,
@@ -1084,6 +1084,7 @@ pub enum ExecutionEventKindDto {
         body_truncated: bool,
         decoded_bytes: u64,
         wire_bytes: Option<u64>,
+        response_file: Option<ResponseFileMetadataDto>,
         timing: ExecutionTimingMetadataDto,
     },
     Failed {
@@ -1097,6 +1098,14 @@ pub enum ExecutionEventKindDto {
 pub struct ExecutionHeaderDto {
     pub name: String,
     pub value: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseFileMetadataDto {
+    pub path: String,
+    pub byte_count: u64,
+    pub expires_at_epoch_seconds: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -2724,6 +2733,7 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         ExecutionEventDto::export_to_string(&cfg)?,
         ExecutionEventKindDto::export_to_string(&cfg)?,
         ExecutionHeaderDto::export_to_string(&cfg)?,
+        ResponseFileMetadataDto::export_to_string(&cfg)?,
         ExecutionProxyMetadataDto::export_to_string(&cfg)?,
         ExecutionTimeoutMetadataDto::export_to_string(&cfg)?,
         ExecutionTimingMetadataDto::export_to_string(&cfg)?,
@@ -4406,6 +4416,7 @@ impl From<ExecutionEventKind> for ExecutionEventKindDto {
                 body_truncated,
                 decoded_bytes,
                 wire_bytes,
+                response_file,
                 timing,
             } => Self::Completed {
                 status,
@@ -4413,10 +4424,21 @@ impl From<ExecutionEventKind> for ExecutionEventKindDto {
                 body_truncated,
                 decoded_bytes,
                 wire_bytes,
+                response_file: response_file.map(ResponseFileMetadataDto::from),
                 timing: ExecutionTimingMetadataDto::from(timing),
             },
             ExecutionEventKind::Failed { message } => Self::Failed { message },
             ExecutionEventKind::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl From<ResponseFileMetadata> for ResponseFileMetadataDto {
+    fn from(metadata: ResponseFileMetadata) -> Self {
+        Self {
+            path: metadata.path,
+            byte_count: metadata.byte_count,
+            expires_at_epoch_seconds: metadata.expires_at_epoch_seconds,
         }
     }
 }

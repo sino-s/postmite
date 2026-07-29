@@ -4,6 +4,7 @@ import type {
   CancelRequestExecutionInput,
   ExecutionEventDto,
   ExecutionProxyMetadataDto,
+  ResponseFileMetadataDto,
   ExecutionTimingMetadataDto,
   ExecutionTimeoutMetadataDto,
   StartRequestExecutionInput,
@@ -52,6 +53,7 @@ export type ResponseExecutionState = {
   bodyTruncated: boolean;
   decodedBytes: bigint | null;
   wireBytes: bigint | null;
+  responseFile: ResponseFileMetadataDto | null;
   error: string | null;
   uploadProgress: { sentBytes: bigint; totalBytes: bigint } | null;
   downloadProgress: { receivedBytes: bigint; totalBytes: bigint | null } | null;
@@ -136,6 +138,7 @@ export function createQueuedResponseExecutionState({
     bodyTruncated: false,
     decodedBytes: null,
     wireBytes: null,
+    responseFile: null,
     error: null,
     uploadProgress: null,
     downloadProgress: null,
@@ -241,6 +244,7 @@ export function reduceResponseExecutionState(
         bodyTruncated: event.kind.bodyTruncated,
         decodedBytes: event.kind.decodedBytes,
         wireBytes: event.kind.wireBytes,
+        responseFile: event.kind.responseFile,
         timing: event.kind.timing,
         error: null,
       };

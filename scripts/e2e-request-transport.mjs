@@ -32,7 +32,50 @@ const checks = [
       "--nocapture",
     ],
   },
+  {
+    name: "10 MiB response boundary",
+    command: "cargo",
+    args: [
+      "test",
+      "--manifest-path",
+      "src-tauri/Cargo.toml",
+      "--locked",
+      "infrastructure::http::tests::response_at_preview_limit_does_not_create_temporary_file",
+      "--",
+      "--nocapture",
+    ],
+  },
+  {
+    name: "above 10 MiB response spool boundary",
+    command: "cargo",
+    args: [
+      "test",
+      "--manifest-path",
+      "src-tauri/Cargo.toml",
+      "--locked",
+      "infrastructure::http::tests::response_above_preview_limit_spools_to_temporary_file",
+      "--",
+      "--nocapture",
+    ],
+  },
 ];
+
+if (process.env.POSTMITE_NEAR_GIB_RSS === "1") {
+  checks.push({
+    name: "near 1 GiB response boundary",
+    command: "cargo",
+    args: [
+      "test",
+      "--manifest-path",
+      "src-tauri/Cargo.toml",
+      "--locked",
+      "infrastructure::http::tests::near_one_gib_response_stops_at_normal_execution_boundary",
+      "--",
+      "--ignored",
+      "--nocapture",
+    ],
+  });
+}
 
 for (const check of checks) {
   const result = await runAndMeasure(check);

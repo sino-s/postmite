@@ -16,7 +16,9 @@ use uuid::Uuid;
 use crate::domain::request::{MultipartPart, RequestBody, RequestContent, RequestDraftId};
 
 pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
-pub const MAX_RESPONSE_PREVIEW_BYTES: usize = 1024 * 1024;
+pub const MAX_RESPONSE_PREVIEW_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_NORMAL_RESPONSE_DECODED_BYTES: u64 = 1024 * 1024 * 1024;
+pub const RESPONSE_TEMP_RETENTION_SECONDS: u64 = 24 * 60 * 60;
 pub const DEFAULT_EXECUTION_CONCURRENCY: usize = 8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -113,6 +115,7 @@ pub enum ExecutionEventKind {
         body_truncated: bool,
         decoded_bytes: u64,
         wire_bytes: Option<u64>,
+        response_file: Option<ResponseFileMetadata>,
         timing: ExecutionTimingMetadata,
     },
     Failed {
@@ -134,6 +137,14 @@ impl ExecutionEventKind {
 pub struct ExecutionHeader {
     pub name: String,
     pub value: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseFileMetadata {
+    pub path: String,
+    pub byte_count: u64,
+    pub expires_at_epoch_seconds: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -577,6 +588,7 @@ mod tests {
                                 body_truncated: false,
                                 decoded_bytes: 0,
                                 wire_bytes: Some(0),
+                                response_file: None,
                                 timing: ExecutionTimingMetadata::default(),
                             },
                         ) {
