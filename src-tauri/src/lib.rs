@@ -23,6 +23,7 @@ use tauri::{Manager, WindowEvent};
 pub struct AppState {
     pub executions: Arc<ExecutionCoordinator>,
     pub oauth: Arc<OAuthCoordinator>,
+    pub secrets: Arc<dyn SecretStore>,
     pub workspaces: Mutex<WorkspaceService<SqliteWorkspaceRepository>>,
     pub requests: Mutex<RequestService<SqliteWorkspaceRepository>>,
 }
@@ -31,12 +32,14 @@ impl AppState {
     fn new(
         executions: Arc<ExecutionCoordinator>,
         oauth: Arc<OAuthCoordinator>,
+        secrets: Arc<dyn SecretStore>,
         workspaces: WorkspaceService<SqliteWorkspaceRepository>,
         requests: RequestService<SqliteWorkspaceRepository>,
     ) -> Self {
         Self {
             executions,
             oauth,
+            secrets,
             workspaces: Mutex::new(workspaces),
             requests: Mutex::new(requests),
         }
@@ -102,7 +105,7 @@ pub fn run() {
             ));
             let mut workspaces = WorkspaceService::new(workspace_repository, Arc::clone(&secrets));
             let workspace_snapshot = workspaces.initialize()?;
-            let mut requests = RequestService::new(request_repository, secrets);
+            let mut requests = RequestService::new(request_repository, Arc::clone(&secrets));
             diagnostics::configure_perf_request_tabs(
                 &mut requests,
                 workspace_snapshot.selected_workspace_id,
@@ -111,7 +114,9 @@ pub fn run() {
             let oauth = Arc::new(OAuthCoordinator::new(Arc::new(SystemBrowserLauncher)));
 
             diagnostics::configure_e2e_request_smoke(Arc::clone(&executions))?;
-            app.manage(AppState::new(executions, oauth, workspaces, requests));
+            app.manage(AppState::new(
+                executions, oauth, secrets, workspaces, requests,
+            ));
             diagnostics::configure_perf(app, started_at.elapsed())?;
             Ok(())
         })

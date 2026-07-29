@@ -315,6 +315,12 @@ pub enum RequestAuth {
         name: String,
         value: String,
     },
+    ClientCredentials {
+        token_endpoint: String,
+        client_id: String,
+        client_secret: String,
+        scopes: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -174,6 +174,12 @@ pub enum RequestAuthDto {
         name: String,
         value: String,
     },
+    ClientCredentials {
+        token_endpoint: String,
+        client_id: String,
+        client_secret: String,
+        scopes: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -1768,14 +1774,18 @@ pub fn handle_start_request_execution(
             .find(|workspace| workspace.id == workspace_id)
             .and_then(|workspace| workspace.base_directory)
     };
-    let content = {
+    let (content, environment_id) = {
         let mut requests = state.requests.lock().map_err(map_poison_error)?;
         let content = requests
             .materialize_request_content(workspace_id, RequestContent::from(input.content))
             .map_err(|error| IpcError::from(BoundaryError::Request(error)))?;
-        requests
+        let content = requests
             .attach_matching_cookies(workspace_id, content)
-            .map_err(|error| IpcError::from(BoundaryError::Request(error)))?
+            .map_err(|error| IpcError::from(BoundaryError::Request(error)))?;
+        let environment_id = requests
+            .selected_environment_id(workspace_id)
+            .map_err(|error| IpcError::from(BoundaryError::Request(error)))?;
+        (content, environment_id)
     };
     let request = ExecutionRequest {
         draft_id,
@@ -1831,12 +1841,49 @@ pub fn handle_start_request_execution(
         let _ = app_for_sink.emit(REQUEST_EXECUTION_EVENT, ExecutionEventDto::from(event));
     });
 
+    let oauth = Arc::clone(&state.oauth);
+    let secrets = Arc::clone(&state.secrets);
     state
         .executions
         .start(
             request,
             sink,
-            crate::infrastructure::http::run_http_execution,
+            move |execution_id, request, cancellation, coordinator, sink| {
+                let oauth = Arc::clone(&oauth);
+                let secrets = Arc::clone(&secrets);
+                async move {
+                    let content = oauth
+                        .apply_client_credentials_token(
+                            workspace_id,
+                            environment_id,
+                            request.content,
+                            secrets,
+                        )
+                        .await;
+                    let content = match content {
+                        Ok(content) => content,
+                        Err(error) => {
+                            if let Some(event) = coordinator.record_event(
+                                execution_id,
+                                ExecutionEventKind::Failed {
+                                    message: IpcError::from(error).message,
+                                },
+                            ) {
+                                sink(event);
+                            }
+                            return;
+                        }
+                    };
+                    crate::infrastructure::http::run_http_execution(
+                        execution_id,
+                        ExecutionRequest { content, ..request },
+                        cancellation,
+                        coordinator,
+                        sink,
+                    )
+                    .await;
+                }
+            },
         )
         .map(StartRequestExecutionOutput::from)
         .map_err(|error| BoundaryError::Execution(error).into())
@@ -2809,6 +2856,17 @@ impl From<RequestAuth> for RequestAuthDto {
                 name,
                 value,
             },
+            RequestAuth::ClientCredentials {
+                token_endpoint,
+                client_id,
+                client_secret,
+                scopes,
+            } => Self::ClientCredentials {
+                token_endpoint,
+                client_id,
+                client_secret,
+                scopes,
+            },
         }
     }
 }
@@ -2827,6 +2885,17 @@ impl From<RequestAuthDto> for RequestAuth {
                 placement: ApiKeyPlacement::from(placement),
                 name,
                 value,
+            },
+            RequestAuthDto::ClientCredentials {
+                token_endpoint,
+                client_id,
+                client_secret,
+                scopes,
+            } => Self::ClientCredentials {
+                token_endpoint,
+                client_id,
+                client_secret,
+                scopes,
             },
         }
     }
@@ -3442,6 +3511,24 @@ impl From<OAuthError> for IpcError {
                 message: "OAuth state is temporarily unavailable.".to_owned(),
                 details: None,
                 retryable: true,
+            },
+            OAuthError::TokenRequestFailed => Self {
+                code: IpcErrorCode::StateUnavailable,
+                message: "OAuth token request failed.".to_owned(),
+                details: Some("oauth.token.requestFailed".to_owned()),
+                retryable: true,
+            },
+            OAuthError::InvalidTokenResponse => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "OAuth token response is invalid.".to_owned(),
+                details: Some("oauth.token.response.invalid".to_owned()),
+                retryable: false,
+            },
+            OAuthError::RefreshRequired => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "OAuth reauthorization is required.".to_owned(),
+                details: Some("oauth.refresh.required".to_owned()),
+                retryable: false,
             },
         }
     }
