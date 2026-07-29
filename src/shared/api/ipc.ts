@@ -30,6 +30,7 @@ import type {
   RenameWorkspaceInput,
   RenameCollectionFolderInput,
   SavedRequestIdInput,
+  SaveResponseFileInput,
   SelectEnvironmentInput,
   SetExecutionHistoryDisabledInput,
   SetExecutionRecordPinnedInput,
@@ -166,6 +167,8 @@ export const requestIpc = {
     invokeCommand("start_request_execution", input),
   cancelRequestExecution: (input: CancelRequestExecutionInput) =>
     invokeCommand("cancel_request_execution", input),
+  saveResponseFile: (input: SaveResponseFileInput) =>
+    invokeCommand("save_response_file", input),
   startOAuthAuthorization: (input: StartOAuthAuthorizationInput) =>
     invokeCommand("start_oauth_authorization", input),
   cancelOAuthAuthorization: (input: CancelOAuthAuthorizationInput) =>

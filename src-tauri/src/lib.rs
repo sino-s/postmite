@@ -114,6 +114,7 @@ pub fn run() {
             ipc::generate_curl,
             ipc::start_request_execution,
             ipc::cancel_request_execution,
+            ipc::save_response_file,
             ipc::start_oauth_authorization,
             ipc::cancel_oauth_authorization,
         ])

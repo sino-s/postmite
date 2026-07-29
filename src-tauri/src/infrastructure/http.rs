@@ -319,6 +319,28 @@ pub fn cleanup_all_response_temp_files() {
     let _ = cleanup_response_temp_files(response_temp_dir(), SystemTime::now(), Duration::ZERO);
 }
 
+pub fn save_response_file(
+    source_path: &Path,
+    destination_path: &Path,
+    now: SystemTime,
+) -> Result<u64, HttpExecutionError> {
+    let source = validate_response_temp_source(source_path, now)?;
+    if destination_path.as_os_str().is_empty()
+        || !destination_path.is_absolute()
+        || destination_path.is_dir()
+    {
+        return Err(HttpExecutionError::InvalidInput(
+            "response.file.destination.invalid",
+        ));
+    }
+    if source == destination_path {
+        return Err(HttpExecutionError::InvalidInput(
+            "response.file.destination.invalid",
+        ));
+    }
+    fs::copy(source, destination_path).map_err(|_| HttpExecutionError::Response)
+}
+
 fn cleanup_response_temp_files(
     directory: PathBuf,
     now: SystemTime,
@@ -342,6 +364,43 @@ fn cleanup_response_temp_files(
         }
     }
     Ok(())
+}
+
+fn validate_response_temp_source(
+    source_path: &Path,
+    now: SystemTime,
+) -> Result<PathBuf, HttpExecutionError> {
+    let source = source_path
+        .canonicalize()
+        .map_err(|_| HttpExecutionError::InvalidInput("response.file.source.invalid"))?;
+    let temp_dir = response_temp_dir()
+        .canonicalize()
+        .map_err(|_| HttpExecutionError::InvalidInput("response.file.source.invalid"))?;
+    if source.parent() != Some(temp_dir.as_path()) {
+        return Err(HttpExecutionError::InvalidInput(
+            "response.file.source.invalid",
+        ));
+    }
+    let metadata = fs::metadata(&source)
+        .map_err(|_| HttpExecutionError::InvalidInput("response.file.source.invalid"))?;
+    if !metadata.is_file() {
+        return Err(HttpExecutionError::InvalidInput(
+            "response.file.source.invalid",
+        ));
+    }
+    let modified = metadata
+        .modified()
+        .map_err(|_| HttpExecutionError::InvalidInput("response.file.source.invalid"))?;
+    if now
+        .duration_since(modified)
+        .unwrap_or_default()
+        .ge(&response_temp_retention())
+    {
+        return Err(HttpExecutionError::InvalidInput(
+            "response.file.source.expired",
+        ));
+    }
+    Ok(source)
 }
 
 #[derive(Clone, Copy)]
@@ -1218,7 +1277,7 @@ struct CompletedHttpExecution {
 }
 
 #[derive(Debug)]
-enum HttpExecutionError {
+pub enum HttpExecutionError {
     InvalidInput(&'static str),
     BodyFileChanged,
     BodyFileMissing,
@@ -1231,14 +1290,14 @@ enum HttpExecutionError {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum TimeoutKind {
+pub enum TimeoutKind {
     Connect,
     Overall,
     Idle,
 }
 
 impl HttpExecutionError {
-    fn safe_message(&self) -> String {
+    pub fn safe_message(&self) -> String {
         match self {
             Self::InvalidInput(detail) => (*detail).to_owned(),
             Self::BodyFileChanged => "body.file.changed".to_owned(),
@@ -2757,6 +2816,67 @@ mod tests {
         }
 
         String::from_utf8_lossy(&buffer).into_owned()
+    }
+
+    #[test]
+    fn save_response_file_copies_only_current_temp_sources() {
+        std::fs::create_dir_all(response_temp_dir()).expect("create response temp dir");
+        let source = response_temp_dir().join(format!(
+            "response-{}-save-test-decoded.tmp",
+            ExecutionId::new()
+        ));
+        let destination_dir = tempfile::tempdir().expect("destination tempdir");
+        let destination = destination_dir.path().join("response.bin");
+        std::fs::write(&source, b"response-bytes").expect("write response temp source");
+
+        let bytes = save_response_file(&source, &destination, SystemTime::now())
+            .expect("save response file");
+
+        assert_eq!(bytes, 14);
+        assert_eq!(
+            std::fs::read(&destination).expect("read copied response"),
+            b"response-bytes"
+        );
+        std::fs::remove_file(source).expect("remove response temp source");
+    }
+
+    #[test]
+    fn save_response_file_rejects_non_response_temp_sources() {
+        let source_dir = tempfile::tempdir().expect("source tempdir");
+        let source = source_dir.path().join("outside-response.tmp");
+        let destination_dir = tempfile::tempdir().expect("destination tempdir");
+        let destination = destination_dir.path().join("response.bin");
+        std::fs::write(&source, b"secret").expect("write outside source");
+
+        let error = save_response_file(&source, &destination, SystemTime::now())
+            .expect_err("outside source rejected");
+
+        assert!(matches!(error, HttpExecutionError::InvalidInput(_)));
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn save_response_file_rejects_expired_response_temp_sources() {
+        std::fs::create_dir_all(response_temp_dir()).expect("create response temp dir");
+        let source = response_temp_dir().join(format!(
+            "response-{}-expired-test-decoded.tmp",
+            ExecutionId::new()
+        ));
+        let destination_dir = tempfile::tempdir().expect("destination tempdir");
+        let destination = destination_dir.path().join("response.bin");
+        std::fs::write(&source, b"expired").expect("write response temp source");
+        let modified = std::fs::metadata(&source)
+            .expect("source metadata")
+            .modified()
+            .expect("source modified");
+        let after_expiry = modified + response_temp_retention() + Duration::from_secs(1);
+
+        let error = save_response_file(&source, &destination, after_expiry)
+            .expect_err("expired source rejected");
+
+        assert!(matches!(error, HttpExecutionError::InvalidInput(_)));
+        assert!(!destination.exists());
+        std::fs::remove_file(source).expect("remove response temp source");
     }
 
     fn response_temp_files_for_execution(

@@ -131,6 +131,25 @@ describe("typed IPC adapter", () => {
     });
   });
 
+  it("invokes response file save through typed IPC", async () => {
+    invokeMock.mockResolvedValue({
+      destinationPath: "/home/sino/downloads/response.bin",
+      byteCount: 4096n,
+    });
+
+    await requestIpc.saveResponseFile({
+      sourcePath: "/tmp/postmite-response-files/response.fixture.tmp",
+      destinationPath: "/home/sino/downloads/response.bin",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("save_response_file", {
+      input: {
+        sourcePath: "/tmp/postmite-response-files/response.fixture.tmp",
+        destinationPath: "/home/sino/downloads/response.bin",
+      },
+    });
+  });
+
   it("wraps safe Rust IPC errors without exposing unknown thrown values", async () => {
     invokeMock.mockRejectedValue({
       code: "PERSISTENCE_UNAVAILABLE",
