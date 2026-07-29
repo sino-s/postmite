@@ -21,6 +21,10 @@ use crate::{
         ExecutionId, ExecutionProxyMetadata, ExecutionRequest, ExecutionTimeoutMetadata,
         ExecutionTimingMetadata, StartExecutionResult,
     },
+    application::oauth::{
+        CancelOAuthAuthorizationResult, OAuthAuthorizationResult, OAuthError, OAuthFlowId,
+        StartOAuthAuthorizationRequest,
+    },
     application::request::{
         CloseTabDecision, CollectionLocation, CookieJarSnapshot, ExecutionHistorySnapshot,
         RequestError, RequestRepository, RequestService, RequestWorkspaceSnapshot, ResolvedField,
@@ -80,6 +84,8 @@ pub const DESCRIBE_BODY_FILE_COMMAND: &str = "describe_body_file";
 pub const RELINK_BODY_FILES_COMMAND: &str = "relink_body_files";
 pub const START_REQUEST_EXECUTION_COMMAND: &str = "start_request_execution";
 pub const CANCEL_REQUEST_EXECUTION_COMMAND: &str = "cancel_request_execution";
+pub const START_OAUTH_AUTHORIZATION_COMMAND: &str = "start_oauth_authorization";
+pub const CANCEL_OAUTH_AUTHORIZATION_COMMAND: &str = "cancel_oauth_authorization";
 pub const REQUEST_EXECUTION_EVENT: &str = "request_execution_event";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -704,6 +710,41 @@ pub struct CancelRequestExecutionOutput {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct StartOAuthAuthorizationInput {
+    pub flow_id: String,
+    pub authorization_endpoint: String,
+    pub client_id: String,
+    pub scopes: Vec<String>,
+    pub redirect_path: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthAuthorizationResultDto {
+    pub flow_id: String,
+    pub redirect_uri: String,
+    pub code: Option<String>,
+    pub state: Option<String>,
+    pub error: Option<String>,
+    pub error_description: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelOAuthAuthorizationInput {
+    pub flow_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelOAuthAuthorizationOutput {
+    pub flow_id: String,
+    pub cancelled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct ExecutionEventDto {
     pub execution_id: String,
     pub sequence: u64,
@@ -826,9 +867,11 @@ pub enum BoundaryError {
     InvalidRequestDraftId,
     InvalidRequestTabId,
     InvalidExecutionId,
+    InvalidOAuthFlowId,
     InvalidExecutionRecordId,
     InvalidCookieId,
     Execution(ExecutionError),
+    OAuth(OAuthError),
     StateUnavailable,
 }
 
@@ -1154,6 +1197,22 @@ pub fn cancel_request_execution(
     input: CancelRequestExecutionInput,
 ) -> Result<CancelRequestExecutionOutput, IpcError> {
     handle_cancel_request_execution(state, input)
+}
+
+#[tauri::command]
+pub async fn start_oauth_authorization(
+    state: State<'_, AppState>,
+    input: StartOAuthAuthorizationInput,
+) -> Result<OAuthAuthorizationResultDto, IpcError> {
+    handle_start_oauth_authorization(state, input).await
+}
+
+#[tauri::command]
+pub fn cancel_oauth_authorization(
+    state: State<'_, AppState>,
+    input: CancelOAuthAuthorizationInput,
+) -> Result<CancelOAuthAuthorizationOutput, IpcError> {
+    handle_cancel_oauth_authorization(state, input)
 }
 
 pub fn handle_list_workspaces<R>(
@@ -1970,6 +2029,31 @@ pub fn handle_cancel_request_execution(
         .map_err(|error| BoundaryError::Execution(error).into())
 }
 
+pub async fn handle_start_oauth_authorization(
+    state: State<'_, AppState>,
+    input: StartOAuthAuthorizationInput,
+) -> Result<OAuthAuthorizationResultDto, IpcError> {
+    let request = StartOAuthAuthorizationRequest::try_from(input)?;
+    state
+        .oauth
+        .start(request)
+        .await
+        .map(OAuthAuthorizationResultDto::from)
+        .map_err(|error| BoundaryError::OAuth(error).into())
+}
+
+pub fn handle_cancel_oauth_authorization(
+    state: State<'_, AppState>,
+    input: CancelOAuthAuthorizationInput,
+) -> Result<CancelOAuthAuthorizationOutput, IpcError> {
+    let flow_id = parse_oauth_flow_id(&input.flow_id)?;
+    state
+        .oauth
+        .cancel(flow_id)
+        .map(CancelOAuthAuthorizationOutput::from)
+        .map_err(|error| BoundaryError::OAuth(error).into())
+}
+
 pub fn render_contract() -> Result<String, ts_rs::ExportError> {
     let cfg = Config::new();
     let mut contract = String::from(
@@ -2049,6 +2133,10 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         StartRequestExecutionOutput::export_to_string(&cfg)?,
         CancelRequestExecutionInput::export_to_string(&cfg)?,
         CancelRequestExecutionOutput::export_to_string(&cfg)?,
+        StartOAuthAuthorizationInput::export_to_string(&cfg)?,
+        OAuthAuthorizationResultDto::export_to_string(&cfg)?,
+        CancelOAuthAuthorizationInput::export_to_string(&cfg)?,
+        CancelOAuthAuthorizationOutput::export_to_string(&cfg)?,
         ExecutionEventDto::export_to_string(&cfg)?,
         ExecutionEventKindDto::export_to_string(&cfg)?,
         ExecutionHeaderDto::export_to_string(&cfg)?,
@@ -2219,6 +2307,14 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \t\tinput: CancelRequestExecutionInput;\n\
          \t\toutput: CancelRequestExecutionOutput;\n\
          \t};\n\
+         \tstart_oauth_authorization: {\n\
+         \t\tinput: StartOAuthAuthorizationInput;\n\
+         \t\toutput: OAuthAuthorizationResultDto;\n\
+         \t};\n\
+         \tcancel_oauth_authorization: {\n\
+         \t\tinput: CancelOAuthAuthorizationInput;\n\
+         \t\toutput: CancelOAuthAuthorizationOutput;\n\
+         \t};\n\
          };\n\n\
          export type IpcCommandContracts = WorkspaceCommandContracts & RequestCommandContracts;\n",
     );
@@ -2260,6 +2356,10 @@ fn parse_request_tab_id(value: &str) -> Result<RequestTabId, IpcError> {
 
 fn parse_execution_id(value: &str) -> Result<ExecutionId, IpcError> {
     ExecutionId::from_str(value).map_err(|_| BoundaryError::InvalidExecutionId.into())
+}
+
+fn parse_oauth_flow_id(value: &str) -> Result<OAuthFlowId, IpcError> {
+    OAuthFlowId::from_str(value).map_err(|_| BoundaryError::InvalidOAuthFlowId.into())
 }
 
 fn parse_execution_record_id(value: &str) -> Result<ExecutionRecordId, IpcError> {
@@ -3053,6 +3153,43 @@ impl From<CancelExecutionResult> for CancelRequestExecutionOutput {
     }
 }
 
+impl TryFrom<StartOAuthAuthorizationInput> for StartOAuthAuthorizationRequest {
+    type Error = IpcError;
+
+    fn try_from(input: StartOAuthAuthorizationInput) -> Result<Self, Self::Error> {
+        Ok(Self {
+            flow_id: parse_oauth_flow_id(&input.flow_id)?,
+            authorization_endpoint: input.authorization_endpoint,
+            client_id: input.client_id,
+            scopes: input.scopes,
+            redirect_path: input.redirect_path,
+            timeout_ms: input.timeout_ms,
+        })
+    }
+}
+
+impl From<OAuthAuthorizationResult> for OAuthAuthorizationResultDto {
+    fn from(result: OAuthAuthorizationResult) -> Self {
+        Self {
+            flow_id: result.flow_id.to_string(),
+            redirect_uri: result.redirect_uri,
+            code: result.code,
+            state: result.state,
+            error: result.error,
+            error_description: result.error_description,
+        }
+    }
+}
+
+impl From<CancelOAuthAuthorizationResult> for CancelOAuthAuthorizationOutput {
+    fn from(result: CancelOAuthAuthorizationResult) -> Self {
+        Self {
+            flow_id: result.flow_id.to_string(),
+            cancelled: result.cancelled,
+        }
+    }
+}
+
 impl From<ExecutionEvent> for ExecutionEventDto {
     fn from(event: ExecutionEvent) -> Self {
         Self {
@@ -3184,6 +3321,7 @@ impl From<BoundaryError> for IpcError {
             BoundaryError::Workspace(error) => error.into(),
             BoundaryError::Request(error) => error.into(),
             BoundaryError::Execution(error) => error.into(),
+            BoundaryError::OAuth(error) => error.into(),
             BoundaryError::InvalidWorkspaceId => Self {
                 code: IpcErrorCode::InvalidInput,
                 message: "Workspace id is invalid.".to_owned(),
@@ -3226,6 +3364,12 @@ impl From<BoundaryError> for IpcError {
                 details: Some("executionId".to_owned()),
                 retryable: false,
             },
+            BoundaryError::InvalidOAuthFlowId => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "OAuth flow id is invalid.".to_owned(),
+                details: Some("flowId".to_owned()),
+                retryable: false,
+            },
             BoundaryError::InvalidExecutionRecordId => Self {
                 code: IpcErrorCode::InvalidInput,
                 message: "Execution record id is invalid.".to_owned(),
@@ -3241,6 +3385,61 @@ impl From<BoundaryError> for IpcError {
             BoundaryError::StateUnavailable => Self {
                 code: IpcErrorCode::StateUnavailable,
                 message: "Workspace state is temporarily unavailable.".to_owned(),
+                details: None,
+                retryable: true,
+            },
+        }
+    }
+}
+
+impl From<OAuthError> for IpcError {
+    fn from(error: OAuthError) -> Self {
+        match error {
+            OAuthError::InvalidInput(detail) => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "OAuth input is invalid.".to_owned(),
+                details: Some(detail.to_owned()),
+                retryable: false,
+            },
+            OAuthError::ListenerFailed => Self {
+                code: IpcErrorCode::StateUnavailable,
+                message: "OAuth callback listener is unavailable.".to_owned(),
+                details: None,
+                retryable: true,
+            },
+            OAuthError::Timeout => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "OAuth authorization timed out.".to_owned(),
+                details: Some("oauth.timeout".to_owned()),
+                retryable: false,
+            },
+            OAuthError::Cancelled => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "OAuth authorization was cancelled.".to_owned(),
+                details: Some("oauth.cancelled".to_owned()),
+                retryable: false,
+            },
+            OAuthError::StateMismatch => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "OAuth state did not match.".to_owned(),
+                details: Some("oauth.state.mismatch".to_owned()),
+                retryable: false,
+            },
+            OAuthError::MissingCode => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "OAuth authorization code is missing.".to_owned(),
+                details: Some("oauth.code.required".to_owned()),
+                retryable: false,
+            },
+            OAuthError::BrowserOpenFailed => Self {
+                code: IpcErrorCode::StateUnavailable,
+                message: "System browser could not be opened.".to_owned(),
+                details: None,
+                retryable: true,
+            },
+            OAuthError::StateUnavailable => Self {
+                code: IpcErrorCode::StateUnavailable,
+                message: "OAuth state is temporarily unavailable.".to_owned(),
                 details: None,
                 retryable: true,
             },
