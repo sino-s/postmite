@@ -67,6 +67,7 @@ import { SecurityPanel } from "./components/SecurityPanel";
 import { TabStrip } from "./components/TabStrip";
 import { applyQueryToUrl } from "./ordered-fields";
 import { useI18n, type AppLocale } from "../../app/i18n";
+import { usePreferences, type Density, type Theme } from "../../app/preferences";
 import {
   emptyRequestContent,
   isDraftDirty,
@@ -88,6 +89,7 @@ export function RequestEditor({
   onExecute = startRequestExecution,
 }: RequestEditorProps) {
   const { locale, setLocale, t } = useI18n();
+  const { density, setDensity, setTheme, theme } = usePreferences();
   const queryClient = useQueryClient();
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<OverrideMap>({});
@@ -567,6 +569,29 @@ export function RequestEditor({
       <header className="relative flex min-h-12 items-center justify-between border-b border-slate-300 bg-white px-4">
         <h1 className="text-sm font-semibold">Postmite</h1>
         <div className="flex items-center gap-2">
+          <label className="sr-only" htmlFor="app-theme">{t("app.theme")}</label>
+          <select
+            aria-label={t("app.theme")}
+            className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm"
+            id="app-theme"
+            onChange={(event) => setTheme(event.currentTarget.value as Theme)}
+            value={theme}
+          >
+            <option value="light">{t("app.theme.light")}</option>
+            <option value="dark">{t("app.theme.dark")}</option>
+            <option value="system">{t("app.theme.system")}</option>
+          </select>
+          <label className="sr-only" htmlFor="app-density">{t("app.density")}</label>
+          <select
+            aria-label={t("app.density")}
+            className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm"
+            id="app-density"
+            onChange={(event) => setDensity(event.currentTarget.value as Density)}
+            value={density}
+          >
+            <option value="comfortable">{t("app.density.comfortable")}</option>
+            <option value="compact">{t("app.density.compact")}</option>
+          </select>
           <button
             aria-label={t("app.diagnostics")}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-white hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
@@ -656,6 +681,7 @@ export function RequestEditor({
             >
               <RequestLine
                 content={activeContent}
+                executionPhase={activeExecution?.phase ?? "idle"}
                 executionRunning={activeExecutionRunning}
                 onCancel={() => void handleCancel()}
                 onChange={changeActiveDraft}

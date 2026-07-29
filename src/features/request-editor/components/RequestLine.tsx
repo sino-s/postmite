@@ -1,6 +1,7 @@
 import { Ban, Play, Save } from "lucide-react";
 
 import type { RequestContentDto } from "../../../shared/api/generated/ipc";
+import type { ResponseExecutionPhase } from "../../../shared/api/execution";
 import { queryFromUrl } from "../ordered-fields";
 import { useI18n } from "../../../app/i18n";
 
@@ -8,6 +9,7 @@ const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
 type RequestLineProps = {
   content: RequestContentDto;
+  executionPhase: ResponseExecutionPhase;
   executionRunning: boolean;
   onCancel: () => void;
   onChange: (updater: (content: RequestContentDto) => RequestContentDto) => void;
@@ -16,8 +18,20 @@ type RequestLineProps = {
   saving: boolean;
 };
 
+function executionStatus(phase: ResponseExecutionPhase, t: ReturnType<typeof useI18n>["t"]) {
+  const key = {
+    idle: "app.executionIdle",
+    running: "app.executionRunning",
+    completed: "app.executionCompleted",
+    failed: "app.executionFailed",
+    cancelled: "app.executionCancelled",
+  }[phase] as "app.executionIdle" | "app.executionRunning" | "app.executionCompleted" | "app.executionFailed" | "app.executionCancelled";
+  return t(key);
+}
+
 export function RequestLine({
   content,
+  executionPhase,
   executionRunning,
   onCancel,
   onChange,
@@ -28,6 +42,9 @@ export function RequestLine({
   const { t } = useI18n();
   return (
     <div className="grid gap-3 rounded-md border border-slate-300 bg-white p-3 md:grid-cols-[180px_140px_minmax(0,1fr)_auto_auto_auto]">
+      <p aria-atomic="true" aria-live="polite" className="sr-only" role="status">
+        {executionStatus(executionPhase, t)}
+      </p>
       <label className="sr-only" htmlFor="request-name">
         {t("request.name")}
       </label>
