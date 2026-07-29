@@ -21,7 +21,7 @@ import {
 } from "../shared/api/requests";
 import { workspaceQueryKey } from "../shared/api/workspaces";
 import { App } from "./App";
-import { queryFromUrl } from "../features/request-editor/ordered-fields";
+import { queryFromUrl } from "../features/request-editor/models/ordered-fields";
 
 const workspaceApiMock = vi.hoisted(() => ({
   workspaceQuery: {
@@ -84,7 +84,7 @@ vi.mock("../shared/api/execution", async (importActual) => {
     startRequestExecution: executionApiMock.startRequestExecution,
   };
 });
-vi.mock("../features/request-editor/CodeMirrorBodyEditor", () => ({
+vi.mock("../features/request-editor/editors/CodeMirrorBodyEditor", () => ({
   CodeMirrorBodyEditor: ({
     value,
     onChange,

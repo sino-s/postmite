@@ -6,7 +6,7 @@ import type {
   RequestContentDto,
   RequestDraftDto,
   ResolvedRequestContentDto,
-} from "../../shared/api/generated/ipc";
+} from "../../../shared/api/generated/ipc";
 
 export type OverrideMap = Record<string, RequestContentDto>;
 
@@ -185,7 +185,7 @@ export function formatVariableSource(source: string) {
 }
 
 export function formatProxyMetadata(
-  proxy: import("../../shared/api/execution").ResponseExecutionState["proxy"],
+  proxy: import("../../../shared/api/execution").ResponseExecutionState["proxy"],
 ) {
   if (!proxy) {
     return "unknown";

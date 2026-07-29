@@ -7,7 +7,7 @@ import {
   placeholder,
 } from "@codemirror/view";
 import { useEffect, useRef } from "react";
-import { useI18n } from "../../app/i18n";
+import { useI18n } from "../../../app/i18n";
 
 type CodeMirrorBodyEditorProps = {
   mode: "json" | "text";

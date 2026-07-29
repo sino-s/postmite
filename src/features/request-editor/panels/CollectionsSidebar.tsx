@@ -5,7 +5,7 @@ import { Button } from "../../../components/ui/button";
 import { NativeSelect } from "../../../components/ui/native-select";
 import { ScrollArea } from "../../../components/ui/scroll-area";
 import type { CollectionFolderDto, EnvironmentDto, SavedRequestDto } from "../../../shared/api/generated/ipc";
-import { IconButton } from "./IconButton";
+import { IconButton } from "../controls/IconButton";
 import { useI18n } from "../../../app/i18n";
 
 type CollectionsSidebarProps = {

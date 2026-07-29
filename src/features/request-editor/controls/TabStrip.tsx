@@ -2,7 +2,7 @@ import { X } from "lucide-react";
 
 import { Button } from "../../../components/ui/button";
 import type { RequestDraftDto, RequestTabDto } from "../../../shared/api/generated/ipc";
-import { isDraftDirty, type OverrideMap } from "../request-editor-model";
+import { isDraftDirty, type OverrideMap } from "../models/request-editor-model";
 
 type TabStripProps = {
   activeTabId: string | null;

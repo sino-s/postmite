@@ -1,11 +1,11 @@
-import type { ResponseExecutionState } from "../../shared/api/execution";
+import type { ResponseExecutionState } from "../../../shared/api/execution";
 import type {
   ExecutionHistorySnapshotDto,
   RequestContentDto,
   RequestWorkspaceSnapshotDto,
   ResolvedRequestContentDto,
   WorkspaceCookieDto,
-} from "../../shared/api/generated/ipc";
+} from "../../../shared/api/generated/ipc";
 
 const workspaceId = "screenshot-workspace";
 const mainCollectionId = "collection-public-api";

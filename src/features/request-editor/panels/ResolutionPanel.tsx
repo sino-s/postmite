@@ -1,5 +1,5 @@
 import type { ResolvedRequestContentDto } from "../../../shared/api/generated/ipc";
-import { formatResolutionError, formatVariableSource, sortResolvedFields } from "../request-editor-model";
+import { formatResolutionError, formatVariableSource, sortResolvedFields } from "../models/request-editor-model";
 
 type ResolutionPanelProps = {
   resolution: ResolvedRequestContentDto | null;

@@ -6,7 +6,7 @@ import {
   htmlSandboxSource,
   svgSandboxSource,
 } from "./response-viewer-model";
-import type { ResponseExecutionState } from "../../shared/api/execution";
+import type { ResponseExecutionState } from "../../../shared/api/execution";
 
 describe("response viewer model", () => {
   it("selects structured and media-safe viewers from attacker-controlled MIME types", () => {

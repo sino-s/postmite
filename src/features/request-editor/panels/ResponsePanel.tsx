@@ -9,12 +9,12 @@ import {
   formatByteCount,
   htmlSandboxSource,
   svgSandboxSource,
-} from "../response-viewer-model";
+} from "../models/response-viewer-model";
 import {
   prepareStructuredViewerAsync,
-} from "../response-viewer-worker-client";
-import { formatBodyPreview, formatProxyMetadata } from "../request-editor-model";
-import type { StructuredViewerResult } from "../response-viewer-worker-core";
+} from "../workers/response-viewer-worker-client";
+import { formatBodyPreview, formatProxyMetadata } from "../models/request-editor-model";
+import type { StructuredViewerResult } from "../workers/response-viewer-worker-core";
 import { useI18n } from "../../../app/i18n";
 
 type ResponsePanelProps = {

@@ -1,4 +1,4 @@
-import type { ResponseExecutionState } from "../../shared/api/execution";
+import type { ResponseExecutionState } from "../../../shared/api/execution";
 
 export type ResponseViewerKind =
   | "empty"

@@ -4,7 +4,7 @@ import type {
   RequestBodyDto,
   RequestContentDto,
   RequestDraftDto,
-} from "../../shared/api/generated/ipc";
+} from "../../../shared/api/generated/ipc";
 import {
   bodyModeLabel,
   emptyBodyForMode,

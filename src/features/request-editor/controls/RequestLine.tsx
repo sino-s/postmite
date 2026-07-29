@@ -5,7 +5,7 @@ import { Input } from "../../../components/ui/input";
 import { NativeSelect } from "../../../components/ui/native-select";
 import type { RequestContentDto } from "../../../shared/api/generated/ipc";
 import type { ResponseExecutionPhase } from "../../../shared/api/execution";
-import { queryFromUrl } from "../ordered-fields";
+import { queryFromUrl } from "../models/ordered-fields";
 import { useI18n } from "../../../app/i18n";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
