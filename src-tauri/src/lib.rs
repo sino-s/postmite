@@ -30,6 +30,7 @@ const SESSION_ONLY_SECRETS_ENV: &str = "POSTMITE_SESSION_ONLY_SECRETS";
 
 pub struct AppState {
     pub database_recovery: DatabaseRecoveryState,
+    pub diagnostics: diagnostics::DiagnosticsService,
     pub executions: Arc<ExecutionCoordinator>,
     pub oauth: Arc<OAuthCoordinator>,
     pub secrets: Arc<dyn SecretStore>,
@@ -90,6 +91,9 @@ pub fn run() {
             ipc::restore_native_backup,
             ipc::get_database_recovery_state,
             ipc::export_recoverable_database,
+            ipc::get_diagnostic_bundle_preview,
+            ipc::set_diagnostic_debug_logging,
+            ipc::export_diagnostic_bundle,
             ipc::preview_curl_import,
             ipc::import_curl_as_draft,
             ipc::generate_curl,
@@ -104,6 +108,7 @@ pub fn run() {
             fs::create_dir_all(&app_data_dir)?;
             cleanup_expired_response_temp_files(SystemTime::now());
             let database_path = app_data_dir.join("postmite.sqlite3");
+            let diagnostics = diagnostics::DiagnosticsService::new(&app_data_dir)?;
 
             let workspace_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let database_recovery = workspace_repository.recovery_state();
@@ -153,6 +158,7 @@ pub fn run() {
             }
             app.manage(AppState {
                 database_recovery,
+                diagnostics,
                 executions,
                 oauth,
                 secrets,
@@ -161,6 +167,14 @@ pub fn run() {
                 postman_imports: Mutex::new(postman_imports),
                 native_backups: Mutex::new(native_backups),
             });
+            let state = app.state::<AppState>();
+            state.diagnostics.record_startup(
+                match state.database_recovery.mode {
+                    DatabaseRecoveryMode::Normal => "normal",
+                    DatabaseRecoveryMode::Safe => "safe",
+                },
+                started_at.elapsed(),
+            );
             diagnostics::configure_perf(app, started_at.elapsed())?;
             Ok(())
         })

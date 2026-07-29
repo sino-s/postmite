@@ -150,6 +150,29 @@ describe("typed IPC adapter", () => {
     });
   });
 
+  it("previews and exports diagnostics only through typed Rust IPC", async () => {
+    invokeMock.mockResolvedValue({
+      entries: ["manifest.json", "runtime-metadata.json"],
+      exclusions: ["postmite.sqlite3"],
+      debugLoggingEnabled: false,
+    });
+
+    await requestIpc.getDiagnosticBundlePreview();
+    await requestIpc.setDiagnosticDebugLogging({
+      enabled: true,
+      durationMinutes: 15,
+    });
+    await requestIpc.exportDiagnosticBundle({ bundlePath: "/tmp/diagnostics.zip" });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_diagnostic_bundle_preview");
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "set_diagnostic_debug_logging", {
+      input: { enabled: true, durationMinutes: 15 },
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "export_diagnostic_bundle", {
+      input: { bundlePath: "/tmp/diagnostics.zip" },
+    });
+  });
+
   it("wraps safe Rust IPC errors without exposing unknown thrown values", async () => {
     invokeMock.mockRejectedValue({
       code: "PERSISTENCE_UNAVAILABLE",

@@ -54,6 +54,9 @@ use crate::{
         VariableSource, REDACTED_VALUE,
     },
     application::workspace::{WorkspaceError, WorkspaceService, WorkspaceSnapshot},
+    diagnostics::{
+        DebugLoggingStatus, DiagnosticBundleExport, DiagnosticBundlePreview, DiagnosticsError,
+    },
     domain::{
         request::{
             ApiKeyPlacement, BodyFilePath, BodyFileReference, CollectionFolder, CollectionId,
@@ -119,6 +122,9 @@ pub const PREVIEW_NATIVE_BACKUP_RESTORE_COMMAND: &str = "preview_native_backup_r
 pub const RESTORE_NATIVE_BACKUP_COMMAND: &str = "restore_native_backup";
 pub const GET_DATABASE_RECOVERY_STATE_COMMAND: &str = "get_database_recovery_state";
 pub const EXPORT_RECOVERABLE_DATABASE_COMMAND: &str = "export_recoverable_database";
+pub const GET_DIAGNOSTIC_BUNDLE_PREVIEW_COMMAND: &str = "get_diagnostic_bundle_preview";
+pub const SET_DIAGNOSTIC_DEBUG_LOGGING_COMMAND: &str = "set_diagnostic_debug_logging";
+pub const EXPORT_DIAGNOSTIC_BUNDLE_COMMAND: &str = "export_diagnostic_bundle";
 pub const PREVIEW_CURL_IMPORT_COMMAND: &str = "preview_curl_import";
 pub const IMPORT_CURL_AS_DRAFT_COMMAND: &str = "import_curl_as_draft";
 pub const GENERATE_CURL_COMMAND: &str = "generate_curl";
@@ -673,6 +679,41 @@ pub struct RecoverableDatabaseExportDto {
     pub table_count: u32,
     pub row_count: u32,
     pub redacted_value_count: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticDebugLoggingInput {
+    pub enabled: bool,
+    pub duration_minutes: Option<u16>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticBundleExportInput {
+    pub bundle_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticBundlePreviewDto {
+    pub entries: Vec<String>,
+    pub exclusions: Vec<String>,
+    pub debug_logging_enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticDebugLoggingStatusDto {
+    pub enabled: bool,
+    pub expires_at_epoch_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticBundleExportDto {
+    pub bundle_path: String,
+    pub preview: DiagnosticBundlePreviewDto,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]

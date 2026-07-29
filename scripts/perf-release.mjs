@@ -201,7 +201,6 @@ function printResult(result) {
     const status = check.pass ? "PASS" : "FAIL";
     console.log(`${status} ${check.name}: ${check.actual} <= ${check.budget}`);
   }
-  console.log(`INFO tenTabRssMiB: ${result.metrics.tenTabRssMiB}`);
 }
 
 function readRssKiB(pid, procRoot) {

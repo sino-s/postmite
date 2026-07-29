@@ -66,6 +66,11 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         DatabaseRecoveryModeDto::export_to_string(&cfg)?,
         RecoverableDatabaseExportInput::export_to_string(&cfg)?,
         RecoverableDatabaseExportDto::export_to_string(&cfg)?,
+        DiagnosticDebugLoggingInput::export_to_string(&cfg)?,
+        DiagnosticBundleExportInput::export_to_string(&cfg)?,
+        DiagnosticBundlePreviewDto::export_to_string(&cfg)?,
+        DiagnosticDebugLoggingStatusDto::export_to_string(&cfg)?,
+        DiagnosticBundleExportDto::export_to_string(&cfg)?,
         CurlImportInput::export_to_string(&cfg)?,
         CurlGenerateInput::export_to_string(&cfg)?,
         CurlImportPreviewDto::export_to_string(&cfg)?,
@@ -319,6 +324,18 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \texport_recoverable_database: {\n\
          \t\tinput: RecoverableDatabaseExportInput;\n\
          \t\toutput: RecoverableDatabaseExportDto;\n\
+         \t};\n\
+         \tget_diagnostic_bundle_preview: {\n\
+         \t\tinput: undefined;\n\
+         \t\toutput: DiagnosticBundlePreviewDto;\n\
+         \t};\n\
+         \tset_diagnostic_debug_logging: {\n\
+         \t\tinput: DiagnosticDebugLoggingInput;\n\
+         \t\toutput: DiagnosticDebugLoggingStatusDto;\n\
+         \t};\n\
+         \texport_diagnostic_bundle: {\n\
+         \t\tinput: DiagnosticBundleExportInput;\n\
+         \t\toutput: DiagnosticBundleExportDto;\n\
          \t};\n\
          \tpreview_curl_import: {\n\
          \t\tinput: CurlImportInput;\n\
@@ -764,6 +781,34 @@ impl From<ApplicationRecoverableDatabaseExport> for RecoverableDatabaseExportDto
             table_count: export.table_count,
             row_count: export.row_count,
             redacted_value_count: export.redacted_value_count,
+        }
+    }
+}
+
+impl From<DiagnosticBundlePreview> for DiagnosticBundlePreviewDto {
+    fn from(preview: DiagnosticBundlePreview) -> Self {
+        Self {
+            entries: preview.entries,
+            exclusions: preview.exclusions,
+            debug_logging_enabled: preview.debug_logging_enabled,
+        }
+    }
+}
+
+impl From<DebugLoggingStatus> for DiagnosticDebugLoggingStatusDto {
+    fn from(status: DebugLoggingStatus) -> Self {
+        Self {
+            enabled: status.enabled,
+            expires_at_epoch_seconds: status.expires_at_epoch_seconds,
+        }
+    }
+}
+
+impl From<DiagnosticBundleExport> for DiagnosticBundleExportDto {
+    fn from(result: DiagnosticBundleExport) -> Self {
+        Self {
+            bundle_path: result.bundle_path,
+            preview: result.preview.into(),
         }
     }
 }

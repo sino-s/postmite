@@ -11,6 +11,8 @@ import type {
   CreateWorkspaceInput,
   CurlGenerateInput,
   CurlImportInput,
+  DiagnosticBundleExportInput,
+  DiagnosticDebugLoggingInput,
   DescribeBodyFileInput,
   ExecutionRecordIdInput,
   IpcCommandContracts,
@@ -163,6 +165,12 @@ export const requestIpc = {
     invokeCommand("get_database_recovery_state", undefined),
   exportRecoverableDatabase: (input: RecoverableDatabaseExportInput) =>
     invokeCommand("export_recoverable_database", input),
+  getDiagnosticBundlePreview: () =>
+    invokeCommand("get_diagnostic_bundle_preview", undefined),
+  setDiagnosticDebugLogging: (input: DiagnosticDebugLoggingInput) =>
+    invokeCommand("set_diagnostic_debug_logging", input),
+  exportDiagnosticBundle: (input: DiagnosticBundleExportInput) =>
+    invokeCommand("export_diagnostic_bundle", input),
   previewCurlImport: (input: CurlImportInput) =>
     invokeCommand("preview_curl_import", input),
   importCurlAsDraft: (input: CurlImportInput) =>

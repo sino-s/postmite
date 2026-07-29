@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Folder, Plus, RotateCcw } from "lucide-react";
+import { Bug, Folder, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -57,6 +57,7 @@ import type {
 import { BodyEditor } from "./components/BodyEditor";
 import { CollectionsSidebar } from "./components/CollectionsSidebar";
 import { CookiePanel } from "./components/CookiePanel";
+import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import { FieldTable } from "./components/FieldTable";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { RequestLine } from "./components/RequestLine";
@@ -91,6 +92,7 @@ export function RequestEditor({
   const [executions, setExecutions] = useState<
     Record<string, ResponseExecutionState>
   >({});
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
   const workspaces = useQuery(workspaceQuery);
   const selectedWorkspaceId = workspaces.data?.selectedWorkspaceId;
@@ -560,9 +562,17 @@ export function RequestEditor({
       className="flex min-h-screen flex-col bg-slate-100 text-slate-950"
       onKeyDown={handleEditorKeyDown}
     >
-      <header className="flex min-h-12 items-center justify-between border-b border-slate-300 bg-white px-4">
+      <header className="relative flex min-h-12 items-center justify-between border-b border-slate-300 bg-white px-4">
         <h1 className="text-sm font-semibold">Postmite</h1>
         <div className="flex items-center gap-2">
+          <button
+            aria-label="Diagnostics"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-white hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+            onClick={() => setDiagnosticsOpen((open) => !open)}
+            type="button"
+          >
+            <Bug aria-hidden="true" size={16} />
+          </button>
           <button
             className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
             onClick={() => void handleSetBaseDirectory()}
@@ -589,6 +599,7 @@ export function RequestEditor({
             New
           </button>
         </div>
+        {diagnosticsOpen ? <DiagnosticsPanel onClose={() => setDiagnosticsOpen(false)} /> : null}
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)]">
