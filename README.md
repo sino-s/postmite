@@ -14,14 +14,21 @@ Postmiteは、個人のAPI開発作業を端末内で完結させる、軽量な
 
 詳細設計はローカルの`docs/`に置き、RepositoryにはCommitしません。実装Issueは、設計文書がないCloneでも作業できるよう自己完結させます。
 
-### Quality and performance checks
+### Quality, release, and performance checks
 
-Pull request CI runs Rust format, Rust lint, Rust tests, TypeScript checks, frontend lint, frontend tests, and production builds. The same local command set is exposed through pnpm scripts:
+Pull request CI runs deterministic quality gates: Rust format, Rust lint, Rust tests, TypeScript checks including IPC drift detection, frontend lint, frontend tests, and the production web build. The same local command set is exposed through pnpm scripts:
 
 ```bash
 pnpm ci:rust
 pnpm ci:frontend
+```
+
+Release-only validation runs on `main`, `v*` tags, and manual workflow dispatch. Use these commands locally when an Issue or plan requires package or desktop-build evidence:
+
+```bash
 pnpm ci:build
+pnpm release:bundle
+pnpm release:verify-candidate
 ```
 
 Release performance budgets are measured from the Tauri release binary:
