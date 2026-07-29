@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { inspectReleaseCandidate } from "./release-candidate.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const version = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version;
@@ -100,12 +101,13 @@ function collect() {
   writeFileSync(join(outputDir, "APPIMAGE_BUDGET.json"), `${JSON.stringify(appImageBudget(appImage), null, 2)}\n`);
   writeFileSync(join(outputDir, "THIRD_PARTY_NOTICES.md"), "# Third-party notices\n\nSee `DEPENDENCY_LICENSES.json` for the complete npm and Cargo dependency license record included with this release.\n");
   writeFileSync(join(outputDir, "RELEASE_NOTES.md"), readFileSync(join(repoRoot, "release", "RELEASE_NOTES.md")));
+  writeFileSync(join(outputDir, "RELEASE_CANDIDATE.json"), `${JSON.stringify(inspectReleaseCandidate(), null, 2)}\n`);
   console.log(outputDir);
 }
 
 function verifySource() {
   const config = JSON.parse(readFileSync(join(repoRoot, "src-tauri", "tauri.conf.json"), "utf8"));
-  if (!config.identifier.startsWith("dev.")) fail("Release package identifier must remain a temporary dev.* identifier.");
+  if (config.identifier !== "io.github.sino-s.postmite") fail("Release package identifier must use the approved public namespace.");
   if (!config.bundle.targets.includes("deb") || !config.bundle.targets.includes("appimage")) fail("Ubuntu deb and AppImage bundle targets are required.");
   if (!readFileSync(join(repoRoot, "release", "RELEASE_NOTES.md"), "utf8").includes("does not poll")) fail("Release notes must document opt-in update checks.");
   console.log("release source configuration verified");
@@ -130,7 +132,7 @@ function verify() {
   }
   const licenses = JSON.parse(readFileSync(join(outputDir, "DEPENDENCY_LICENSES.json"), "utf8"));
   if (!licenses.some((entry) => entry.ecosystem === "npm") || !licenses.some((entry) => entry.ecosystem === "cargo")) fail("Dependency license record must include npm and Cargo packages.");
-  for (const name of ["APPIMAGE_BUDGET.json", "THIRD_PARTY_NOTICES.md", "RELEASE_NOTES.md"]) if (!existsSync(join(outputDir, name))) fail(`Missing ${name}.`);
+  for (const name of ["APPIMAGE_BUDGET.json", "THIRD_PARTY_NOTICES.md", "RELEASE_NOTES.md", "RELEASE_CANDIDATE.json"]) if (!existsSync(join(outputDir, name))) fail(`Missing ${name}.`);
   command("dpkg-deb", ["--info", join(outputDir, artifacts[0])]);
   console.log("release artifacts verified");
 }

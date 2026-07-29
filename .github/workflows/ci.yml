@@ -172,6 +172,7 @@ jobs:
           pnpm release:bundle
           pnpm release:artifacts
           pnpm release:verify-artifacts
+          pnpm release:verify-candidate
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -195,7 +196,7 @@ jobs:
       - name: Install runtime and Debian package
         run: |
           sudo apt-get update
-          sudo apt-get install -y dbus-x11 xvfb ./release-artifacts/*.deb
+          sudo apt-get install -y dbus-x11 weston xvfb ./release-artifacts/*.deb
           test -x /usr/bin/postmite
 
       - name: Start installed Debian package
@@ -212,3 +213,37 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 POSTMITE_SESSION_ONLY_SECRETS=1 timeout 15s dbus-run-session -- xvfb-run -a ./release-artifacts/*.AppImage
           status=$?
           test "$status" -eq 124
+
+      - name: Start packages under Wayland
+        run: |
+          dbus-run-session -- bash -euo pipefail <<'EOF'
+          XDG_RUNTIME_DIR="$(mktemp -d)"
+          export XDG_RUNTIME_DIR
+          chmod 700 "$XDG_RUNTIME_DIR"
+          LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe weston --backend=headless-backend.so --use-pixman --socket=postmite-wayland --idle-time=0 >/tmp/postmite-weston.log 2>&1 &
+          weston_pid=$!
+          Xvfb :99 -screen 0 1280x720x24 >/tmp/postmite-xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$weston_pid" "$xvfb_pid" 2>/dev/null || true; wait "$weston_pid" "$xvfb_pid" 2>/dev/null || true; rm -rf "$XDG_RUNTIME_DIR"' EXIT
+          for _ in $(seq 1 50); do test -S "$XDG_RUNTIME_DIR/postmite-wayland" && break; sleep 0.1; done
+          test -S "$XDG_RUNTIME_DIR/postmite-wayland"
+          for _ in $(seq 1 50); do test -S /tmp/.X11-unix/X99 && break; sleep 0.1; done
+          test -S /tmp/.X11-unix/X99
+          export DISPLAY=:99
+          export XDG_CURRENT_DESKTOP=weston
+          export GTK_USE_PORTAL=0
+          dbus-update-activation-environment DISPLAY XDG_CURRENT_DESKTOP GTK_USE_PORTAL
+          run_wayland_smoke() {
+            set +e
+            WAYLAND_DISPLAY=postmite-wayland GDK_BACKEND=wayland GALLIUM_DRIVER=llvmpipe GSK_RENDERER=cairo LIBGL_ALWAYS_SOFTWARE=1 NO_AT_BRIDGE=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 POSTMITE_SESSION_ONLY_SECRETS=1 timeout --foreground 15s "$@"
+            status=$?
+            set -e
+            if test "$status" -ne 124; then
+              cat /tmp/postmite-weston.log
+              exit "$status"
+            fi
+          }
+          run_wayland_smoke /usr/bin/postmite
+          chmod +x release-artifacts/*.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 run_wayland_smoke ./release-artifacts/*.AppImage
+          EOF
