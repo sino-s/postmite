@@ -6,6 +6,20 @@
   --foreground: 240 10% 3.9%;
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: 222 47% 11%;
+  --foreground: 210 40% 96%;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
+    color-scheme: dark;
+    --background: 222 47% 11%;
+    --foreground: 210 40% 96%;
+  }
+}
+
 @theme inline {
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
@@ -22,4 +36,39 @@ body {
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
+}
+
+#root { min-height: 100vh; }
+
+:focus-visible {
+  outline: 3px solid #0284c7 !important;
+  outline-offset: 2px;
+}
+
+:root[data-density="compact"] { --control-height: 2rem; --content-gap: 0.75rem; }
+:root[data-density="comfortable"] { --control-height: 2.5rem; --content-gap: 1rem; }
+
+[data-density="compact"] .h-10 { height: var(--control-height); }
+[data-density="compact"] .h-9 { height: 1.875rem; }
+[data-density="compact"] .h-8 { height: 1.75rem; }
+[data-density="compact"] .gap-4 { gap: var(--content-gap); }
+[data-density="compact"] .p-4 { padding: var(--content-gap); }
+
+:root[data-resolved-theme="dark"] .bg-white { background-color: hsl(222 35% 16%) !important; }
+:root[data-resolved-theme="dark"] .bg-slate-100 { background-color: hsl(222 47% 11%) !important; }
+:root[data-resolved-theme="dark"] .bg-slate-900 { background-color: hsl(222 47% 8%) !important; }
+:root[data-resolved-theme="dark"] .text-slate-950 { color: hsl(210 40% 96%) !important; }
+:root[data-resolved-theme="dark"] .text-slate-700,
+:root[data-resolved-theme="dark"] .text-slate-600 { color: hsl(214 32% 85%) !important; }
+:root[data-resolved-theme="dark"] .border-slate-300 { border-color: hsl(215 25% 35%) !important; }
+:root[data-resolved-theme="dark"] [class~="hover:bg-slate-50"]:hover,
+:root[data-resolved-theme="dark"] [class~="hover:bg-slate-100"]:hover { background-color: hsl(215 28% 23%) !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+}
+
+@media (max-width: 640px) {
+  header { align-items: flex-start; flex-wrap: wrap; gap: 0.5rem; padding-block: 0.5rem; }
+  header > div { flex-wrap: wrap; }
 }

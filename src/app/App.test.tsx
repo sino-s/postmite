@@ -680,6 +680,23 @@ describe("App request editor", () => {
 
     expect(results.violations).toEqual([]);
   });
+
+  it("persists accessible theme and density choices and announces request execution", async () => {
+    const user = userEvent.setup();
+    renderApp(requestSnapshot({ content: requestContent(), isDirty: true }));
+
+    await screen.findByLabelText("Theme");
+    await user.selectOptions(screen.getByLabelText("Theme"), "dark");
+    await user.selectOptions(screen.getByLabelText("Density"), "compact");
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    expect(document.documentElement).toHaveAttribute("data-resolved-theme", "dark");
+    expect(document.documentElement).toHaveAttribute("data-density", "compact");
+    expect(screen.getByRole("status")).toHaveTextContent("Ready to send request.");
+
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Request is running.");
+  });
 });
 
 function renderApp(
