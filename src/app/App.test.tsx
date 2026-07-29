@@ -1120,6 +1120,7 @@ function completeExecutionEventKind(kind: ExecutionEventKindInput): ExecutionEve
       bodyTruncated: false,
       decodedBytes: 0n,
       wireBytes: null,
+      responseFile: null,
       timing: defaultTimingMetadata(),
       ...kind,
     };

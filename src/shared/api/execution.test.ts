@@ -163,6 +163,7 @@ describe("request execution API", () => {
           bodyTruncated: false,
           decodedBytes: 11n,
           wireBytes: 31n,
+          responseFile: null,
           timing: timingMetadata(),
         },
       },
@@ -175,6 +176,45 @@ describe("request execution API", () => {
       bodyPreview: "{\"ok\":true}",
       bodyTruncated: false,
       completedAtMs: 145,
+    });
+  });
+
+  it("keeps spooled response file metadata separate from the preview", () => {
+    const queued = createQueuedResponseExecutionState({
+      draftId: "draft-1",
+      executionId: "execution-1",
+      nowMs: 100,
+    });
+    const states = reduceResponseExecutionStates(
+      { "draft-1": queued },
+      {
+        executionId: "execution-1",
+        sequence: 1n,
+        kind: {
+          type: "COMPLETED",
+          status: 200,
+          bodyPreview: "leading preview",
+          bodyTruncated: true,
+          decodedBytes: 12_582_912n,
+          wireBytes: 12_582_912n,
+          responseFile: {
+            path: "/tmp/postmite-response-files/response.fixture.tmp",
+            byteCount: 12_582_912n,
+            expiresAtEpochSeconds: 1_800_086_400n,
+          },
+          timing: timingMetadata(),
+        },
+      },
+      145,
+    );
+
+    expect(states["draft-1"]).toMatchObject({
+      bodyPreview: "leading preview",
+      bodyTruncated: true,
+      responseFile: {
+        path: "/tmp/postmite-response-files/response.fixture.tmp",
+        byteCount: 12_582_912n,
+      },
     });
   });
 
@@ -333,6 +373,7 @@ function event(
         bodyTruncated: false,
         decodedBytes: 0n,
         wireBytes: null,
+        responseFile: null,
         timing: timingMetadata(),
       },
     };
