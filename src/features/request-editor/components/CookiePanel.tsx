@@ -40,6 +40,13 @@ export function CookiePanel({
   }
 
   async function reveal(cookie: WorkspaceCookieDto) {
+    if (
+      !window.confirm(
+        `Reveal the ${cookie.name} cookie value? This may expose a Secret on screen.`,
+      )
+    ) {
+      return;
+    }
     const value = await onReveal(cookie);
     setRevealed((current) => ({
       ...current,

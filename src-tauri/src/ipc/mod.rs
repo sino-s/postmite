@@ -3643,7 +3643,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        application::workspace::{WorkspaceRepository, WorkspaceSummary},
+        application::{
+            oauth::OAuthError,
+            request::RequestError,
+            workspace::{WorkspaceRepository, WorkspaceSummary},
+        },
         domain::workspace::{Workspace, WorkspaceName},
     };
 
@@ -3844,6 +3848,38 @@ mod tests {
         assert_eq!(error.code, IpcErrorCode::StateUnavailable);
         assert!(error.retryable);
         assert!(!serialized.contains("sentinel poisoned lock detail"));
+    }
+
+    #[test]
+    fn oauth_and_request_errors_do_not_serialize_fixture_secrets() {
+        let fixture_secrets = [
+            fixture_secret("OAUTH_CODE"),
+            fixture_secret("OAUTH_ACCESS_TOKEN"),
+            fixture_secret("OAUTH_REFRESH_TOKEN"),
+            fixture_secret("OAUTH_CLIENT_SECRET"),
+            fixture_secret("OAUTH_CALLBACK_STATE"),
+            fixture_secret("BASIC_PASSWORD"),
+        ];
+        let errors = [
+            IpcError::from(OAuthError::TokenRequestFailed),
+            IpcError::from(OAuthError::InvalidTokenResponse),
+            IpcError::from(OAuthError::RefreshRequired),
+            IpcError::from(RequestError::Persistence(format!(
+                "database failed near {}",
+                fixture_secrets[5].as_str()
+            ))),
+        ];
+
+        for error in errors {
+            let serialized = serde_json::to_string(&error).expect("serialize error");
+            for fixture_secret in &fixture_secrets {
+                assert!(!serialized.contains(fixture_secret));
+            }
+        }
+    }
+
+    fn fixture_secret(name: &str) -> String {
+        ["POSTMITE", "SECRET", name, "29"].join("_")
     }
 
     #[test]

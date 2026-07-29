@@ -5,7 +5,7 @@ pub mod infrastructure;
 pub mod ipc;
 
 use std::{
-    fs,
+    env, fs,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -19,6 +19,8 @@ use application::{
 };
 use infrastructure::{secrets::LinuxSecretServiceStore, sqlite::SqliteWorkspaceRepository};
 use tauri::{Manager, WindowEvent};
+
+const SESSION_ONLY_SECRETS_ENV: &str = "POSTMITE_SESSION_ONLY_SECRETS";
 
 pub struct AppState {
     pub executions: Arc<ExecutionCoordinator>,
@@ -99,10 +101,14 @@ pub fn run() {
 
             let workspace_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let request_repository = SqliteWorkspaceRepository::open(&database_path)?;
-            let secrets: Arc<dyn SecretStore> = Arc::new(FallbackSecretStore::new(
-                LinuxSecretServiceStore::new(),
-                Arc::new(SessionSecretStore::new()),
-            ));
+            let secrets: Arc<dyn SecretStore> = if env::var_os(SESSION_ONLY_SECRETS_ENV).is_some() {
+                Arc::new(SessionSecretStore::new())
+            } else {
+                Arc::new(FallbackSecretStore::new(
+                    LinuxSecretServiceStore::new(),
+                    Arc::new(SessionSecretStore::new()),
+                ))
+            };
             let mut workspaces = WorkspaceService::new(workspace_repository, Arc::clone(&secrets));
             let workspace_snapshot = workspaces.initialize()?;
             let mut requests = RequestService::new(request_repository, Arc::clone(&secrets));
@@ -114,6 +120,11 @@ pub fn run() {
             let oauth = Arc::new(OAuthCoordinator::new(Arc::new(SystemBrowserLauncher)));
 
             diagnostics::configure_e2e_request_smoke(Arc::clone(&executions))?;
+            diagnostics::configure_e2e_security(
+                &mut requests,
+                workspace_snapshot.selected_workspace_id,
+                Arc::clone(&secrets),
+            )?;
             app.manage(AppState::new(
                 executions, oauth, secrets, workspaces, requests,
             ));

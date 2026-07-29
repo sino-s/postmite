@@ -256,6 +256,49 @@ mod tests {
     }
 
     #[test]
+    fn secret_session_fallback_covers_every_protected_class_without_plaintext_reference() {
+        let store = FallbackSecretStore::new(UnavailableStore, Arc::new(SessionSecretStore::new()));
+        let workspace_id = WorkspaceId::new();
+        let fixtures = [
+            (
+                SecretClass::ProtectedVariable,
+                "protected-variable",
+                fixture_secret("PROTECTED_VARIABLE"),
+            ),
+            (
+                SecretClass::CookieValue,
+                "cookie-value",
+                fixture_secret("COOKIE_VALUE"),
+            ),
+            (
+                SecretClass::AuthCredential,
+                "auth-credential",
+                fixture_secret("AUTH_CREDENTIAL"),
+            ),
+            (
+                SecretClass::ProxyCredential,
+                "proxy-credential",
+                fixture_secret("PROXY_CREDENTIAL"),
+            ),
+            (
+                SecretClass::PrivateKeyPassphrase,
+                "private-key-passphrase",
+                fixture_secret("PRIVATE_KEY_PASSPHRASE"),
+            ),
+        ];
+
+        for (class, name, value) in fixtures {
+            let owner = SecretOwner::new(workspace_id, class, name);
+            let write = store.put(&owner, &value).expect("session fallback write");
+
+            assert_eq!(write.persistence, SecretPersistence::SessionOnly);
+            assert!(parse_postmite_reference(&write.reference).is_some());
+            assert!(!write.reference.contains(&value));
+            assert_eq!(store.get(&write.reference).expect("read secret"), value);
+        }
+    }
+
+    #[test]
     fn secret_session_workspace_delete_removes_owned_values() {
         let store = SessionSecretStore::new();
         let workspace_id = WorkspaceId::new();
@@ -270,5 +313,9 @@ mod tests {
             store.get(&write.reference).unwrap_err().to_string(),
             "secret reference was not found"
         );
+    }
+
+    fn fixture_secret(name: &str) -> String {
+        ["POSTMITE", "SECRET", name, "29"].join("_")
     }
 }
