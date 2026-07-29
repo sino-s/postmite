@@ -2,6 +2,7 @@ import { Ban, Play, Save } from "lucide-react";
 
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
+import { NativeSelect } from "../../../components/ui/native-select";
 import type { RequestContentDto } from "../../../shared/api/generated/ipc";
 import type { ResponseExecutionPhase } from "../../../shared/api/execution";
 import { queryFromUrl } from "../ordered-fields";
@@ -65,8 +66,7 @@ export function RequestLine({
       <label className="sr-only" htmlFor="request-method">
         {t("request.method")}
       </label>
-      <select
-        className="h-[var(--control-height)] rounded-md border border-input bg-background px-3 text-sm font-medium text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
+      <NativeSelect
         id="request-method"
         onChange={(event) =>
           onChange((current) => ({
@@ -81,7 +81,7 @@ export function RequestLine({
             {method}
           </option>
         ))}
-      </select>
+      </NativeSelect>
       <label className="sr-only" htmlFor="request-url">
         {t("request.url")}
       </label>

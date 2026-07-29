@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { Cookie, Edit3, FileText, RotateCcw, Save, Trash2 } from "lucide-react";
 
+import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
+import { NativeSelect } from "../../../components/ui/native-select";
 import type { WorkspaceCookieDto, CookieSameSiteDto } from "../../../shared/api/generated/ipc";
 import { emptyCookieForm, formatSameSite, type CookieFormValue } from "../request-editor-model";
 import { IconButton } from "./IconButton";
@@ -76,8 +79,8 @@ export function CookiePanel({
         <div className="grid gap-2 sm:grid-cols-2">
           <label className="grid gap-1 text-xs font-medium text-slate-700">
             Cookie name
-            <input
-              className="h-8 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+            <Input
+              className="h-8"
               onChange={(event) => {
                 const name = event.currentTarget.value;
                 setDraft((current) => ({ ...current, name }));
@@ -88,8 +91,8 @@ export function CookiePanel({
           </label>
           <label className="grid gap-1 text-xs font-medium text-slate-700">
             Cookie value
-            <input
-              className="h-8 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+            <Input
+              className="h-8"
               onChange={(event) => {
                 const value = event.currentTarget.value;
                 setDraft((current) => ({ ...current, value }));
@@ -101,8 +104,8 @@ export function CookiePanel({
           </label>
           <label className="grid gap-1 text-xs font-medium text-slate-700">
             Cookie domain
-            <input
-              className="h-8 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+            <Input
+              className="h-8"
               onChange={(event) => {
                 const domain = event.currentTarget.value;
                 setDraft((current) => ({ ...current, domain }));
@@ -113,8 +116,8 @@ export function CookiePanel({
           </label>
           <label className="grid gap-1 text-xs font-medium text-slate-700">
             Cookie path
-            <input
-              className="h-8 rounded-md border border-slate-300 px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+            <Input
+              className="h-8"
               onChange={(event) => {
                 const path = event.currentTarget.value;
                 setDraft((current) => ({ ...current, path }));
@@ -127,8 +130,8 @@ export function CookiePanel({
         <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
           <label className="grid gap-1 text-xs font-medium text-slate-700">
             SameSite
-            <select
-              className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-sky-500 focus:outline focus:outline-2 focus:outline-sky-500"
+            <NativeSelect
+              className="h-8"
               onChange={(event) => {
                 const sameSite = (event.currentTarget.value || null) as
                   | CookieSameSiteDto
@@ -144,7 +147,7 @@ export function CookiePanel({
               <option value="STRICT">Strict</option>
               <option value="LAX">Lax</option>
               <option value="NONE">None</option>
-            </select>
+            </NativeSelect>
           </label>
           <label className="inline-flex items-end gap-2 pb-1 text-xs font-medium text-slate-700">
             <input
@@ -172,29 +175,31 @@ export function CookiePanel({
           </label>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
-            className="inline-flex h-8 items-center gap-2 rounded-md bg-slate-900 px-3 text-xs font-medium text-white hover:bg-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+          <Button
+            size="sm"
             type="submit"
           >
             <Save aria-hidden="true" size={14} />
             {draft.cookieId ? "Update cookie" : "Add cookie"}
-          </button>
-          <button
-            className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 px-3 text-xs font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+          </Button>
+          <Button
             onClick={() => setDraft(emptyCookieForm())}
+            size="sm"
             type="button"
+            variant="outline"
           >
             <RotateCcw aria-hidden="true" size={14} />
             Reset
-          </button>
-          <button
-            className="inline-flex h-8 items-center gap-2 rounded-md border border-red-300 px-3 text-xs font-medium text-red-700 hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+          </Button>
+          <Button
             onClick={onClear}
+            size="sm"
             type="button"
+            variant="destructive"
           >
             <Trash2 aria-hidden="true" size={14} />
             Clear cookies
-          </button>
+          </Button>
         </div>
       </form>
       <div className="max-h-72 overflow-auto rounded-md border border-slate-200">

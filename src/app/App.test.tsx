@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { axe } from "jest-axe";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -179,17 +179,11 @@ describe("App request editor", () => {
     );
 
     await user.click(await screen.findByRole("button", { name: "New Request" }));
-    await user.clear(screen.getByLabelText("Name"));
-    await user.type(screen.getByLabelText("Name"), "Create user");
+    replaceInputText("Name", "Create user");
     await user.selectOptions(screen.getByLabelText("Method"), "POST");
-    await user.clear(screen.getByLabelText("URL"));
-    await user.type(
-      screen.getByLabelText("URL"),
-      "https://example.test/users?tag=first&tag=",
-    );
+    replaceInputText("URL", "https://example.test/users?tag=first&tag=");
     await user.click(screen.getByRole("button", { name: "Raw" }));
-    await user.click(screen.getByLabelText("Raw body editor"));
-    await user.paste("{\"ok\":true}");
+    replaceInputText("Raw body editor", "{\"ok\":true}");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await user.click(screen.getByRole("button", { name: "Close Untitled Request" }));
 
@@ -223,7 +217,6 @@ describe("App request editor", () => {
   });
 
   it("keeps URL query text and Params rows bidirectionally synchronized", async () => {
-    const user = userEvent.setup();
     renderApp(
       requestSnapshot({
         content: requestContent({
@@ -238,8 +231,7 @@ describe("App request editor", () => {
     expect(screen.getByLabelText("Params row 2 value")).toHaveValue("");
     expect(screen.getByLabelText("Params row 3 name")).toHaveValue("empty");
 
-    await user.clear(screen.getByLabelText("Params row 2 value"));
-    await user.type(screen.getByLabelText("Params row 2 value"), "second");
+    replaceInputText("Params row 2 value", "second");
 
     expect(screen.getByLabelText("URL")).toHaveValue(
       "https://example.test/search?tag=first&tag=second&empty=",
@@ -513,10 +505,8 @@ describe("App request editor", () => {
       errors: [],
     });
 
-    await user.selectOptions(
-      await screen.findByLabelText("Environment"),
-      "Production",
-    );
+    await screen.findByLabelText("Environment");
+    await user.selectOptions(screen.getByLabelText("Environment"), "env-prod");
 
     expect(requestApiMock.selectEnvironment).toHaveBeenCalledWith(queryClient, {
       workspaceId: "workspace-1",
@@ -618,8 +608,7 @@ describe("App request editor", () => {
     expect(await screen.findByText("Value sid-value")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Edit sid cookie" }));
-    await user.clear(screen.getByLabelText("Cookie value"));
-    await user.type(screen.getByLabelText("Cookie value"), "updated-value");
+    replaceInputText("Cookie value", "updated-value");
     await user.click(screen.getByRole("button", { name: "Update cookie" }));
     await user.click(screen.getByRole("button", { name: "Delete sid cookie" }));
     await user.click(screen.getByRole("button", { name: "Clear cookies" }));
@@ -740,6 +729,11 @@ function renderApp(
   );
 
   return queryClient;
+}
+
+function replaceInputText(label: string, value: string) {
+  const input = screen.getByLabelText(label);
+  fireEvent.change(input, { target: { value } });
 }
 
 function workspaceSnapshot(): WorkspaceSnapshotDto {
