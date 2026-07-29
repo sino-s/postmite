@@ -15,10 +15,11 @@ Closes #
 - [ ] The commit message is the transient plan verbatim.
 - [ ] The plan file is absent from the commit and working tree.
 - [ ] No Secret or unrelated change is included.
+- [ ] Release-only build, packaging, smoke, or performance checks were run locally when required by the Issue or plan.
 
 ## Results
 
-<!-- Paste concise command results and manual checks. -->
+<!-- Paste concise command results and manual checks. PR CI runs quality gates; release-only checks run on main, v* tags, or workflow_dispatch. -->
 
 ## Residual risk
 
