@@ -94,6 +94,7 @@ pub fn run() {
             ipc::get_diagnostic_bundle_preview,
             ipc::set_diagnostic_debug_logging,
             ipc::export_diagnostic_bundle,
+            ipc::check_for_update,
             ipc::preview_curl_import,
             ipc::import_curl_as_draft,
             ipc::generate_curl,

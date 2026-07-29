@@ -171,6 +171,7 @@ export const requestIpc = {
     invokeCommand("set_diagnostic_debug_logging", input),
   exportDiagnosticBundle: (input: DiagnosticBundleExportInput) =>
     invokeCommand("export_diagnostic_bundle", input),
+  checkForUpdate: () => invokeCommand("check_for_update", undefined),
   previewCurlImport: (input: CurlImportInput) =>
     invokeCommand("preview_curl_import", input),
   importCurlAsDraft: (input: CurlImportInput) =>

@@ -124,3 +124,91 @@ jobs:
 
       - name: Measure release budgets
         run: dbus-run-session -- xvfb-run -a pnpm perf:release
+
+  release-artifacts:
+    name: Ubuntu release artifacts
+    needs: quality
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.1
+          run_install: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and verify Ubuntu packages
+        run: |
+          pnpm release:verify
+          pnpm release:bundle
+          pnpm release:artifacts
+          pnpm release:verify-artifacts
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: postmite-ubuntu-x86_64
+          path: artifacts/release/v0.1.0/linux-x86_64
+          if-no-files-found: error
+
+  release-smoke:
+    name: Ubuntu release smoke
+    needs: release-artifacts
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: postmite-ubuntu-x86_64
+          path: release-artifacts
+
+      - name: Install runtime and Debian package
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dbus-x11 xvfb ./release-artifacts/*.deb
+          test -x /usr/bin/postmite
+
+      - name: Start installed Debian package
+        run: |
+          set +e
+          POSTMITE_SESSION_ONLY_SECRETS=1 timeout 15s dbus-run-session -- xvfb-run -a /usr/bin/postmite
+          status=$?
+          test "$status" -eq 124
+
+      - name: Start AppImage package
+        run: |
+          chmod +x release-artifacts/*.AppImage
+          set +e
+          APPIMAGE_EXTRACT_AND_RUN=1 POSTMITE_SESSION_ONLY_SECRETS=1 timeout 15s dbus-run-session -- xvfb-run -a ./release-artifacts/*.AppImage
+          status=$?
+          test "$status" -eq 124

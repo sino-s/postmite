@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
     "tauri": "tauri dev",
-    "ipc:generate": "cargo run --manifest-path src-tauri/Cargo.toml --bin export_ipc --locked",
+    "ipc:generate": "cargo run --manifest-path src-tauri/Cargo.toml --bin export_ipc --features ipc-export --locked",
     "ipc:check": "pnpm ipc:generate && git diff --exit-code -- src/shared/api/generated/ipc.ts",
     "typecheck": "pnpm ipc:check && tsc --noEmit",
     "lint": "eslint .",
@@ -27,6 +27,11 @@
     "security:scan-fixtures": "node scripts/security-scan-fixtures.mjs",
     "perf:release": "node scripts/perf-release.mjs",
     "perf:release:strict": "POSTMITE_PERF_STRICT=1 node scripts/perf-release.mjs"
+    ,"release:bundle": "tauri build --bundles deb,appimage"
+    ,"release:artifacts": "node scripts/release-artifacts.mjs collect"
+    ,"release:verify-artifacts": "node scripts/release-artifacts.mjs verify"
+    ,"release:verify": "node scripts/release-artifacts.mjs verify-source"
+    ,"release:test-update-check": "cargo test --manifest-path src-tauri/Cargo.toml --locked application::update::tests"
   },
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",

@@ -71,6 +71,7 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         DiagnosticBundlePreviewDto::export_to_string(&cfg)?,
         DiagnosticDebugLoggingStatusDto::export_to_string(&cfg)?,
         DiagnosticBundleExportDto::export_to_string(&cfg)?,
+        UpdateCheckResultDto::export_to_string(&cfg)?,
         CurlImportInput::export_to_string(&cfg)?,
         CurlGenerateInput::export_to_string(&cfg)?,
         CurlImportPreviewDto::export_to_string(&cfg)?,
@@ -336,6 +337,10 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \texport_diagnostic_bundle: {\n\
          \t\tinput: DiagnosticBundleExportInput;\n\
          \t\toutput: DiagnosticBundleExportDto;\n\
+         \t};\n\
+         \tcheck_for_update: {\n\
+         \t\tinput: undefined;\n\
+         \t\toutput: UpdateCheckResultDto;\n\
          \t};\n\
          \tpreview_curl_import: {\n\
          \t\tinput: CurlImportInput;\n\
@@ -809,6 +814,15 @@ impl From<DiagnosticBundleExport> for DiagnosticBundleExportDto {
         Self {
             bundle_path: result.bundle_path,
             preview: result.preview.into(),
+        }
+    }
+}
+
+impl From<crate::application::update::UpdateCheckResult> for UpdateCheckResultDto {
+    fn from(result: crate::application::update::UpdateCheckResult) -> Self {
+        Self {
+            latest_version: result.latest_version,
+            update_available: result.update_available,
         }
     }
 }

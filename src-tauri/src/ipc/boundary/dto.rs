@@ -718,6 +718,13 @@ pub struct DiagnosticBundleExportDto {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateCheckResultDto {
+    pub latest_version: String,
+    pub update_available: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct CurlImportInput {
     pub workspace_id: String,
     pub source_name: String,
