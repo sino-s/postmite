@@ -16,6 +16,15 @@ use tauri::{Emitter, Manager, State};
 use ts_rs::{Config, TS};
 
 use crate::{
+    application::backup::{
+        NativeBackupError, NativeBackupExclusion,
+        NativeBackupExportInput as ApplicationNativeBackupExportInput, NativeBackupExportResult,
+        NativeBackupManifest, NativeBackupManifestEntry, NativeBackupRepository,
+        NativeBackupRestoreInput as ApplicationNativeBackupRestoreInput,
+        NativeBackupRestorePreview,
+        NativeBackupRestorePreviewInput as ApplicationNativeBackupRestorePreviewInput,
+        NativeBackupRestoreResult, NativeBackupService,
+    },
     application::curl::{
         CurlError, CurlGenerateInput as ApplicationCurlGenerateInput, CurlGenerateResult,
         CurlImportInput as ApplicationCurlImportInput, CurlImportPreview, CurlImportWarning,
@@ -102,6 +111,9 @@ pub const IMPORT_POSTMAN_COMMAND: &str = "import_postman";
 pub const EXPORT_POSTMAN_COMMAND: &str = "export_postman";
 pub const PREVIEW_POSTMAN_REIMPORT_COMMAND: &str = "preview_postman_reimport";
 pub const REIMPORT_POSTMAN_COMMAND: &str = "reimport_postman";
+pub const EXPORT_NATIVE_BACKUP_COMMAND: &str = "export_native_backup";
+pub const PREVIEW_NATIVE_BACKUP_RESTORE_COMMAND: &str = "preview_native_backup_restore";
+pub const RESTORE_NATIVE_BACKUP_COMMAND: &str = "restore_native_backup";
 pub const PREVIEW_CURL_IMPORT_COMMAND: &str = "preview_curl_import";
 pub const IMPORT_CURL_AS_DRAFT_COMMAND: &str = "import_curl_as_draft";
 pub const GENERATE_CURL_COMMAND: &str = "generate_curl";
@@ -543,6 +555,85 @@ pub struct PostmanReimportInput {
 pub struct PostmanReimportResultDto {
     pub preview: PostmanReimportPreviewDto,
     pub snapshot: RequestWorkspaceSnapshotDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBackupExportInput {
+    pub workspace_id: String,
+    pub backup_path: String,
+    pub include_body_files: bool,
+    pub body_files_directory: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBackupRestorePreviewInput {
+    pub backup_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBackupRestoreInput {
+    pub backup_path: String,
+    pub workspace_name: String,
+    pub body_files_directory: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBackupExportResultDto {
+    pub backup_path: String,
+    pub manifest: NativeBackupManifestDto,
+    pub preview: NativeBackupRestorePreviewDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBackupRestoreResultDto {
+    pub preview: NativeBackupRestorePreviewDto,
+    pub workspace_snapshot: WorkspaceSnapshotDto,
+    pub request_snapshot: RequestWorkspaceSnapshotDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBackupRestorePreviewDto {
+    pub source_workspace_name: String,
+    pub collection_count: u32,
+    pub request_count: u32,
+    pub environment_count: u32,
+    pub history_record_count: u32,
+    pub cookie_count: u32,
+    pub body_file_count: u32,
+    pub expanded_bytes: u64,
+    pub exclusions: Vec<NativeBackupExclusionDto>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBackupExclusionDto {
+    pub location: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBackupManifestDto {
+    pub format: String,
+    pub version: u32,
+    pub required_features: Vec<String>,
+    pub entries: Vec<NativeBackupManifestEntryDto>,
+    pub exclusions: Vec<NativeBackupExclusionDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBackupManifestEntryDto {
+    pub path: String,
+    pub sha256: String,
+    pub bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -1074,6 +1165,7 @@ pub enum BoundaryError {
     InvalidCookieId,
     Execution(ExecutionError),
     OAuth(OAuthError),
+    NativeBackup(NativeBackupError),
     StateUnavailable,
 }
 
@@ -1427,6 +1519,33 @@ pub fn reimport_postman(
 ) -> Result<PostmanReimportResultDto, IpcError> {
     let service = state.postman_imports.lock().map_err(map_poison_error)?;
     handle_reimport_postman(service, input)
+}
+
+#[tauri::command]
+pub fn export_native_backup(
+    state: State<'_, AppState>,
+    input: NativeBackupExportInput,
+) -> Result<NativeBackupExportResultDto, IpcError> {
+    let service = state.native_backups.lock().map_err(map_poison_error)?;
+    handle_export_native_backup(service, input)
+}
+
+#[tauri::command]
+pub fn preview_native_backup_restore(
+    state: State<'_, AppState>,
+    input: NativeBackupRestorePreviewInput,
+) -> Result<NativeBackupRestorePreviewDto, IpcError> {
+    let service = state.native_backups.lock().map_err(map_poison_error)?;
+    handle_preview_native_backup_restore(service, input)
+}
+
+#[tauri::command]
+pub fn restore_native_backup(
+    state: State<'_, AppState>,
+    input: NativeBackupRestoreInput,
+) -> Result<NativeBackupRestoreResultDto, IpcError> {
+    let mut service = state.native_backups.lock().map_err(map_poison_error)?;
+    handle_restore_native_backup(&mut service, input)
 }
 
 #[tauri::command]
@@ -2099,6 +2218,52 @@ where
         .map_err(IpcError::from)
 }
 
+pub fn handle_export_native_backup<R>(
+    service: MutexGuard<'_, NativeBackupService<R>>,
+    input: NativeBackupExportInput,
+) -> Result<NativeBackupExportResultDto, IpcError>
+where
+    R: NativeBackupRepository,
+{
+    let input = ApplicationNativeBackupExportInput::try_from(input)?;
+    service
+        .export(input)
+        .map(NativeBackupExportResultDto::from)
+        .map_err(|error| BoundaryError::NativeBackup(error).into())
+}
+
+pub fn handle_preview_native_backup_restore<R>(
+    service: MutexGuard<'_, NativeBackupService<R>>,
+    input: NativeBackupRestorePreviewInput,
+) -> Result<NativeBackupRestorePreviewDto, IpcError>
+where
+    R: NativeBackupRepository,
+{
+    service
+        .preview_restore(ApplicationNativeBackupRestorePreviewInput {
+            backup_path: input.backup_path,
+        })
+        .map(NativeBackupRestorePreviewDto::from)
+        .map_err(|error| BoundaryError::NativeBackup(error).into())
+}
+
+pub fn handle_restore_native_backup<R>(
+    service: &mut NativeBackupService<R>,
+    input: NativeBackupRestoreInput,
+) -> Result<NativeBackupRestoreResultDto, IpcError>
+where
+    R: NativeBackupRepository,
+{
+    service
+        .restore(ApplicationNativeBackupRestoreInput {
+            backup_path: input.backup_path,
+            workspace_name: input.workspace_name,
+            body_files_directory: input.body_files_directory,
+        })
+        .map(NativeBackupRestoreResultDto::from)
+        .map_err(|error| BoundaryError::NativeBackup(error).into())
+}
+
 pub fn handle_start_request_execution(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -2498,6 +2663,15 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         PostmanReimportDecisionDto::export_to_string(&cfg)?,
         PostmanReimportInput::export_to_string(&cfg)?,
         PostmanReimportResultDto::export_to_string(&cfg)?,
+        NativeBackupExportInput::export_to_string(&cfg)?,
+        NativeBackupRestorePreviewInput::export_to_string(&cfg)?,
+        NativeBackupRestoreInput::export_to_string(&cfg)?,
+        NativeBackupExportResultDto::export_to_string(&cfg)?,
+        NativeBackupRestoreResultDto::export_to_string(&cfg)?,
+        NativeBackupRestorePreviewDto::export_to_string(&cfg)?,
+        NativeBackupExclusionDto::export_to_string(&cfg)?,
+        NativeBackupManifestDto::export_to_string(&cfg)?,
+        NativeBackupManifestEntryDto::export_to_string(&cfg)?,
         CurlImportInput::export_to_string(&cfg)?,
         CurlGenerateInput::export_to_string(&cfg)?,
         CurlImportPreviewDto::export_to_string(&cfg)?,
@@ -2728,6 +2902,18 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \treimport_postman: {\n\
          \t\tinput: PostmanReimportInput;\n\
          \t\toutput: PostmanReimportResultDto;\n\
+         \t};\n\
+         \texport_native_backup: {\n\
+         \t\tinput: NativeBackupExportInput;\n\
+         \t\toutput: NativeBackupExportResultDto;\n\
+         \t};\n\
+         \tpreview_native_backup_restore: {\n\
+         \t\tinput: NativeBackupRestorePreviewInput;\n\
+         \t\toutput: NativeBackupRestorePreviewDto;\n\
+         \t};\n\
+         \trestore_native_backup: {\n\
+         \t\tinput: NativeBackupRestoreInput;\n\
+         \t\toutput: NativeBackupRestoreResultDto;\n\
          \t};\n\
          \tpreview_curl_import: {\n\
          \t\tinput: CurlImportInput;\n\
@@ -3044,6 +3230,99 @@ impl From<PostmanReimportResult> for PostmanReimportResultDto {
         Self {
             preview: PostmanReimportPreviewDto::from(result.preview),
             snapshot: RequestWorkspaceSnapshotDto::from(result.snapshot),
+        }
+    }
+}
+
+impl TryFrom<NativeBackupExportInput> for ApplicationNativeBackupExportInput {
+    type Error = IpcError;
+
+    fn try_from(input: NativeBackupExportInput) -> Result<Self, Self::Error> {
+        Ok(Self {
+            workspace_id: parse_workspace_id(&input.workspace_id)?,
+            backup_path: input.backup_path,
+            include_body_files: input.include_body_files,
+            body_files_directory: input.body_files_directory,
+        })
+    }
+}
+
+impl From<NativeBackupExportResult> for NativeBackupExportResultDto {
+    fn from(result: NativeBackupExportResult) -> Self {
+        Self {
+            backup_path: result.backup_path,
+            manifest: NativeBackupManifestDto::from(result.manifest),
+            preview: NativeBackupRestorePreviewDto::from(result.preview),
+        }
+    }
+}
+
+impl From<NativeBackupRestoreResult> for NativeBackupRestoreResultDto {
+    fn from(result: NativeBackupRestoreResult) -> Self {
+        Self {
+            preview: NativeBackupRestorePreviewDto::from(result.preview),
+            workspace_snapshot: WorkspaceSnapshotDto::from(result.workspace_snapshot),
+            request_snapshot: RequestWorkspaceSnapshotDto::from(result.request_snapshot),
+        }
+    }
+}
+
+impl From<NativeBackupRestorePreview> for NativeBackupRestorePreviewDto {
+    fn from(preview: NativeBackupRestorePreview) -> Self {
+        Self {
+            source_workspace_name: preview.source_workspace_name,
+            collection_count: preview.collection_count,
+            request_count: preview.request_count,
+            environment_count: preview.environment_count,
+            history_record_count: preview.history_record_count,
+            cookie_count: preview.cookie_count,
+            body_file_count: preview.body_file_count,
+            expanded_bytes: preview.expanded_bytes,
+            exclusions: preview
+                .exclusions
+                .into_iter()
+                .map(NativeBackupExclusionDto::from)
+                .collect(),
+            warnings: preview.warnings,
+        }
+    }
+}
+
+impl From<NativeBackupExclusion> for NativeBackupExclusionDto {
+    fn from(exclusion: NativeBackupExclusion) -> Self {
+        Self {
+            location: exclusion.location,
+            reason: exclusion.reason,
+        }
+    }
+}
+
+impl From<NativeBackupManifest> for NativeBackupManifestDto {
+    fn from(manifest: NativeBackupManifest) -> Self {
+        Self {
+            format: manifest.format,
+            version: manifest.version,
+            required_features: manifest.required_features,
+            entries: manifest
+                .entries
+                .into_iter()
+                .map(NativeBackupManifestEntryDto::from)
+                .collect(),
+            exclusions: manifest
+                .exclusions
+                .into_iter()
+                .map(NativeBackupExclusionDto::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<NativeBackupManifestEntry> for NativeBackupManifestEntryDto {
+    fn from(entry: NativeBackupManifestEntry) -> Self {
+        Self {
+            path: entry.path,
+            sha256: entry.sha256,
+            bytes: entry.bytes,
         }
     }
 }
@@ -4197,6 +4476,7 @@ impl From<BoundaryError> for IpcError {
             BoundaryError::Request(error) => error.into(),
             BoundaryError::Execution(error) => error.into(),
             BoundaryError::OAuth(error) => error.into(),
+            BoundaryError::NativeBackup(error) => error.into(),
             BoundaryError::InvalidWorkspaceId => Self {
                 code: IpcErrorCode::InvalidInput,
                 message: "Workspace id is invalid.".to_owned(),
@@ -4385,6 +4665,39 @@ impl From<PostmanImportError> for IpcError {
                 message: "Secret storage is unavailable for Postman import.".to_owned(),
                 details: Some(detail),
                 retryable: false,
+            },
+        }
+    }
+}
+
+impl From<NativeBackupError> for IpcError {
+    fn from(error: NativeBackupError) -> Self {
+        match error {
+            NativeBackupError::InvalidInput(detail) | NativeBackupError::InvalidArchive(detail) => {
+                Self {
+                    code: IpcErrorCode::InvalidInput,
+                    message: "Native backup input is invalid.".to_owned(),
+                    details: Some(detail),
+                    retryable: false,
+                }
+            }
+            NativeBackupError::WorkspaceNotFound => Self {
+                code: IpcErrorCode::WorkspaceNotFound,
+                message: "Workspace was not found.".to_owned(),
+                details: None,
+                retryable: false,
+            },
+            NativeBackupError::WorkspaceAlreadyExists => Self {
+                code: IpcErrorCode::WorkspaceAlreadyExists,
+                message: "Workspace name already exists.".to_owned(),
+                details: None,
+                retryable: false,
+            },
+            NativeBackupError::Persistence(_) => Self {
+                code: IpcErrorCode::PersistenceUnavailable,
+                message: "Native backup persistence is unavailable.".to_owned(),
+                details: None,
+                retryable: true,
             },
         }
     }
