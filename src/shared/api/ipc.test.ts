@@ -173,6 +173,14 @@ describe("typed IPC adapter", () => {
     });
   });
 
+  it("checks for updates only through the explicit typed IPC command", async () => {
+    invokeMock.mockResolvedValue({ latestVersion: "0.2.0", updateAvailable: true });
+
+    await requestIpc.checkForUpdate();
+
+    expect(invokeMock).toHaveBeenCalledWith("check_for_update");
+  });
+
   it("wraps safe Rust IPC errors without exposing unknown thrown values", async () => {
     invokeMock.mockRejectedValue({
       code: "PERSISTENCE_UNAVAILABLE",

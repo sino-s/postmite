@@ -44,6 +44,7 @@ import {
   workspaceQueryKey,
   setWorkspaceBaseDirectory,
 } from "../../shared/api/workspaces";
+import { checkForUpdate } from "../../shared/api/update";
 import type { ResponseExecutionState } from "../../shared/api/execution";
 import type {
   WorkspaceCookieDto,
@@ -97,6 +98,7 @@ export function RequestEditor({
     Record<string, ResponseExecutionState>
   >({});
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const updateCheckMutation = useMutation({ mutationFn: checkForUpdate });
 
   const workspaces = useQuery(workspaceQuery);
   const selectedWorkspaceId = workspaces.data?.selectedWorkspaceId;
@@ -593,6 +595,15 @@ export function RequestEditor({
             <option value="compact">{t("app.density.compact")}</option>
           </select>
           <button
+            aria-live="polite"
+            className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={updateCheckMutation.isPending}
+            onClick={() => updateCheckMutation.mutate()}
+            type="button"
+          >
+            {updateCheckMutation.isPending ? t("app.checkingUpdates") : t("app.checkUpdates")}
+          </button>
+          <button
             aria-label={t("app.diagnostics")}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-white hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
             onClick={() => setDiagnosticsOpen((open) => !open)}
@@ -638,6 +649,14 @@ export function RequestEditor({
           </select>
         </div>
         {diagnosticsOpen ? <DiagnosticsPanel onClose={() => setDiagnosticsOpen(false)} /> : null}
+        {updateCheckMutation.isSuccess ? (
+          <p className="absolute right-4 top-14 z-20 border border-slate-300 bg-white px-3 py-2 text-sm shadow-lg" role="status">
+            {updateCheckMutation.data.updateAvailable
+              ? t("app.updateAvailable", { version: updateCheckMutation.data.latestVersion })
+              : t("app.upToDate")}
+          </p>
+        ) : null}
+        {updateCheckMutation.isError ? <p className="absolute right-4 top-14 z-20 border border-red-300 bg-white px-3 py-2 text-sm text-red-700 shadow-lg" role="alert">{t("app.updateCheckFailed")}</p> : null}
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)]">

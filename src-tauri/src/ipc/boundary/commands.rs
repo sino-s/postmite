@@ -443,6 +443,22 @@ pub fn export_diagnostic_bundle(
 }
 
 #[tauri::command]
+pub async fn check_for_update() -> Result<UpdateCheckResultDto, IpcError> {
+    crate::application::update::check_for_update(
+        crate::application::update::DEFAULT_UPDATE_CHECK_URL,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .await
+    .map(UpdateCheckResultDto::from)
+    .map_err(|_| IpcError {
+        code: IpcErrorCode::StateUnavailable,
+        message: "Update checking is currently unavailable.".to_owned(),
+        details: None,
+        retryable: true,
+    })
+}
+
+#[tauri::command]
 pub fn preview_curl_import(input: CurlImportInput) -> Result<CurlImportPreviewDto, IpcError> {
     let input = ApplicationCurlImportInput::try_from(input)?;
     CurlService::preview(&input)
