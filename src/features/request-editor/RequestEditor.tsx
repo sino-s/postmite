@@ -5,11 +5,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AppHeader } from "../../app/AppHeader";
 import { Button } from "../../components/ui/button";
 import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "../../components/ui/resizable";
-import {
   closeRequestTab,
   createCollectionFolder,
   clearCookies,
@@ -62,18 +57,13 @@ import type {
   SavedRequestDto,
   RequestTabDto,
 } from "../../shared/api/generated/ipc";
-import { BodyEditor } from "./components/BodyEditor";
-import { CollectionsSidebar } from "./components/CollectionsSidebar";
-import { CookiePanel } from "./components/CookiePanel";
-import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
-import { FieldTable } from "./components/FieldTable";
-import { HistoryPanel } from "./components/HistoryPanel";
-import { RequestLine } from "./components/RequestLine";
-import { ResolutionPanel } from "./components/ResolutionPanel";
-import { ResponsePanel } from "./components/ResponsePanel";
-import { SecurityPanel } from "./components/SecurityPanel";
-import { TabStrip } from "./components/TabStrip";
-import { applyQueryToUrl } from "./ordered-fields";
+import { RequestLine } from "./controls/RequestLine";
+import { TabStrip } from "./controls/TabStrip";
+import { useMediaQuery } from "./hooks/useMediaQuery";
+import { RequestEditorPanels } from "./layout/RequestEditorPanels";
+import { RequestWorkspaceShell } from "./layout/RequestWorkspaceShell";
+import { CollectionsSidebar } from "./panels/CollectionsSidebar";
+import { DiagnosticsPanel } from "./panels/DiagnosticsPanel";
 import { useI18n } from "../../app/i18n";
 import { usePreferences } from "../../app/preferences";
 import {
@@ -83,7 +73,7 @@ import {
   requestContentQueryKey,
   type CookieFormValue,
   type OverrideMap,
-} from "./request-editor-model";
+} from "./models/request-editor-model";
 
 
 type RequestEditorProps = {
@@ -96,7 +86,6 @@ export function RequestEditor({
   onCancel = cancelRequestExecution,
   onExecute = startRequestExecution,
 }: RequestEditorProps) {
-  const isDesktopLayout = useDesktopLayout();
   const isEditorResizableLayout = useMediaQuery("(min-width: 1024px)", true);
   const { locale, setLocale, t } = useI18n();
   const { density, setDensity, setTheme, theme } = usePreferences();
@@ -640,153 +629,28 @@ export function RequestEditor({
             onSave={() => void handleSave()}
             saving={false}
           />
-          {isEditorResizableLayout ? (
-            <ResizablePanelGroup
-              className="min-h-0 flex-1 rounded-md border border-border bg-background"
-              orientation="vertical"
-            >
-              <ResizablePanel className="overflow-hidden" defaultSize="58" minSize="280px">
-                <div className="grid h-full min-h-0 gap-4 overflow-auto p-4 2xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]">
-                  <section className="flex shrink-0 flex-col gap-4">
-                    <SecurityPanel
-                      content={activeContent}
-                      onChange={changeActiveDraft}
-                      resolution={resolution.data ?? null}
-                    />
-                    <FieldTable
-                      fields={activeContent.query}
-                      legend="Params"
-                      onChange={(fields) =>
-                        changeActiveDraft((content) => ({
-                          ...content,
-                          query: fields,
-                          url: applyQueryToUrl(content.url, fields),
-                        }))
-                      }
-                    />
-                    <FieldTable
-                      fields={activeContent.headers}
-                      legend="Headers"
-                      onChange={(fields) =>
-                        changeActiveDraft((content) => ({
-                          ...content,
-                          headers: fields,
-                        }))
-                      }
-                    />
-                  </section>
-                  <BodyEditor
-                    body={activeContent.body}
-                    workspaceId={selectedWorkspaceId}
-                    onChange={(body) =>
-                      changeActiveDraft((content) => ({
-                        ...content,
-                        body,
-                      }))
-                    }
-                  />
-                </div>
-              </ResizablePanel>
-              <ResizableHandle
-                aria-label="Resize request and response panels"
-                orientation="vertical"
-                withHandle
-              />
-              <ResizablePanel className="overflow-hidden" defaultSize="42" minSize="220px">
-                <div className="grid h-full min-h-0 gap-4 overflow-auto p-4 xl:grid-cols-[minmax(260px,0.6fr)_minmax(0,1fr)]">
-                  <ResolutionPanel
-                    resolution={resolution.data ?? null}
-                    resolving={resolution.isFetching}
-                  />
-                  <ResponsePanel execution={activeExecution} />
-                  <HistoryPanel
-                    history={executionHistory.data ?? null}
-                    loading={executionHistory.isFetching}
-                    onOpen={(record) => void handleOpenHistoryRecord(record)}
-                    onToggleDisabled={(disabled) =>
-                      void handleToggleHistoryDisabled(disabled)
-                    }
-                    onTogglePinned={(record) =>
-                      void handleToggleHistoryPinned(record)
-                    }
-                  />
-                  <CookiePanel
-                    cookies={cookieJar.data?.cookies ?? []}
-                    loading={cookieJar.isFetching}
-                    onClear={() => void handleClearCookies()}
-                    onDelete={(cookie) => void handleDeleteCookie(cookie)}
-                    onReveal={(cookie) => handleRevealCookie(cookie)}
-                    onSave={(input) => void handleUpsertCookie(input)}
-                  />
-                </div>
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          ) : (
-          <div className="grid min-h-0 gap-4">
-            <section className="flex min-h-0 flex-col gap-4">
-              <SecurityPanel
-                content={activeContent}
-                onChange={changeActiveDraft}
-                resolution={resolution.data ?? null}
-              />
-              <FieldTable
-                fields={activeContent.query}
-                legend="Params"
-                onChange={(fields) =>
-                  changeActiveDraft((content) => ({
-                    ...content,
-                    query: fields,
-                    url: applyQueryToUrl(content.url, fields),
-                  }))
-                }
-              />
-              <FieldTable
-                fields={activeContent.headers}
-                legend="Headers"
-                onChange={(fields) =>
-                  changeActiveDraft((content) => ({
-                    ...content,
-                    headers: fields,
-                  }))
-                }
-              />
-            </section>
-            <BodyEditor
-              body={activeContent.body}
-              workspaceId={selectedWorkspaceId}
-              onChange={(body) =>
-                changeActiveDraft((content) => ({
-                  ...content,
-                  body,
-                }))
-              }
-            />
-            <ResolutionPanel
-              resolution={resolution.data ?? null}
-              resolving={resolution.isFetching}
-            />
-            <ResponsePanel execution={activeExecution} />
-            <HistoryPanel
-              history={executionHistory.data ?? null}
-              loading={executionHistory.isFetching}
-              onOpen={(record) => void handleOpenHistoryRecord(record)}
-              onToggleDisabled={(disabled) =>
-                void handleToggleHistoryDisabled(disabled)
-              }
-              onTogglePinned={(record) =>
-                void handleToggleHistoryPinned(record)
-              }
-            />
-            <CookiePanel
-              cookies={cookieJar.data?.cookies ?? []}
-              loading={cookieJar.isFetching}
-              onClear={() => void handleClearCookies()}
-              onDelete={(cookie) => void handleDeleteCookie(cookie)}
-              onReveal={(cookie) => handleRevealCookie(cookie)}
-              onSave={(input) => void handleUpsertCookie(input)}
-            />
-          </div>
-          )}
+          <RequestEditorPanels
+            content={activeContent}
+            cookies={cookieJar.data?.cookies ?? []}
+            cookiesLoading={cookieJar.isFetching}
+            execution={activeExecution}
+            history={executionHistory.data ?? null}
+            historyLoading={executionHistory.isFetching}
+            onChange={changeActiveDraft}
+            onClearCookies={() => void handleClearCookies()}
+            onDeleteCookie={(cookie) => void handleDeleteCookie(cookie)}
+            onOpenHistoryRecord={(record) => void handleOpenHistoryRecord(record)}
+            onRevealCookie={(cookie) => handleRevealCookie(cookie)}
+            onSaveCookie={(input) => void handleUpsertCookie(input)}
+            onToggleHistoryDisabled={(disabled) =>
+              void handleToggleHistoryDisabled(disabled)
+            }
+            onToggleHistoryPinned={(record) => void handleToggleHistoryPinned(record)}
+            resizable={isEditorResizableLayout}
+            resolution={resolution.data ?? null}
+            resolving={resolution.isFetching}
+            workspaceId={selectedWorkspaceId}
+          />
         </section>
       ) : (
         <section className="flex flex-1 items-center justify-center p-6">
@@ -826,47 +690,7 @@ export function RequestEditor({
         {diagnosticsOpen ? <DiagnosticsPanel onClose={() => setDiagnosticsOpen(false)} /> : null}
       </div>
 
-      {isDesktopLayout ? (
-        <ResizablePanelGroup className="min-h-0 flex-1" orientation="horizontal">
-          <ResizablePanel
-            className="overflow-hidden"
-            defaultSize="24"
-            maxSize="36"
-            minSize="220px"
-          >
-            {sidebar}
-          </ResizablePanel>
-          <ResizableHandle aria-label="Resize collections and request workspace" withHandle />
-          <ResizablePanel className="overflow-hidden" minSize="50">
-            {editorPane}
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      ) : (
-        <div className="flex min-h-0 flex-1 flex-col">
-          {sidebar}
-          {editorPane}
-        </div>
-      )}
+      <RequestWorkspaceShell editorPane={editorPane} sidebar={sidebar} />
     </main>
   );
-}
-
-function useDesktopLayout() {
-  return useMediaQuery("(min-width: 768px)", true);
-}
-
-function useMediaQuery(query: string, defaultMatches: boolean) {
-  const [matches, setMatches] = useState(() =>
-    typeof window === "undefined" ? defaultMatches : window.matchMedia(query).matches,
-  );
-
-  useEffect(() => {
-    const media = window.matchMedia(query);
-    setMatches(media.matches);
-    const onChange = (event: MediaQueryListEvent) => setMatches(event.matches);
-    media.addEventListener("change", onChange);
-    return () => media.removeEventListener("change", onChange);
-  }, [query]);
-
-  return matches;
 }

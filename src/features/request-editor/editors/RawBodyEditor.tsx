@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from "react";
-import { useI18n } from "../../app/i18n";
+import { useI18n } from "../../../app/i18n";
 
 const CodeMirrorBodyEditor = lazy(async () => {
   const module = await import("./CodeMirrorBodyEditor");

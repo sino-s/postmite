@@ -1,4 +1,4 @@
-import type { OrderedFieldDto } from "../../shared/api/generated/ipc";
+import type { OrderedFieldDto } from "../../../shared/api/generated/ipc";
 
 export function sortOrderedFields(fields: OrderedFieldDto[]) {
   return [...fields].sort((left, right) => left.order - right.order);

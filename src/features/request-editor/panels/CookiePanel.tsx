@@ -5,8 +5,8 @@ import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { NativeSelect } from "../../../components/ui/native-select";
 import type { WorkspaceCookieDto, CookieSameSiteDto } from "../../../shared/api/generated/ipc";
-import { emptyCookieForm, formatSameSite, type CookieFormValue } from "../request-editor-model";
-import { IconButton } from "./IconButton";
+import { emptyCookieForm, formatSameSite, type CookieFormValue } from "../models/request-editor-model";
+import { IconButton } from "../controls/IconButton";
 
 type CookiePanelProps = {
   cookies: WorkspaceCookieDto[];

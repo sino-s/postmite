@@ -11,14 +11,14 @@ import {
 } from "../../../components/ui/select";
 import { describeBodyFile } from "../../../shared/api/requests";
 import type { BodyFileReferenceDto, MultipartPartDto, RequestBodyDto } from "../../../shared/api/generated/ipc";
-import { RawBodyEditor } from "../RawBodyEditor";
+import { RawBodyEditor } from "../editors/RawBodyEditor";
 import {
   bodyModeLabel,
   emptyBodyForMode,
   emptyMultipartFilePart,
-} from "../request-editor-model";
-import { FieldTable } from "./FieldTable";
-import { IconButton } from "./IconButton";
+} from "../models/request-editor-model";
+import { FieldTable } from "../controls/FieldTable";
+import { IconButton } from "../controls/IconButton";
 import { useI18n } from "../../../app/i18n";
 
 type BodyEditorProps = {

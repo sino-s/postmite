@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { Trash2 } from "lucide-react";
 import { describe, expect, it, vi } from "vitest";
 
-import { IconButton } from "./IconButton";
+import { IconButton } from "../controls/IconButton";
 
 describe("IconButton", () => {
   it("keeps icon-only commands named and exposes a tooltip", async () => {
