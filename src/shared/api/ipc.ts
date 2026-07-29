@@ -9,6 +9,8 @@ import type {
   CreateSavedRequestInput,
   CreateCollectionFolderInput,
   CreateWorkspaceInput,
+  CurlGenerateInput,
+  CurlImportInput,
   DescribeBodyFileInput,
   ExecutionRecordIdInput,
   IpcCommandContracts,
@@ -146,6 +148,11 @@ export const requestIpc = {
     invokeCommand("preview_postman_reimport", input),
   reimportPostman: (input: PostmanReimportInput) =>
     invokeCommand("reimport_postman", input),
+  previewCurlImport: (input: CurlImportInput) =>
+    invokeCommand("preview_curl_import", input),
+  importCurlAsDraft: (input: CurlImportInput) =>
+    invokeCommand("import_curl_as_draft", input),
+  generateCurl: (input: CurlGenerateInput) => invokeCommand("generate_curl", input),
   startRequestExecution: (input: StartRequestExecutionInput) =>
     invokeCommand("start_request_execution", input),
   cancelRequestExecution: (input: CancelRequestExecutionInput) =>

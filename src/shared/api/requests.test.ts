@@ -14,6 +14,8 @@ const requestIpcMock = vi.hoisted(() => ({
   deleteSavedRequest: vi.fn(),
   duplicateCollectionFolder: vi.fn(),
   duplicateSavedRequest: vi.fn(),
+  generateCurl: vi.fn(),
+  importCurlAsDraft: vi.fn(),
   flushRequestDrafts: vi.fn(),
   listExecutionHistory: vi.fn(),
   listRequestWorkspace: vi.fn(),
@@ -22,6 +24,7 @@ const requestIpcMock = vi.hoisted(() => ({
   openExecutionRecordAsDraft: vi.fn(),
   openSavedRequestTab: vi.fn(),
   openUnsavedRequestTab: vi.fn(),
+  previewCurlImport: vi.fn(),
   renameCollectionFolder: vi.fn(),
   resolveRequestContent: vi.fn(),
   saveRequestDraft: vi.fn(),
@@ -38,8 +41,11 @@ vi.mock("./ipc", () => ({
 import {
   executionHistoryQuery,
   executionHistoryQueryKey,
+  generateCurl,
+  importCurlAsDraft,
   openExecutionRecordAsDraft,
   openUnsavedRequestTab,
+  previewCurlImport,
   requestWorkspaceQuery,
   requestWorkspaceQueryKey,
   setExecutionHistoryDisabled,
@@ -124,6 +130,61 @@ describe("request query API", () => {
     );
   });
 
+  it("previews and imports cURL through typed IPC without bypassing Rust drafts", async () => {
+    const snapshot = requestSnapshot("workspace-1");
+    const preview = {
+      sourceName: "Pasted cURL",
+      content: emptyContent(),
+      warningCount: 0,
+      unsupportedCount: 0,
+      warnings: [],
+      unsupported: [],
+    };
+    requestIpcMock.previewCurlImport.mockResolvedValue(preview);
+    requestIpcMock.importCurlAsDraft.mockResolvedValue({
+      preview,
+      snapshot,
+    });
+
+    await expect(
+      previewCurlImport({
+        workspaceId: "workspace-1",
+        sourceName: "Pasted cURL",
+        command: "curl https://example.test",
+      }),
+    ).resolves.toBe(preview);
+    const result = await importCurlAsDraft(queryClient, {
+      workspaceId: "workspace-1",
+      sourceName: "Pasted cURL",
+      command: "curl https://example.test",
+    });
+
+    expect(result.snapshot).toBe(snapshot);
+    expect(queryClient.getQueryData(requestWorkspaceQueryKey("workspace-1"))).toBe(
+      snapshot,
+    );
+  });
+
+  it("passes cURL generation confirmation explicitly", async () => {
+    requestIpcMock.generateCurl.mockResolvedValue({
+      command: "curl https://example.test --data-raw ********",
+      includedSecretCount: 0,
+      redactedSecretCount: 1,
+    });
+
+    await generateCurl({
+      content: emptyContent(),
+      resolved: null,
+      includeSecrets: false,
+    });
+
+    expect(requestIpcMock.generateCurl).toHaveBeenCalledWith({
+      content: emptyContent(),
+      resolved: null,
+      includeSecrets: false,
+    });
+  });
+
   it("queues draft updates without mutating the cached saved request snapshot", async () => {
     const existing = requestSnapshot("workspace-1");
     queryClient.setQueryData(requestWorkspaceQueryKey("workspace-1"), existing);
@@ -189,5 +250,36 @@ function executionHistorySnapshot(workspaceId: string): ExecutionHistorySnapshot
     records: [],
     warning:
       "Unknown sensitive values inside arbitrary response bodies may not always be detected.",
+  };
+}
+
+function emptyContent() {
+  return {
+    name: "Imported cURL",
+    method: "GET",
+    url: "https://example.test",
+    body: { type: "NONE" as const },
+    query: [],
+    headers: [],
+    auth: { type: "NONE" as const },
+    redirect: { enabled: true, maxRedirects: 10 },
+    tls: {
+      verify: true,
+      customCaReference: null,
+      clientCertificateReference: null,
+      clientKeyReference: null,
+    },
+    transport: {
+      proxy: {
+        source: "PROCESS_ENVIRONMENT" as const,
+        url: null,
+        noProxy: [],
+      },
+      timeouts: {
+        connectMs: 10_000n,
+        overallMs: 300_000n,
+        idleMs: 60_000n,
+      },
+    },
   };
 }
