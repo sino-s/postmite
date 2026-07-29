@@ -25,6 +25,11 @@ use crate::{
         CancelOAuthAuthorizationResult, OAuthAuthorizationResult, OAuthError, OAuthFlowId,
         StartOAuthAuthorizationRequest,
     },
+    application::postman_import::{
+        PostmanImportError, PostmanImportInput as ApplicationPostmanImportInput,
+        PostmanImportPreview, PostmanImportRepository, PostmanImportResult, PostmanImportService,
+        PostmanImportWarning, PostmanUnsupportedField,
+    },
     application::request::{
         CloseTabDecision, CollectionLocation, CookieJarSnapshot, ExecutionHistorySnapshot,
         RequestError, RequestRepository, RequestService, RequestWorkspaceSnapshot, ResolvedField,
@@ -82,6 +87,8 @@ pub const CLEAR_COOKIES_COMMAND: &str = "clear_cookies";
 pub const REVEAL_COOKIE_VALUE_COMMAND: &str = "reveal_cookie_value";
 pub const DESCRIBE_BODY_FILE_COMMAND: &str = "describe_body_file";
 pub const RELINK_BODY_FILES_COMMAND: &str = "relink_body_files";
+pub const PREVIEW_POSTMAN_IMPORT_COMMAND: &str = "preview_postman_import";
+pub const IMPORT_POSTMAN_COMMAND: &str = "import_postman";
 pub const START_REQUEST_EXECUTION_COMMAND: &str = "start_request_execution";
 pub const CANCEL_REQUEST_EXECUTION_COMMAND: &str = "cancel_request_execution";
 pub const START_OAUTH_AUTHORIZATION_COMMAND: &str = "start_oauth_authorization";
@@ -403,6 +410,51 @@ pub struct RequestWorkspaceSnapshotDto {
     pub saved_requests: Vec<SavedRequestDto>,
     pub drafts: Vec<RequestDraftDto>,
     pub tabs: Vec<RequestTabDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PostmanImportInput {
+    pub workspace_id: String,
+    pub source_name: String,
+    pub collection_json: String,
+    pub environment_json: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PostmanImportPreviewDto {
+    pub source_id: String,
+    pub source_name: String,
+    pub source_hash: String,
+    pub collection_count: u32,
+    pub request_count: u32,
+    pub environment_count: u32,
+    pub warning_count: u32,
+    pub unsupported_count: u32,
+    pub warnings: Vec<PostmanImportWarningDto>,
+    pub unsupported: Vec<PostmanUnsupportedFieldDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PostmanImportWarningDto {
+    pub location: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PostmanUnsupportedFieldDto {
+    pub location: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PostmanImportResultDto {
+    pub preview: PostmanImportPreviewDto,
+    pub snapshot: RequestWorkspaceSnapshotDto,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -1189,6 +1241,24 @@ pub fn relink_body_files(
 }
 
 #[tauri::command]
+pub fn preview_postman_import(
+    state: State<'_, AppState>,
+    input: PostmanImportInput,
+) -> Result<PostmanImportPreviewDto, IpcError> {
+    let service = state.postman_imports.lock().map_err(map_poison_error)?;
+    handle_preview_postman_import(service, input)
+}
+
+#[tauri::command]
+pub fn import_postman(
+    state: State<'_, AppState>,
+    input: PostmanImportInput,
+) -> Result<PostmanImportResultDto, IpcError> {
+    let service = state.postman_imports.lock().map_err(map_poison_error)?;
+    handle_import_postman(service, input)
+}
+
+#[tauri::command]
 pub fn start_request_execution(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -1757,6 +1827,34 @@ pub fn handle_relink_body_files(
         .map_err(|error| BoundaryError::Request(error).into())
 }
 
+pub fn handle_preview_postman_import<R>(
+    service: MutexGuard<'_, PostmanImportService<R>>,
+    input: PostmanImportInput,
+) -> Result<PostmanImportPreviewDto, IpcError>
+where
+    R: PostmanImportRepository,
+{
+    let input = ApplicationPostmanImportInput::try_from(input)?;
+    service
+        .preview(&input)
+        .map(PostmanImportPreviewDto::from)
+        .map_err(IpcError::from)
+}
+
+pub fn handle_import_postman<R>(
+    mut service: MutexGuard<'_, PostmanImportService<R>>,
+    input: PostmanImportInput,
+) -> Result<PostmanImportResultDto, IpcError>
+where
+    R: PostmanImportRepository,
+{
+    let input = ApplicationPostmanImportInput::try_from(input)?;
+    service
+        .import(input)
+        .map(PostmanImportResultDto::from)
+        .map_err(IpcError::from)
+}
+
 pub fn handle_start_request_execution(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -2142,6 +2240,11 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         RequestDraftDto::export_to_string(&cfg)?,
         RequestTabDto::export_to_string(&cfg)?,
         RequestWorkspaceSnapshotDto::export_to_string(&cfg)?,
+        PostmanImportInput::export_to_string(&cfg)?,
+        PostmanImportPreviewDto::export_to_string(&cfg)?,
+        PostmanImportWarningDto::export_to_string(&cfg)?,
+        PostmanUnsupportedFieldDto::export_to_string(&cfg)?,
+        PostmanImportResultDto::export_to_string(&cfg)?,
         ExecutionHistorySnapshotDto::export_to_string(&cfg)?,
         ExecutionRecordDto::export_to_string(&cfg)?,
         ExecutionRecordResponseDto::export_to_string(&cfg)?,
@@ -2346,6 +2449,14 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \t\tinput: RelinkBodyFilesInput;\n\
          \t\toutput: RequestWorkspaceSnapshotDto;\n\
          \t};\n\
+         \tpreview_postman_import: {\n\
+         \t\tinput: PostmanImportInput;\n\
+         \t\toutput: PostmanImportPreviewDto;\n\
+         \t};\n\
+         \timport_postman: {\n\
+         \t\tinput: PostmanImportInput;\n\
+         \t\toutput: PostmanImportResultDto;\n\
+         \t};\n\
          \tstart_request_execution: {\n\
          \t\tinput: StartRequestExecutionInput;\n\
          \t\toutput: StartRequestExecutionOutput;\n\
@@ -2474,6 +2585,71 @@ impl From<RequestWorkspaceSnapshot> for RequestWorkspaceSnapshotDto {
                 .map(RequestDraftDto::from)
                 .collect(),
             tabs: snapshot.tabs.into_iter().map(RequestTabDto::from).collect(),
+        }
+    }
+}
+
+impl TryFrom<PostmanImportInput> for ApplicationPostmanImportInput {
+    type Error = IpcError;
+
+    fn try_from(input: PostmanImportInput) -> Result<Self, Self::Error> {
+        Ok(Self {
+            workspace_id: parse_workspace_id(&input.workspace_id)?,
+            source_name: input.source_name,
+            collection_json: input.collection_json,
+            environment_json: input.environment_json,
+        })
+    }
+}
+
+impl From<PostmanImportPreview> for PostmanImportPreviewDto {
+    fn from(preview: PostmanImportPreview) -> Self {
+        Self {
+            source_id: preview.source_id,
+            source_name: preview.source_name,
+            source_hash: preview.source_hash,
+            collection_count: preview.collection_count,
+            request_count: preview.request_count,
+            environment_count: preview.environment_count,
+            warning_count: preview.warning_count,
+            unsupported_count: preview.unsupported_count,
+            warnings: preview
+                .warnings
+                .into_iter()
+                .map(PostmanImportWarningDto::from)
+                .collect(),
+            unsupported: preview
+                .unsupported
+                .into_iter()
+                .map(PostmanUnsupportedFieldDto::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<PostmanImportWarning> for PostmanImportWarningDto {
+    fn from(warning: PostmanImportWarning) -> Self {
+        Self {
+            location: warning.location,
+            message: warning.message,
+        }
+    }
+}
+
+impl From<PostmanUnsupportedField> for PostmanUnsupportedFieldDto {
+    fn from(field: PostmanUnsupportedField) -> Self {
+        Self {
+            location: field.location,
+            reason: field.reason,
+        }
+    }
+}
+
+impl From<PostmanImportResult> for PostmanImportResultDto {
+    fn from(result: PostmanImportResult) -> Self {
+        Self {
+            preview: PostmanImportPreviewDto::from(result.preview),
+            snapshot: RequestWorkspaceSnapshotDto::from(result.snapshot),
         }
     }
 }
@@ -3548,6 +3724,37 @@ impl From<ExecutionError> for IpcError {
                 message: "Execution state is temporarily unavailable.".to_owned(),
                 details: None,
                 retryable: true,
+            },
+        }
+    }
+}
+
+impl From<PostmanImportError> for IpcError {
+    fn from(error: PostmanImportError) -> Self {
+        match error {
+            PostmanImportError::InvalidInput(detail) => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "Postman import input is invalid.".to_owned(),
+                details: Some(detail),
+                retryable: false,
+            },
+            PostmanImportError::WorkspaceNotFound => Self {
+                code: IpcErrorCode::WorkspaceNotFound,
+                message: "Workspace was not found.".to_owned(),
+                details: None,
+                retryable: false,
+            },
+            PostmanImportError::Persistence(_) => Self {
+                code: IpcErrorCode::PersistenceUnavailable,
+                message: "Postman import persistence is unavailable.".to_owned(),
+                details: None,
+                retryable: true,
+            },
+            PostmanImportError::Secret(detail) => Self {
+                code: IpcErrorCode::InvalidInput,
+                message: "Secret storage is unavailable for Postman import.".to_owned(),
+                details: Some(detail),
+                retryable: false,
             },
         }
     }
