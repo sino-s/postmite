@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, RotateCcw } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { AppHeader } from "../../app/AppHeader";
 import { Button } from "../../components/ui/button";
@@ -16,6 +16,7 @@ import {
   duplicateSavedRequest,
   executionHistoryQuery,
   executionHistoryQueryKey,
+  generateCurl,
   moveCollectionFolder,
   moveSavedRequest,
   openExecutionRecordAsDraft,
@@ -44,6 +45,7 @@ import {
   reduceResponseExecutionStates,
   startRequestExecution,
 } from "../../shared/api/execution";
+import { writeClipboardText } from "../../shared/api/clipboard";
 import {
   workspaceQuery,
   workspaceQueryKey,
@@ -60,10 +62,15 @@ import type {
   ExecutionRecordDto,
   RequestContentDto,
   RequestDraftDto,
+  ResolvedRequestContentDto,
   SavedRequestDto,
   RequestTabDto,
 } from "../../shared/api/generated/ipc";
 import { RequestLine } from "./controls/RequestLine";
+import {
+  CurlCopyControl,
+  type CurlCopyFeedback,
+} from "./controls/CurlCopyControl";
 import { TabStrip } from "./controls/TabStrip";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { RequestEditorPanels } from "./layout/RequestEditorPanels";
@@ -85,6 +92,21 @@ import {
 type RequestEditorProps = {
   onCancel?: typeof cancelRequestExecution;
   onExecute?: typeof startRequestExecution;
+};
+
+type CurlCopyContext = {
+  content: RequestContentDto;
+  environmentId: string | null;
+  fingerprint: string;
+  resolution: ResolvedRequestContentDto;
+  resolutionQueryKey: readonly unknown[];
+  version: number;
+  workspaceId: string;
+};
+
+type PendingCurlConfirmation = {
+  context: CurlCopyContext;
+  redactedCommand: string;
 };
 
 function isTraceableExecutionEvent(event: ExecutionEventDto) {
@@ -124,6 +146,13 @@ export function RequestEditor({
     "pending" | "ready" | "failed"
   >("pending");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [curlCopyFeedback, setCurlCopyFeedback] =
+    useState<CurlCopyFeedback>(null);
+  const [curlCopyPending, setCurlCopyPending] = useState(false);
+  const [pendingCurlConfirmation, setPendingCurlConfirmation] =
+    useState<PendingCurlConfirmation | null>(null);
+  const currentCurlFingerprintRef = useRef<string | null>(null);
+  const curlContextVersionRef = useRef(0);
   const updateCheckMutation = useMutation({ mutationFn: checkForUpdate });
 
   const workspaces = useQuery(workspaceQuery);
@@ -168,14 +197,30 @@ export function RequestEditor({
   const activeExecution = activeDraft ? executions[activeDraft.id] ?? null : null;
   const activeExecutionRunning =
     activeExecution !== null && !isTerminalResponseExecution(activeExecution);
+  const activeContentKey = activeContent
+    ? requestContentQueryKey(activeContent)
+    : null;
+  const resolutionQueryKey = [
+    "requestResolution",
+    selectedWorkspaceId,
+    activeDraft?.id ?? null,
+    selectedEnvironment?.id ?? null,
+    activeContentKey,
+  ] as const;
+  const curlContextFingerprint =
+    selectedWorkspaceId && activeDraft && activeContentKey
+      ? JSON.stringify([
+          selectedWorkspaceId,
+          activeDraft.id,
+          selectedEnvironment?.id ?? null,
+          activeContentKey,
+        ])
+      : null;
+  useLayoutEffect(() => {
+    currentCurlFingerprintRef.current = curlContextFingerprint;
+  }, [curlContextFingerprint]);
   const resolution = useQuery({
-    queryKey: [
-      "requestResolution",
-      selectedWorkspaceId,
-      activeDraft?.id ?? null,
-      selectedEnvironment?.id ?? null,
-      activeContent ? requestContentQueryKey(activeContent) : null,
-    ],
+    queryKey: resolutionQueryKey,
     queryFn: () =>
       resolveRequestContent({
         workspaceId: selectedWorkspaceId ?? "",
@@ -183,6 +228,145 @@ export function RequestEditor({
       }),
     enabled: Boolean(selectedWorkspaceId && activeDraft && activeContent),
   });
+
+  function currentCurlContext(): CurlCopyContext | null {
+    if (
+      !activeContent ||
+      !selectedWorkspaceId ||
+      !curlContextFingerprint ||
+      !resolution.data ||
+      !resolution.isSuccess ||
+      resolution.isFetching
+    ) {
+      return null;
+    }
+    const queryState =
+      queryClient.getQueryState<ResolvedRequestContentDto>(resolutionQueryKey);
+    if (
+      queryState?.status !== "success" ||
+      queryState.fetchStatus !== "idle" ||
+      queryState.data !== resolution.data
+    ) {
+      return null;
+    }
+    return {
+      content: activeContent,
+      environmentId: selectedEnvironment?.id ?? null,
+      fingerprint: curlContextFingerprint,
+      resolution: resolution.data,
+      resolutionQueryKey,
+      version: curlContextVersionRef.current,
+      workspaceId: selectedWorkspaceId,
+    };
+  }
+
+  function isCurlContextCurrent(context: CurlCopyContext) {
+    if (
+      currentCurlFingerprintRef.current !== context.fingerprint ||
+      curlContextVersionRef.current !== context.version
+    ) {
+      return false;
+    }
+    const queryState =
+      queryClient.getQueryState<ResolvedRequestContentDto>(
+        context.resolutionQueryKey,
+      );
+    return (
+      queryState?.status === "success" &&
+      queryState.fetchStatus === "idle" &&
+      queryState.data === context.resolution
+    );
+  }
+
+  function invalidateCurlCopyContext() {
+    curlContextVersionRef.current += 1;
+    setPendingCurlConfirmation(null);
+  }
+
+  async function copyCurlCommand(command: string, context: CurlCopyContext) {
+    if (!isCurlContextCurrent(context)) {
+      setCurlCopyFeedback("stale");
+      return;
+    }
+    try {
+      await writeClipboardText(command);
+      setCurlCopyFeedback("copied");
+    } catch {
+      setCurlCopyFeedback("failed");
+    }
+  }
+
+  async function handleCopyCurl() {
+    const context = currentCurlContext();
+    if (!context) {
+      setCurlCopyFeedback("stale");
+      return;
+    }
+    setCurlCopyFeedback(null);
+    setCurlCopyPending(true);
+    try {
+      const generated = await generateCurl({
+        workspaceId: context.workspaceId,
+        environmentId: context.environmentId,
+        content: context.content,
+        resolved: context.resolution,
+        includeSecrets: false,
+      });
+      if (!isCurlContextCurrent(context)) {
+        setCurlCopyFeedback("stale");
+        return;
+      }
+      if (generated.redactedSecretCount > 0) {
+        setPendingCurlConfirmation({
+          context,
+          redactedCommand: generated.command,
+        });
+        return;
+      }
+      await copyCurlCommand(generated.command, context);
+    } catch {
+      setCurlCopyFeedback("failed");
+    } finally {
+      setCurlCopyPending(false);
+    }
+  }
+
+  async function handleCopyRedactedCurl() {
+    const pending = pendingCurlConfirmation;
+    setPendingCurlConfirmation(null);
+    if (!pending) {
+      return;
+    }
+    await copyCurlCommand(pending.redactedCommand, pending.context);
+  }
+
+  async function handleCopyCurlWithSecrets() {
+    const pending = pendingCurlConfirmation;
+    setPendingCurlConfirmation(null);
+    if (!pending || !isCurlContextCurrent(pending.context)) {
+      setCurlCopyFeedback("stale");
+      return;
+    }
+    setCurlCopyPending(true);
+    try {
+      const generated = await generateCurl({
+        workspaceId: pending.context.workspaceId,
+        environmentId: pending.context.environmentId,
+        content: pending.context.content,
+        resolved: pending.context.resolution,
+        includeSecrets: true,
+      });
+      if (!isCurlContextCurrent(pending.context)) {
+        setCurlCopyFeedback("stale");
+        return;
+      }
+      await copyCurlCommand(generated.command, pending.context);
+    } catch {
+      setCurlCopyFeedback("failed");
+    } finally {
+      setCurlCopyPending(false);
+    }
+  }
 
   function updateExecutions(
     updater: (
@@ -264,6 +448,7 @@ export function RequestEditor({
       });
     },
     onSuccess: (nextSnapshot) => {
+      invalidateCurlCopyContext();
       const nextActive =
         nextSnapshot.tabs.find((tab) => tab.isActive) ??
         nextSnapshot.tabs[nextSnapshot.tabs.length - 1];
@@ -290,6 +475,7 @@ export function RequestEditor({
     if (!selectedWorkspaceId) {
       return;
     }
+    invalidateCurlCopyContext();
     await selectEnvironment(queryClient, {
       workspaceId: selectedWorkspaceId,
       environmentId,
@@ -337,6 +523,7 @@ export function RequestEditor({
   }
 
   async function handleOpenSavedRequest(request: SavedRequestDto) {
+    invalidateCurlCopyContext();
     const nextSnapshot = await openSavedRequestTab(queryClient, {
       workspaceId: request.workspaceId,
       savedRequestId: request.id,
@@ -384,6 +571,7 @@ export function RequestEditor({
     if (!activeDraft) {
       return;
     }
+    invalidateCurlCopyContext();
 
     const base =
       latestContentRef.current[activeDraft.id] ??
@@ -419,6 +607,7 @@ export function RequestEditor({
   }
 
   async function handleClose(tab: RequestTabDto, decision: "SAVE" | "DISCARD") {
+    invalidateCurlCopyContext();
     const draft = snapshot?.drafts.find((item) => item.id === tab.draftId);
     const content = draft ? overrides[draft.id] ?? draft.content : null;
     const tabExecution = executions[tab.draftId] ?? null;
@@ -643,6 +832,7 @@ export function RequestEditor({
   }
 
   async function handleOpenHistoryRecord(record: ExecutionRecordDto) {
+    invalidateCurlCopyContext();
     const nextSnapshot = await openExecutionRecordAsDraft(queryClient, {
       workspaceId: record.workspaceId,
       recordId: record.id,
@@ -734,7 +924,10 @@ export function RequestEditor({
       <TabStrip
         activeTabId={activeTab?.id ?? null}
         drafts={snapshot?.drafts ?? []}
-        onActivate={setActiveTabId}
+        onActivate={(tabId) => {
+          invalidateCurlCopyContext();
+          setActiveTabId(tabId);
+        }}
         onClose={(tab) => void handleClose(tab, isDraftDirty(tab.draftId, snapshot?.drafts ?? [], overrides) ? "SAVE" : "DISCARD")}
         overrides={overrides}
         tabs={tabs}
@@ -765,6 +958,21 @@ export function RequestEditor({
             content={activeContent}
             cookies={cookieJar.data?.cookies ?? []}
             cookiesLoading={cookieJar.isFetching}
+            curlAction={
+              <CurlCopyControl
+                confirmationOpen={Boolean(
+                  pendingCurlConfirmation &&
+                    isCurlContextCurrent(pendingCurlConfirmation.context),
+                )}
+                disabled={curlCopyPending || currentCurlContext() === null}
+                feedback={curlCopyFeedback}
+                onCancelConfirmation={() => setPendingCurlConfirmation(null)}
+                onCopy={() => void handleCopyCurl()}
+                onCopyRedacted={() => void handleCopyRedactedCurl()}
+                onIncludeSecrets={() => void handleCopyCurlWithSecrets()}
+                pending={curlCopyPending}
+              />
+            }
             execution={activeExecution}
             history={executionHistory.data ?? null}
             historyLoading={executionHistory.isFetching}

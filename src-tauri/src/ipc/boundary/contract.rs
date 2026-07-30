@@ -845,20 +845,6 @@ impl TryFrom<CurlImportInput> for ApplicationCurlImportInput {
     }
 }
 
-impl From<CurlGenerateInput> for ApplicationCurlGenerateInput {
-    fn from(input: CurlGenerateInput) -> Self {
-        let content = RequestContent::from(input.content);
-        let resolved = input
-            .resolved
-            .map(|resolved| resolved_request_content_from_dto(resolved, &content));
-        Self {
-            content,
-            resolved,
-            include_secrets: input.include_secrets,
-        }
-    }
-}
-
 impl From<CurlImportPreview> for CurlImportPreviewDto {
     fn from(preview: CurlImportPreview) -> Self {
         Self {

@@ -50,6 +50,7 @@ url = "2"
 uuid = { version = "1.24.0", features = ["v4", "serde"] }
 zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 zstd = "0.13"
+tauri-plugin-clipboard-manager = "2"
 
 [dev-dependencies]
 rcgen = "0.13"

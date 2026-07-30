@@ -869,7 +869,13 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::request::{RequestAuth, RequestBody};
+    use crate::{
+        application::request::{materialize_request_content_for_curl, RequestWorkspaceSnapshot},
+        domain::request::{
+            Environment, EnvironmentId, EnvironmentVariable, RequestAuth, RequestBody, Variable,
+            VariableValue,
+        },
+    };
 
     fn input(command: &str) -> CurlImportInput {
         CurlImportInput {
@@ -877,6 +883,56 @@ mod tests {
             source_name: "fixture".to_owned(),
             command: command.to_owned(),
         }
+    }
+
+    fn secret_resolution_fixture() -> (RequestWorkspaceSnapshot, EnvironmentId, RequestContent) {
+        let workspace_id = WorkspaceId::new();
+        let environment_id = EnvironmentId::new();
+        (
+            RequestWorkspaceSnapshot {
+                workspace_id,
+                collection_folders: Vec::new(),
+                environments: vec![Environment {
+                    id: environment_id,
+                    workspace_id,
+                    name: "Fixture".to_owned(),
+                    position: 0,
+                    is_selected: true,
+                }],
+                collection_variables: Vec::new(),
+                environment_variables: vec![
+                    EnvironmentVariable {
+                        environment_id,
+                        workspace_id,
+                        variable: Variable {
+                            name: "baseUrl".to_owned(),
+                            value: VariableValue::Plain("https://resolved.example.test".to_owned()),
+                        },
+                    },
+                    EnvironmentVariable {
+                        environment_id,
+                        workspace_id,
+                        variable: Variable {
+                            name: "credential".to_owned(),
+                            value: VariableValue::SecretReference(
+                                "secret://curl-fixture".to_owned(),
+                            ),
+                        },
+                    },
+                ],
+                saved_requests: Vec::new(),
+                drafts: Vec::new(),
+                tabs: Vec::new(),
+            },
+            environment_id,
+            RequestContent {
+                url: "{{baseUrl}}/items".to_owned(),
+                auth: RequestAuth::Bearer {
+                    token: "{{credential}}".to_owned(),
+                },
+                ..RequestContent::blank()
+            },
+        )
     }
 
     #[test]
@@ -999,5 +1055,128 @@ mod tests {
         .expect("generate with secrets");
         assert!(included.command.contains("fixture-secret"));
         assert_eq!(included.included_secret_count, 1);
+    }
+
+    #[test]
+    fn generated_output_excludes_disabled_fields_and_preserves_duplicate_order() {
+        let enabled_field = |order, value: &str| OrderedField {
+            enabled: true,
+            order,
+            name: "X-Mode".to_owned(),
+            value: value.to_owned(),
+        };
+        let mut content = RequestContent::blank();
+        content.url = "https://api.example.test/items?tag=first&tag=second".to_owned();
+        content.query = vec![
+            OrderedField {
+                enabled: true,
+                order: 0,
+                name: "tag".to_owned(),
+                value: "first".to_owned(),
+            },
+            OrderedField {
+                enabled: false,
+                order: 1,
+                name: "tag".to_owned(),
+                value: "off".to_owned(),
+            },
+            OrderedField {
+                enabled: true,
+                order: 2,
+                name: "tag".to_owned(),
+                value: "second".to_owned(),
+            },
+        ];
+        content.headers = vec![
+            enabled_field(0, "first"),
+            OrderedField {
+                enabled: false,
+                order: 1,
+                name: "X-Mode".to_owned(),
+                value: "off".to_owned(),
+            },
+            enabled_field(2, "second"),
+        ];
+
+        let generated = CurlService::generate(CurlGenerateInput {
+            content,
+            resolved: None,
+            include_secrets: false,
+        })
+        .expect("generate ordered cURL");
+
+        assert!(generated
+            .command
+            .contains("https://api.example.test/items?tag=first&tag=second"));
+        assert!(!generated.command.contains("tag=off"));
+        assert!(!generated.command.contains("X-Mode: off"));
+        let first = generated
+            .command
+            .find("X-Mode: first")
+            .expect("first header");
+        let second = generated
+            .command
+            .find("X-Mode: second")
+            .expect("second header");
+        assert!(first < second);
+    }
+
+    #[test]
+    fn confirmed_generation_materializes_secrets_in_rust() {
+        let (snapshot, environment_id, content) = secret_resolution_fixture();
+        let runtime_secret = format!("runtime-{}", uuid::Uuid::new_v4());
+        let materialized = materialize_request_content_for_curl(
+            &snapshot,
+            Some(environment_id),
+            content,
+            &|reference| (reference == "secret://curl-fixture").then(|| runtime_secret.clone()),
+        )
+        .expect("materialize confirmed cURL");
+
+        let generated = CurlService::generate(CurlGenerateInput {
+            content: materialized,
+            resolved: None,
+            include_secrets: true,
+        })
+        .expect("generate confirmed cURL");
+
+        assert!(generated
+            .command
+            .contains("https://resolved.example.test/items"));
+        assert!(generated.command.contains(&runtime_secret));
+        assert!(!generated.command.contains("{{credential}}"));
+    }
+
+    #[test]
+    fn confirmed_generation_rejects_missing_secret_without_exposing_reference() {
+        let (snapshot, environment_id, content) = secret_resolution_fixture();
+        let error =
+            materialize_request_content_for_curl(&snapshot, Some(environment_id), content, &|_| {
+                None
+            })
+            .expect_err("missing Secret must fail");
+        let message = error.to_string();
+
+        assert!(message.contains("curl.secret.unavailable"));
+        assert!(!message.contains("secret://"));
+    }
+
+    #[test]
+    fn confirmed_generation_rejects_environment_mismatch_before_secret_resolution() {
+        let (snapshot, _environment_id, content) = secret_resolution_fixture();
+        let resolver_called = std::cell::Cell::new(false);
+        let error = materialize_request_content_for_curl(
+            &snapshot,
+            Some(EnvironmentId::new()),
+            content,
+            &|_| {
+                resolver_called.set(true);
+                None
+            },
+        )
+        .expect_err("stale Environment must fail");
+
+        assert!(error.to_string().contains("curl.resolution.stale"));
+        assert!(!resolver_called.get());
     }
 }

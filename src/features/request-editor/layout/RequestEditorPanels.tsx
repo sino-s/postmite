@@ -28,6 +28,7 @@ type RequestEditorPanelsProps = {
   content: RequestContentDto;
   cookies: WorkspaceCookieDto[];
   cookiesLoading: boolean;
+  curlAction: ReactNode;
   execution: ResponseExecutionState | null;
   history: ExecutionHistorySnapshotDto | null;
   historyLoading: boolean;
@@ -50,6 +51,7 @@ export function RequestEditorPanels({
   content,
   cookies,
   cookiesLoading,
+  curlAction,
   execution,
   history,
   historyLoading,
@@ -69,6 +71,7 @@ export function RequestEditorPanels({
 }: RequestEditorPanelsProps) {
   const requestOptions = (
     <RequestOptionsTabs
+      action={curlAction}
       tabs={[
         {
           content: (
@@ -212,6 +215,7 @@ export function RequestEditorPanels({
 }
 
 type RequestOptionsTabsProps = {
+  action: ReactNode;
   tabs: Array<{
     content: ReactNode;
     label: string;
@@ -219,7 +223,7 @@ type RequestOptionsTabsProps = {
   }>;
 };
 
-function RequestOptionsTabs({ tabs }: RequestOptionsTabsProps) {
+function RequestOptionsTabs({ action, tabs }: RequestOptionsTabsProps) {
   const [activeTab, setActiveTab] = useState(tabs[0]?.value ?? "");
   const activePanel = tabs.find((tab) => tab.value === activeTab) ?? tabs[0];
 
@@ -247,10 +251,10 @@ function RequestOptionsTabs({ tabs }: RequestOptionsTabsProps) {
   return (
     <section aria-label="Request options" className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-        <div className="flex shrink-0 min-w-0 items-center">
+        <div className="flex shrink-0 min-w-0 items-center gap-2">
           <div
             aria-label="Request option tabs"
-            className="inline-flex h-auto min-w-0 max-w-full items-center justify-start overflow-x-auto rounded-md bg-muted p-1 text-muted-foreground"
+            className="inline-flex h-auto min-w-0 flex-1 items-center justify-start overflow-x-auto rounded-md bg-muted p-1 text-muted-foreground"
             role="tablist"
           >
             {tabs.map((tab, index) => (
@@ -271,6 +275,7 @@ function RequestOptionsTabs({ tabs }: RequestOptionsTabsProps) {
               </button>
             ))}
           </div>
+          {action}
         </div>
         <div
           aria-labelledby={`request-option-tab-${activePanel.value}`}

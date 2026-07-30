@@ -7,6 +7,7 @@ import { PreferencesProvider, usePreferences } from "./preferences";
 import type { RequestResponseSplit } from "./preferences";
 import { CollectionsSidebar } from "../features/request-editor/panels/CollectionsSidebar";
 import { RequestLine } from "../features/request-editor/controls/RequestLine";
+import { CurlCopyControl } from "../features/request-editor/controls/CurlCopyControl";
 import { TabStrip } from "../features/request-editor/controls/TabStrip";
 import { screenshotCookies, screenshotExecution, screenshotHistory, screenshotResolution, screenshotSnapshot } from "../features/request-editor/fixtures/screenshot-fixtures";
 import { useMediaQuery } from "../features/request-editor/hooks/useMediaQuery";
@@ -15,6 +16,7 @@ import { RequestWorkspaceShell } from "../features/request-editor/layout/Request
 import type { RequestContentDto } from "../shared/api/generated/ipc";
 
 type ScreenshotVariant = {
+  curlConfirmation: boolean;
   density: "comfortable" | "compact";
   requestResponseSplit: RequestResponseSplit;
   state: "workspace" | "empty";
@@ -107,6 +109,18 @@ function ScreenshotWorkspace() {
           content={content}
           cookies={screenshotCookies}
           cookiesLoading={false}
+          curlAction={
+            <CurlCopyControl
+              confirmationOpen={variant.curlConfirmation}
+              disabled={false}
+              feedback={null}
+              onCancelConfirmation={() => undefined}
+              onCopy={() => undefined}
+              onCopyRedacted={() => undefined}
+              onIncludeSecrets={() => undefined}
+              pending={false}
+            />
+          }
           execution={screenshotExecution}
           history={screenshotHistory}
           historyLoading={false}
@@ -158,6 +172,7 @@ function ScreenshotWorkspace() {
 function readVariant(): ScreenshotVariant {
   const params = new URLSearchParams(window.location.search);
   return {
+    curlConfirmation: params.get("curl") === "confirm",
     density: params.get("density") === "compact" ? "compact" : "comfortable",
     requestResponseSplit: params.get("split") === "vertical" ? "vertical" : "horizontal",
     state: params.get("state") === "empty" ? "empty" : "workspace",

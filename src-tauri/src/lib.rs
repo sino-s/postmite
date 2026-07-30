@@ -45,6 +45,7 @@ pub fn run() {
     let started_at = Instant::now();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             ipc::list_workspaces,
             ipc::create_workspace,

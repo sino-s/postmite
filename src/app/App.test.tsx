@@ -45,6 +45,7 @@ const requestApiMock = vi.hoisted(() => ({
   executionHistoryQuery: vi.fn(),
   executionHistoryQueryKey: (workspaceId: string) =>
     ["executionHistory", workspaceId] as const,
+  generateCurl: vi.fn(),
   moveCollectionFolder: vi.fn(),
   moveSavedRequest: vi.fn(),
   openExecutionRecordAsDraft: vi.fn(),
@@ -72,8 +73,13 @@ const executionApiMock = vi.hoisted(() => ({
   startRequestExecution: vi.fn(),
 }));
 
+const clipboardApiMock = vi.hoisted(() => ({
+  writeClipboardText: vi.fn(),
+}));
+
 vi.mock("../shared/api/workspaces", () => workspaceApiMock);
 vi.mock("../shared/api/requests", () => requestApiMock);
+vi.mock("../shared/api/clipboard", () => clipboardApiMock);
 vi.mock("../shared/api/execution", async (importActual) => {
   const actual =
     await importActual<typeof import("../shared/api/execution")>();
@@ -132,6 +138,12 @@ describe("App request editor", () => {
       }),
     );
     requestApiMock.resolveRequestContent.mockResolvedValue(emptyResolution());
+    requestApiMock.generateCurl.mockResolvedValue({
+      command: "curl 'https://example.test'",
+      includedSecretCount: 0,
+      redactedSecretCount: 0,
+    });
+    clipboardApiMock.writeClipboardText.mockResolvedValue(undefined);
     requestApiMock.revealCookieValue.mockResolvedValue({ value: "sid-value" });
     executionApiMock.startRequestExecution.mockImplementation(
       async (input: { executionId: string }) => ({
@@ -225,6 +237,249 @@ describe("App request editor", () => {
       tabId: "tab-1",
       decision: "DISCARD",
     });
+  });
+
+  it("copies the latest unsaved Draft through typed cURL generation with ordered fields", async () => {
+    const user = userEvent.setup();
+    const content = requestContent({
+      method: "POST",
+      url: "https://example.test/items?tag=first&tag=second",
+      query: [
+        { enabled: true, order: 0, name: "tag", value: "first" },
+        { enabled: false, order: 1, name: "tag", value: "off" },
+        { enabled: true, order: 2, name: "tag", value: "second" },
+      ],
+      headers: [
+        { enabled: true, order: 0, name: "X-Mode", value: "first" },
+        { enabled: false, order: 1, name: "X-Mode", value: "off" },
+        { enabled: true, order: 2, name: "X-Mode", value: "second" },
+      ],
+      auth: { type: "BASIC", username: "public-user", password: "" },
+      body: { type: "RAW", content: "{\"draft\":true}" },
+    });
+    const resolved = {
+      ...emptyResolution(),
+      url: {
+        value: "https://example.test/items?tag=first&tag=second",
+        containsSecret: false,
+      },
+      query: content.query.map((field) => ({
+        enabled: field.enabled,
+        order: field.order,
+        name: { value: field.name, containsSecret: false },
+        value: { value: field.value, containsSecret: false },
+      })),
+      headers: content.headers.map((field) => ({
+        enabled: field.enabled,
+        order: field.order,
+        name: { value: field.name, containsSecret: false },
+        value: { value: field.value, containsSecret: false },
+      })),
+      body: { value: "{\"draft\":true}", containsSecret: false },
+    };
+    requestApiMock.resolveRequestContent.mockResolvedValue(resolved);
+    requestApiMock.generateCurl.mockResolvedValue({
+      command: "curl 'https://example.test/items?tag=first&tag=second'",
+      includedSecretCount: 0,
+      redactedSecretCount: 0,
+    });
+    renderApp(requestSnapshot({ content, isDirty: true }));
+
+    await user.selectOptions(screen.getByLabelText("Method"), "PATCH");
+    const copyButton = await screen.findByRole("button", { name: "Copy cURL" });
+    await waitFor(() => expect(copyButton).toBeEnabled());
+    copyButton.focus();
+    await user.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expect(requestApiMock.generateCurl).toHaveBeenCalledWith({
+        workspaceId: "workspace-1",
+        environmentId: null,
+        content: expect.objectContaining({
+          method: "PATCH",
+          url: "https://example.test/items?tag=first&tag=second",
+          query: content.query,
+          headers: content.headers,
+          auth: content.auth,
+          body: content.body,
+        }),
+        resolved,
+        includeSecrets: false,
+      }),
+    );
+    expect(clipboardApiMock.writeClipboardText).toHaveBeenCalledWith(
+      "curl 'https://example.test/items?tag=first&tag=second'",
+    );
+    expect(await screen.findByText("cURL copied.")).toBeInTheDocument();
+  });
+
+  it("defaults Secret confirmation to redacted copy and requires explicit inclusion", async () => {
+    const user = userEvent.setup();
+    requestApiMock.generateCurl
+      .mockResolvedValueOnce({
+        command: "curl 'https://redacted.example.test'",
+        includedSecretCount: 0,
+        redactedSecretCount: 1,
+      })
+      .mockResolvedValueOnce({
+        command: "curl 'https://redacted.example.test'",
+        includedSecretCount: 0,
+        redactedSecretCount: 1,
+      })
+      .mockResolvedValueOnce({
+        command: "curl 'https://redacted.example.test'",
+        includedSecretCount: 0,
+        redactedSecretCount: 1,
+      })
+      .mockResolvedValueOnce({
+        command: "curl 'https://included.example.test'",
+        includedSecretCount: 1,
+        redactedSecretCount: 0,
+      });
+    renderApp(requestSnapshot({ isDirty: true }));
+    const copyButton = await screen.findByRole("button", { name: "Copy cURL" });
+    await waitFor(() => expect(copyButton).toBeEnabled());
+
+    await user.click(copyButton);
+    expect(
+      await screen.findByRole("button", { name: "Copy redacted cURL" }),
+    ).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(clipboardApiMock.writeClipboardText).not.toHaveBeenCalled();
+
+    await user.click(copyButton);
+    await user.click(
+      await screen.findByRole("button", { name: "Copy redacted cURL" }),
+    );
+    expect(clipboardApiMock.writeClipboardText).toHaveBeenLastCalledWith(
+      "curl 'https://redacted.example.test'",
+    );
+
+    await user.click(copyButton);
+    await user.click(
+      await screen.findByRole("button", { name: "Include Secrets and copy" }),
+    );
+    await waitFor(() =>
+      expect(requestApiMock.generateCurl).toHaveBeenLastCalledWith({
+        workspaceId: "workspace-1",
+        environmentId: null,
+        content: expect.any(Object),
+        resolved: expect.any(Object),
+        includeSecrets: true,
+      }),
+    );
+    expect(clipboardApiMock.writeClipboardText).toHaveBeenLastCalledWith(
+      "curl 'https://included.example.test'",
+    );
+  });
+
+  it("rejects generated output when the Draft changes during generation", async () => {
+    const user = userEvent.setup();
+    const generated = deferred<{
+      command: string;
+      includedSecretCount: number;
+      redactedSecretCount: number;
+    }>();
+    requestApiMock.generateCurl.mockReturnValue(generated.promise);
+    renderApp(requestSnapshot({ isDirty: true }));
+    const copyButton = await screen.findByRole("button", { name: "Copy cURL" });
+    await waitFor(() => expect(copyButton).toBeEnabled());
+
+    await user.click(copyButton);
+    replaceInputText("URL", "https://changed.example.test");
+    generated.resolve({
+      command: "curl 'https://old.example.test'",
+      includedSecretCount: 0,
+      redactedSecretCount: 0,
+    });
+
+    expect(
+      await screen.findByText(
+        "The request changed before cURL could be copied. Try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(clipboardApiMock.writeClipboardText).not.toHaveBeenCalled();
+  });
+
+  it("invalidates Secret confirmation when the selected Environment changes", async () => {
+    const user = userEvent.setup();
+    const queryClient = renderApp(
+      environmentRequestSnapshot({ selectedEnvironmentId: "env-dev" }),
+    );
+    const switched = environmentRequestSnapshot({
+      selectedEnvironmentId: "env-prod",
+    });
+    requestApiMock.selectEnvironment.mockImplementation(
+      async (client: QueryClient) => {
+        client.setQueryData(requestWorkspaceQueryKey("workspace-1"), switched);
+        return switched;
+      },
+    );
+    requestApiMock.generateCurl.mockResolvedValue({
+      command: "curl 'https://redacted.example.test'",
+      includedSecretCount: 0,
+      redactedSecretCount: 1,
+    });
+    const copyButton = await screen.findByRole("button", { name: "Copy cURL" });
+    await waitFor(() => expect(copyButton).toBeEnabled());
+    await user.click(copyButton);
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: "This cURL contains Secret values",
+      }),
+    ).toBeVisible();
+    expect(requestApiMock.generateCurl).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workspaceId: "workspace-1",
+        environmentId: "env-dev",
+        includeSecrets: false,
+      }),
+    );
+
+    await user.selectOptions(screen.getByLabelText("Environment"), "env-prod");
+    expect(requestApiMock.selectEnvironment).toHaveBeenCalledWith(queryClient, {
+      workspaceId: "workspace-1",
+      environmentId: "env-prod",
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("alertdialog", {
+          name: "This cURL contains Secret values",
+        }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(clipboardApiMock.writeClipboardText).not.toHaveBeenCalled();
+  });
+
+  it("disables cURL copy while resolution is in flight", async () => {
+    const resolution = deferred<ReturnType<typeof emptyResolution>>();
+    requestApiMock.resolveRequestContent.mockReturnValue(resolution.promise);
+    renderApp(requestSnapshot({ isDirty: true }));
+    const copyButton = await screen.findByRole("button", { name: "Copy cURL" });
+    expect(copyButton).toBeDisabled();
+
+    resolution.resolve(emptyResolution());
+    await waitFor(() => expect(copyButton).toBeEnabled());
+  });
+
+  it("reports clipboard failure without exposing generated output", async () => {
+    const user = userEvent.setup();
+    requestApiMock.generateCurl.mockResolvedValue({
+      command: "curl 'https://private-output.example.test'",
+      includedSecretCount: 0,
+      redactedSecretCount: 0,
+    });
+    clipboardApiMock.writeClipboardText.mockRejectedValue(
+      new Error("clipboard unavailable"),
+    );
+    renderApp(requestSnapshot({ isDirty: true }));
+    const copyButton = await screen.findByRole("button", { name: "Copy cURL" });
+    await waitFor(() => expect(copyButton).toBeEnabled());
+    await user.click(copyButton);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("cURL could not be copied. Try again.");
+    expect(alert).not.toHaveTextContent("private-output");
   });
 
   it("keeps URL query text and Params rows bidirectionally synchronized", async () => {
@@ -985,6 +1240,16 @@ function renderApp(
 function replaceInputText(label: string, value: string) {
   const input = screen.getByLabelText(label);
   fireEvent.change(input, { target: { value } });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 function workspaceSnapshot(): WorkspaceSnapshotDto {

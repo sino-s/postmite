@@ -11,6 +11,22 @@ test("captures request workspace screenshots", async ({ page }, testInfo) => {
   await expect(page.getByRole("heading", { name: "Postmite" })).toBeVisible();
   await expect(page.getByLabel("Request editor screenshot fixture")).toBeVisible();
   await expect(page.getByRole("tablist", { name: "Request option tabs" })).toBeVisible();
+  const curlCopy = page.getByRole("button", { name: "Copy cURL" });
+  await expect(curlCopy).toBeVisible();
+  await expect
+    .poll(async () => {
+      const actionBox = await curlCopy.boundingBox();
+      const tabBox = await page
+        .getByRole("tablist", { name: "Request option tabs" })
+        .boundingBox();
+      return Boolean(
+        actionBox &&
+          tabBox &&
+          actionBox.x >= tabBox.x + tabBox.width &&
+          actionBox.x + actionBox.width <= page.viewportSize()!.width,
+      );
+    })
+    .toBe(true);
   await expect
     .poll(() =>
       page.evaluate(() => {
@@ -112,6 +128,26 @@ test("captures request workspace screenshots", async ({ page }, testInfo) => {
   });
 
   if (variant === "desktop-light") {
+    await curlCopy.focus();
+    await expect(curlCopy).toBeFocused();
+    await page.screenshot({
+      animations: "disabled",
+      path: `${outputDir}/${variant}-curl-focus.png`,
+    });
+
+    await page.goto(`/?theme=${theme}&density=${density}&curl=confirm`);
+    await expect(
+      page.getByRole("alertdialog", { name: "This cURL contains Secret values" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Copy redacted cURL" }),
+    ).toBeFocused();
+    await page.screenshot({
+      animations: "disabled",
+      path: `${outputDir}/${variant}-curl-confirmation.png`,
+    });
+
+    await page.goto(`/?theme=${theme}&density=${density}`);
     await page.getByRole("button", { name: "Application menu" }).click();
     await expect(page.getByLabel("Theme")).toBeVisible();
     await expect(page.getByLabel("Density")).toBeVisible();
