@@ -34,6 +34,7 @@ import {
   updateRequestDraft,
 } from "../../shared/api/requests";
 import {
+  applyResponseExecutionEvents,
   cancelRequestExecution,
   createQueuedResponseExecutionState,
   isTerminalResponseExecution,
@@ -47,7 +48,10 @@ import {
   setWorkspaceBaseDirectory,
 } from "../../shared/api/workspaces";
 import { checkForUpdate } from "../../shared/api/update";
-import type { ResponseExecutionState } from "../../shared/api/execution";
+import type {
+  ExecutionEventDto,
+  ResponseExecutionState,
+} from "../../shared/api/execution";
 import type {
   WorkspaceCookieDto,
   CollectionFolderDto,
@@ -103,6 +107,7 @@ export function RequestEditor({
   const [executions, setExecutions] = useState<
     Record<string, ResponseExecutionState>
   >({});
+  const pendingExecutionEventsRef = useRef<Map<string, ExecutionEventDto[]>>(new Map());
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const updateCheckMutation = useMutation({ mutationFn: checkForUpdate });
 
@@ -169,9 +174,19 @@ export function RequestEditor({
     let disposed = false;
 
     void listenToRequestExecutionEvents((event) => {
-      setExecutions((current) =>
-        reduceResponseExecutionStates(current, event, Date.now()),
-      );
+      setExecutions((current) => {
+        const next = reduceResponseExecutionStates(current, event, Date.now());
+        if (
+          next === current &&
+          !Object.values(current).some(
+            (execution) => execution.executionId === event.executionId,
+          )
+        ) {
+          const pending = pendingExecutionEventsRef.current.get(event.executionId) ?? [];
+          pendingExecutionEventsRef.current.set(event.executionId, [...pending, event]);
+        }
+        return next;
+      });
       if (
         selectedWorkspaceId &&
         (event.kind.type === "COMPLETED" ||
@@ -402,14 +417,23 @@ export function RequestEditor({
       draftId: activeDraft.id,
       content: activeContent,
     });
-    setExecutions((current) => ({
-      ...current,
-      [activeDraft.id]: createQueuedResponseExecutionState({
+    setExecutions((current) => {
+      const queued = createQueuedResponseExecutionState({
         draftId: activeDraft.id,
         executionId: result.executionId,
         nowMs: Date.now(),
-      }),
-    }));
+      });
+      const pending = pendingExecutionEventsRef.current.get(result.executionId) ?? [];
+      pendingExecutionEventsRef.current.delete(result.executionId);
+      return {
+        ...current,
+        [activeDraft.id]: applyResponseExecutionEvents(
+          queued,
+          pending,
+          Date.now(),
+        ),
+      };
+    });
   }
 
   async function handleCancel() {
