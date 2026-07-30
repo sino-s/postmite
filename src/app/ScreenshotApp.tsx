@@ -95,6 +95,7 @@ function ScreenshotWorkspace() {
         <RequestLine
           content={content}
           executionPhase="completed"
+          executionReady
           executionRunning={false}
           onCancel={() => undefined}
           onChange={(updater) => setContent((current) => updater(current))}

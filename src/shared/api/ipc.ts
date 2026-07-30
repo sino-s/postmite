@@ -13,6 +13,7 @@ import type {
   CurlImportInput,
   DiagnosticBundleExportInput,
   DiagnosticDebugLoggingInput,
+  FrontendExecutionTraceInput,
   DescribeBodyFileInput,
   ExecutionRecordIdInput,
   IpcCommandContracts,
@@ -169,6 +170,8 @@ export const requestIpc = {
     invokeCommand("get_diagnostic_bundle_preview", undefined),
   setDiagnosticDebugLogging: (input: DiagnosticDebugLoggingInput) =>
     invokeCommand("set_diagnostic_debug_logging", input),
+  recordFrontendExecutionTrace: (input: FrontendExecutionTraceInput) =>
+    invokeCommand("record_frontend_execution_trace", input),
   exportDiagnosticBundle: (input: DiagnosticBundleExportInput) =>
     invokeCommand("export_diagnostic_bundle", input),
   checkForUpdate: () => invokeCommand("check_for_update", undefined),

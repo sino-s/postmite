@@ -162,13 +162,25 @@ describe("typed IPC adapter", () => {
       enabled: true,
       durationMinutes: 15,
     });
+    await requestIpc.recordFrontendExecutionTrace({
+      executionId: "2c4eb6a7-7909-4e24-8a01-00a4e57b0062",
+      stage: "EVENT_RECEIVED",
+      sequence: 3n,
+    });
     await requestIpc.exportDiagnosticBundle({ bundlePath: "/tmp/diagnostics.zip" });
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "get_diagnostic_bundle_preview");
     expect(invokeMock).toHaveBeenNthCalledWith(2, "set_diagnostic_debug_logging", {
       input: { enabled: true, durationMinutes: 15 },
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(3, "export_diagnostic_bundle", {
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "record_frontend_execution_trace", {
+      input: {
+        executionId: "2c4eb6a7-7909-4e24-8a01-00a4e57b0062",
+        stage: "EVENT_RECEIVED",
+        sequence: 3n,
+      },
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "export_diagnostic_bundle", {
       input: { bundlePath: "/tmp/diagnostics.zip" },
     });
   });

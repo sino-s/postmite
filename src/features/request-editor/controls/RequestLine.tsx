@@ -13,6 +13,7 @@ const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 type RequestLineProps = {
   content: RequestContentDto;
   executionPhase: ResponseExecutionPhase;
+  executionReady: boolean;
   executionRunning: boolean;
   onCancel: () => void;
   onChange: (updater: (content: RequestContentDto) => RequestContentDto) => void;
@@ -35,6 +36,7 @@ function executionStatus(phase: ResponseExecutionPhase, t: ReturnType<typeof use
 export function RequestLine({
   content,
   executionPhase,
+  executionReady,
   executionRunning,
   onCancel,
   onChange,
@@ -109,7 +111,7 @@ export function RequestLine({
         {t("request.save")}
       </Button>
       <Button
-        disabled={executionRunning}
+        disabled={executionRunning || !executionReady}
         onClick={onExecute}
         type="button"
       >

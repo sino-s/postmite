@@ -688,6 +688,44 @@ pub struct DiagnosticDebugLoggingInput {
     pub duration_minutes: Option<u16>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FrontendExecutionTraceStageDto {
+    StartRequested,
+    StartResolved,
+    StartRejected,
+    EventReceived,
+    EventApplied,
+    EventBuffered,
+    EventIgnored,
+    StartReconciledPending,
+    StartReconciledTerminal,
+}
+
+impl FrontendExecutionTraceStageDto {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::StartRequested => "frontend.start.requested",
+            Self::StartResolved => "frontend.start.resolved",
+            Self::StartRejected => "frontend.start.rejected",
+            Self::EventReceived => "frontend.event.received",
+            Self::EventApplied => "frontend.event.applied",
+            Self::EventBuffered => "frontend.event.buffered",
+            Self::EventIgnored => "frontend.event.ignored",
+            Self::StartReconciledPending => "frontend.start.reconciled.pending",
+            Self::StartReconciledTerminal => "frontend.start.reconciled.terminal",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendExecutionTraceInput {
+    pub execution_id: String,
+    pub stage: FrontendExecutionTraceStageDto,
+    pub sequence: Option<u64>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticBundleExportInput {

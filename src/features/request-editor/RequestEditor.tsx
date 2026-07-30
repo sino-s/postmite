@@ -36,9 +36,11 @@ import {
 import {
   applyResponseExecutionEvents,
   cancelRequestExecution,
+  createExecutionId,
   createQueuedResponseExecutionState,
   isTerminalResponseExecution,
   listenToRequestExecutionEvents,
+  recordFrontendExecutionTrace,
   reduceResponseExecutionStates,
   startRequestExecution,
 } from "../../shared/api/execution";
@@ -85,6 +87,15 @@ type RequestEditorProps = {
   onExecute?: typeof startRequestExecution;
 };
 
+function isTraceableExecutionEvent(event: ExecutionEventDto) {
+  return (
+    event.kind.type === "STARTED" ||
+    event.kind.type === "RESPONSE_HEADERS" ||
+    event.kind.type === "COMPLETED" ||
+    event.kind.type === "FAILED" ||
+    event.kind.type === "CANCELLED"
+  );
+}
 
 export function RequestEditor({
   onCancel = cancelRequestExecution,
@@ -107,7 +118,11 @@ export function RequestEditor({
   const [executions, setExecutions] = useState<
     Record<string, ResponseExecutionState>
   >({});
+  const executionsRef = useRef<Record<string, ResponseExecutionState>>({});
   const pendingExecutionEventsRef = useRef<Map<string, ExecutionEventDto[]>>(new Map());
+  const [executionListenerState, setExecutionListenerState] = useState<
+    "pending" | "ready" | "failed"
+  >("pending");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const updateCheckMutation = useMutation({ mutationFn: checkForUpdate });
 
@@ -169,24 +184,47 @@ export function RequestEditor({
     enabled: Boolean(selectedWorkspaceId && activeDraft && activeContent),
   });
 
+  function updateExecutions(
+    updater: (
+      current: Record<string, ResponseExecutionState>,
+    ) => Record<string, ResponseExecutionState>,
+  ) {
+    const next = updater(executionsRef.current);
+    executionsRef.current = next;
+    setExecutions(next);
+    return next;
+  }
+
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let disposed = false;
+    setExecutionListenerState("pending");
 
     void listenToRequestExecutionEvents((event) => {
-      setExecutions((current) => {
-        const next = reduceResponseExecutionStates(current, event, Date.now());
-        if (
-          next === current &&
-          !Object.values(current).some(
-            (execution) => execution.executionId === event.executionId,
-          )
-        ) {
-          const pending = pendingExecutionEventsRef.current.get(event.executionId) ?? [];
-          pendingExecutionEventsRef.current.set(event.executionId, [...pending, event]);
-        }
-        return next;
-      });
+      const current = executionsRef.current;
+      const matched = Object.values(current).some(
+        (execution) => execution.executionId === event.executionId,
+      );
+      const next = reduceResponseExecutionStates(current, event, Date.now());
+      executionsRef.current = next;
+      setExecutions(next);
+      let traceStage: "EVENT_APPLIED" | "EVENT_BUFFERED" | "EVENT_IGNORED";
+      if (next !== current) {
+        traceStage = "EVENT_APPLIED";
+      } else if (matched) {
+        traceStage = "EVENT_IGNORED";
+      } else {
+        const pending = pendingExecutionEventsRef.current.get(event.executionId) ?? [];
+        pendingExecutionEventsRef.current.set(event.executionId, [...pending, event]);
+        traceStage = "EVENT_BUFFERED";
+      }
+      if (isTraceableExecutionEvent(event)) {
+        void recordFrontendExecutionTrace(
+          event.executionId,
+          traceStage,
+          event.sequence,
+        );
+      }
       if (
         selectedWorkspaceId &&
         (event.kind.type === "COMPLETED" ||
@@ -203,6 +241,11 @@ export function RequestEditor({
         return;
       }
       unlisten = nextUnlisten;
+      setExecutionListenerState("ready");
+    }).catch(() => {
+      if (!disposed) {
+        setExecutionListenerState("failed");
+      }
     });
 
     return () => {
@@ -407,13 +450,17 @@ export function RequestEditor({
   }
 
   async function handleExecute() {
-    if (!activeDraft || !activeContent) {
+    if (
+      !activeDraft ||
+      !activeContent ||
+      executionListenerState !== "ready"
+    ) {
       return;
     }
 
     await persistDraft(activeDraft, activeContent);
-    const executionId = crypto.randomUUID();
-    setExecutions((current) => ({
+    const executionId = createExecutionId();
+    updateExecutions((current) => ({
       ...current,
       [activeDraft.id]: createQueuedResponseExecutionState({
         draftId: activeDraft.id,
@@ -431,7 +478,7 @@ export function RequestEditor({
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : t("app.unavailable");
-      setExecutions((current) => {
+      updateExecutions((current) => {
         const currentExecution = current[activeDraft.id];
         if (currentExecution?.executionId !== executionId) {
           return current;
@@ -448,7 +495,7 @@ export function RequestEditor({
       });
       return;
     }
-    setExecutions((current) => {
+    const reconciledExecutions = updateExecutions((current) => {
       const currentExecution = current[activeDraft.id];
       const base =
         currentExecution?.executionId === result.executionId
@@ -472,6 +519,16 @@ export function RequestEditor({
         ),
       };
     });
+    const reconciled = reconciledExecutions[activeDraft.id];
+    const reconciledTerminal =
+      reconciled?.executionId === result.executionId &&
+      isTerminalResponseExecution(reconciled);
+    void recordFrontendExecutionTrace(
+      result.executionId,
+      reconciledTerminal
+        ? "START_RECONCILED_TERMINAL"
+        : "START_RECONCILED_PENDING",
+    );
   }
 
   async function handleCancel() {
@@ -481,7 +538,7 @@ export function RequestEditor({
 
     const result = await onCancel({ executionId: activeExecution.executionId });
     if (!result.cancelled) {
-      setExecutions((current) => ({
+      updateExecutions((current) => ({
         ...current,
         [activeExecution.draftId]: {
           ...activeExecution,
@@ -691,6 +748,7 @@ export function RequestEditor({
           <RequestLine
             content={activeContent}
             executionPhase={activeExecution?.phase ?? "idle"}
+            executionReady={executionListenerState === "ready"}
             executionRunning={activeExecutionRunning}
             onCancel={() => void handleCancel()}
             onChange={changeActiveDraft}
@@ -698,6 +756,11 @@ export function RequestEditor({
             onSave={() => void handleSave()}
             saving={false}
           />
+          {executionListenerState === "failed" ? (
+            <p className="text-sm text-red-700" role="alert">
+              {t("app.executionEventsUnavailable")}
+            </p>
+          ) : null}
           <RequestEditorPanels
             content={activeContent}
             cookies={cookieJar.data?.cookies ?? []}

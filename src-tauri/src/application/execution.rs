@@ -237,6 +237,32 @@ impl ExecutionCoordinator {
             + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
+        self.start_with_id_observed(execution_id, request, sink, |_| {}, |_| {}, run)
+    }
+
+    pub(crate) fn start_with_id_observed<F, Fut, Q, R>(
+        self: &Arc<Self>,
+        execution_id: ExecutionId,
+        request: ExecutionRequest,
+        sink: ExecutionEventSink,
+        on_queued: Q,
+        on_running: R,
+        run: F,
+    ) -> Result<StartExecutionResult, ExecutionError>
+    where
+        F: FnOnce(
+                ExecutionId,
+                ExecutionRequest,
+                CancellationToken,
+                Arc<Self>,
+                ExecutionEventSink,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+        Q: FnOnce(ExecutionId),
+        R: FnOnce(ExecutionId) + Send + 'static,
+    {
         validate_request(&request)?;
 
         let cancellation = CancellationToken::new();
@@ -269,6 +295,7 @@ impl ExecutionCoordinator {
         if let Some(replaced) = replaced {
             replaced.cancel();
         }
+        on_queued(execution_id);
 
         let coordinator = Arc::clone(self);
         let permits = Arc::clone(&self.permits);
@@ -303,6 +330,7 @@ impl ExecutionCoordinator {
                 coordinator.emit_cancelled_if_current(execution_id, &sink);
                 return;
             }
+            on_running(execution_id);
 
             if cancellation.is_cancelled() {
                 coordinator.emit_cancelled_if_current(execution_id, &sink);
@@ -559,7 +587,10 @@ fn body_text_bytes(body: &RequestBody) -> usize {
 mod tests {
     use super::*;
     use crate::domain::request::RequestContent;
-    use std::sync::mpsc as std_mpsc;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
+    };
     use tokio::sync::{mpsc, oneshot};
     use tokio::time::{sleep, Duration};
 
@@ -671,6 +702,42 @@ mod tests {
         started_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("execution task started outside tokio reactor");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_observers_run_in_order_before_execution_task() {
+        let coordinator = Arc::new(ExecutionCoordinator::with_concurrency(1));
+        let execution_id = ExecutionId::new();
+        let queued = Arc::new(AtomicBool::new(false));
+        let running = Arc::new(AtomicBool::new(false));
+        let queued_for_observer = Arc::clone(&queued);
+        let queued_for_running = Arc::clone(&queued);
+        let running_for_observer = Arc::clone(&running);
+        let queued_for_run = Arc::clone(&queued);
+        let running_for_run = Arc::clone(&running);
+        let (started_tx, started_rx) = oneshot::channel();
+
+        coordinator
+            .start_with_id_observed(
+                execution_id,
+                request(),
+                Arc::new(|_| {}),
+                move |_| queued_for_observer.store(true, Ordering::SeqCst),
+                move |_| {
+                    assert!(queued_for_running.load(Ordering::SeqCst));
+                    running_for_observer.store(true, Ordering::SeqCst);
+                },
+                move |_, _, _, _, _| {
+                    assert!(queued_for_run.load(Ordering::SeqCst));
+                    assert!(running_for_run.load(Ordering::SeqCst));
+                    async move {
+                        started_tx.send(()).expect("execution started");
+                    }
+                },
+            )
+            .expect("start observed execution");
+
+        started_rx.await.expect("execution task completed");
     }
 
     #[tokio::test]

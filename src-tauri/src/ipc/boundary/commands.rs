@@ -427,6 +427,18 @@ pub fn set_diagnostic_debug_logging(
 }
 
 #[tauri::command]
+pub fn record_frontend_execution_trace(
+    state: State<'_, AppState>,
+    input: FrontendExecutionTraceInput,
+) -> Result<(), IpcError> {
+    let execution_id = parse_execution_id(&input.execution_id)?;
+    state
+        .diagnostics
+        .record_execution_stage(execution_id, input.stage.code(), input.sequence);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn export_diagnostic_bundle(
     state: State<'_, AppState>,
     input: DiagnosticBundleExportInput,
