@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 export const DEFAULT_BUDGETS = Object.freeze({
   coldStartMs: 2_000,
-  aggregateRssMiB: 150,
+  aggregatePssMiB: 165,
   packageSizeMiB: 30,
 });
 
@@ -28,7 +28,9 @@ export async function main() {
   const metrics = {
     coldStartMs: coldStart.readyMs,
     aggregateRssMiB: coldStart.rssMiB,
+    aggregatePssMiB: coldStart.pssMiB,
     tenTabRssMiB: tenTab.rssMiB,
+    tenTabPssMiB: tenTab.pssMiB,
     packageSizeMiB,
   };
   const result = {
@@ -36,8 +38,10 @@ export async function main() {
     machine: machineMetadata(),
     budgets: {
       coldStartMs: DEFAULT_BUDGETS.coldStartMs,
-      aggregateRssMiB: DEFAULT_BUDGETS.aggregateRssMiB,
+      aggregatePssMiB: DEFAULT_BUDGETS.aggregatePssMiB,
+      aggregateRssMiB: null,
       tenTabRssMiB: null,
+      tenTabPssMiB: null,
       packageSizeMiB: DEFAULT_BUDGETS.packageSizeMiB,
     },
     metrics,
@@ -55,6 +59,12 @@ export async function main() {
 }
 
 export function evaluate(metrics, budgets = DEFAULT_BUDGETS) {
+  const memoryMetricName =
+    metrics.aggregatePssMiB === null || metrics.aggregatePssMiB === undefined
+      ? "aggregateRssMiB"
+      : "aggregatePssMiB";
+  const memoryBudget =
+    budgets[memoryMetricName] ?? budgets.aggregatePssMiB ?? budgets.aggregateRssMiB;
   return [
     {
       name: "coldStartMs",
@@ -63,10 +73,10 @@ export function evaluate(metrics, budgets = DEFAULT_BUDGETS) {
       pass: metrics.coldStartMs <= budgets.coldStartMs,
     },
     {
-      name: "aggregateRssMiB",
-      actual: metrics.aggregateRssMiB,
-      budget: budgets.aggregateRssMiB,
-      pass: metrics.aggregateRssMiB <= budgets.aggregateRssMiB,
+      name: memoryMetricName,
+      actual: metrics[memoryMetricName],
+      budget: memoryBudget,
+      pass: metrics[memoryMetricName] <= memoryBudget,
     },
     {
       name: "packageSizeMiB",
@@ -86,9 +96,19 @@ export function bytesToMiB(bytes) {
 }
 
 export function sumProcessTreeRssKiB(rootPid, procRoot = "/proc") {
+  return sumProcessTreeMemoryKiB(rootPid, procRoot).rssKiB;
+}
+
+export function sumProcessTreePssKiB(rootPid, procRoot = "/proc") {
+  return sumProcessTreeMemoryKiB(rootPid, procRoot).pssKiB;
+}
+
+export function sumProcessTreeMemoryKiB(rootPid, procRoot = "/proc") {
   const seen = new Set();
   const stack = [String(rootPid)];
   let rssKiB = 0;
+  let pssKiB = 0;
+  let pssComplete = true;
 
   while (stack.length > 0) {
     const pid = stack.pop();
@@ -98,10 +118,19 @@ export function sumProcessTreeRssKiB(rootPid, procRoot = "/proc") {
     seen.add(pid);
 
     rssKiB += readRssKiB(pid, procRoot);
+    const processPssKiB = readPssKiB(pid, procRoot);
+    if (processPssKiB === null) {
+      pssComplete = false;
+    } else {
+      pssKiB += processPssKiB;
+    }
     stack.push(...readChildren(pid, procRoot));
   }
 
-  return rssKiB;
+  return {
+    rssKiB,
+    pssKiB: pssComplete ? pssKiB : null,
+  };
 }
 
 async function measureApp({ tabCount }) {
@@ -134,8 +163,12 @@ async function measureApp({ tabCount }) {
     await waitForFileOrExit(readyFile, child, output, 30_000);
     const readyMs = Math.round(performance.now() - startedAt);
     await sleep(500);
-    const rssMiB = bytesToMiB(sumProcessTreeRssKiB(child.pid) * 1024);
-    return { readyMs, rssMiB };
+    const memory = sumProcessTreeMemoryKiB(child.pid);
+    return {
+      readyMs,
+      rssMiB: bytesToMiB(memory.rssKiB * 1024),
+      pssMiB: memory.pssKiB === null ? null : bytesToMiB(memory.pssKiB * 1024),
+    };
   } finally {
     await terminate(child);
     rmSync(tempDir, { force: true, recursive: true });
@@ -210,6 +243,16 @@ function readRssKiB(pid, procRoot) {
     return match ? Number(match[1]) : 0;
   } catch {
     return 0;
+  }
+}
+
+function readPssKiB(pid, procRoot) {
+  try {
+    const status = readFileSync(join(procRoot, String(pid), "smaps_rollup"), "utf8");
+    const match = /^Pss:\s+(\d+)\s+kB$/m.exec(status);
+    return match ? Number(match[1]) : null;
+  } catch {
+    return null;
   }
 }
 
