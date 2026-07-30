@@ -36,12 +36,14 @@ describe("request execution API", () => {
   it("starts execution through typed Rust IPC", async () => {
     requestIpcMock.startRequestExecution.mockResolvedValue({
       executionId: "execution-1",
+      initialEvents: [event("execution-1", 1n, "STARTED")],
     });
 
     await expect(
       startRequestExecution({
         workspaceId: "workspace-1",
         draftId: "draft-1",
+        executionId: "execution-1",
         content: {
           name: "GET users",
           method: "GET",
@@ -63,11 +65,13 @@ describe("request execution API", () => {
     ).resolves.toEqual({
       status: "queued",
       executionId: "execution-1",
+      initialEvents: [event("execution-1", 1n, "STARTED")],
     });
 
     expect(requestIpcMock.startRequestExecution).toHaveBeenCalledWith({
       workspaceId: "workspace-1",
       draftId: "draft-1",
+      executionId: "execution-1",
       content: {
         name: "GET users",
         method: "GET",

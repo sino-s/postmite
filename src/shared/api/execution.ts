@@ -18,6 +18,7 @@ export type { ExecutionEventDto };
 export type RequestExecutionResult = {
   status: "queued";
   executionId: string;
+  initialEvents: ExecutionEventDto[];
 };
 
 export type RequestExecutionState = {
@@ -73,6 +74,7 @@ export async function startRequestExecution(
   return {
     status: "queued",
     executionId: result.executionId,
+    initialEvents: result.initialEvents ?? [],
   };
 }
 

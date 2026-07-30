@@ -890,6 +890,7 @@ impl From<StartExecutionResult> for StartRequestExecutionOutput {
     fn from(result: StartExecutionResult) -> Self {
         Self {
             execution_id: result.execution_id.to_string(),
+            initial_events: Vec::new(),
         }
     }
 }

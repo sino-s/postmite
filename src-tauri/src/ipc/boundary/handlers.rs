@@ -657,6 +657,7 @@ pub fn handle_start_request_execution(
 ) -> Result<StartRequestExecutionOutput, IpcError> {
     let workspace_id = parse_workspace_id(&input.workspace_id)?;
     let draft_id = parse_request_draft_id(&input.draft_id)?;
+    let execution_id = parse_execution_id(&input.execution_id)?;
     let workspace_base_directory = {
         let workspaces = state.workspaces.lock().map_err(map_poison_error)?;
         workspaces
@@ -692,8 +693,11 @@ pub fn handle_start_request_execution(
         Instant::now(),
     )));
     let observer_for_sink = Arc::clone(&observer);
+    let initial_events = Arc::new(std::sync::Mutex::new(InitialExecutionEvents::open()));
+    let initial_events_for_sink = Arc::clone(&initial_events);
     let app_for_sink = app.clone();
     let sink = Arc::new(move |event: ExecutionEvent| {
+        let event_dto = ExecutionEventDto::from(event.clone());
         if let ExecutionEventKind::ResponseHeaders { headers, .. } = &event.kind {
             let app_state = app_for_sink.state::<AppState>();
             if let Ok(mut requests) = app_state.requests.lock() {
@@ -731,14 +735,18 @@ pub fn handle_start_request_execution(
                 let _ = result;
             }
         }
-        let _ = app_for_sink.emit(REQUEST_EXECUTION_EVENT, ExecutionEventDto::from(event));
+        if let Ok(mut initial_events) = initial_events_for_sink.lock() {
+            initial_events.push(event_dto.clone());
+        }
+        let _ = app_for_sink.emit(REQUEST_EXECUTION_EVENT, event_dto);
     });
 
     let oauth = Arc::clone(&state.oauth);
     let secrets = Arc::clone(&state.secrets);
-    state
+    let result = state
         .executions
-        .start(
+        .start_with_id(
+            execution_id,
             request,
             sink,
             move |execution_id, request, cancellation, coordinator, sink| {
@@ -778,8 +786,40 @@ pub fn handle_start_request_execution(
                 }
             },
         )
-        .map(StartRequestExecutionOutput::from)
-        .map_err(|error| BoundaryError::Execution(error).into())
+        .map_err(|error| IpcError::from(BoundaryError::Execution(error)))?;
+    let initial_events = initial_events
+        .lock()
+        .map(|mut events| events.close())
+        .unwrap_or_default();
+    Ok(StartRequestExecutionOutput {
+        execution_id: result.execution_id.to_string(),
+        initial_events,
+    })
+}
+
+struct InitialExecutionEvents {
+    open: bool,
+    events: Vec<ExecutionEventDto>,
+}
+
+impl InitialExecutionEvents {
+    fn open() -> Self {
+        Self {
+            open: true,
+            events: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, event: ExecutionEventDto) {
+        if self.open {
+            self.events.push(event);
+        }
+    }
+
+    fn close(&mut self) -> Vec<ExecutionEventDto> {
+        self.open = false;
+        self.events.clone()
+    }
 }
 
 struct ExecutionHistoryObserver {
