@@ -658,6 +658,9 @@ pub fn handle_start_request_execution(
     let workspace_id = parse_workspace_id(&input.workspace_id)?;
     let draft_id = parse_request_draft_id(&input.draft_id)?;
     let execution_id = parse_execution_id(&input.execution_id)?;
+    state
+        .diagnostics
+        .record_execution_stage(execution_id, "ipc.start.received", None);
     let workspace_base_directory = {
         let workspaces = state.workspaces.lock().map_err(map_poison_error)?;
         workspaces
@@ -697,6 +700,8 @@ pub fn handle_start_request_execution(
     let initial_events_for_sink = Arc::clone(&initial_events);
     let app_for_sink = app.clone();
     let sink = Arc::new(move |event: ExecutionEvent| {
+        let sequence = event.sequence;
+        let diagnostic_stage = execution_event_diagnostic_stage(&event.kind);
         let event_dto = ExecutionEventDto::from(event.clone());
         if let ExecutionEventKind::ResponseHeaders { headers, .. } = &event.kind {
             let app_state = app_for_sink.state::<AppState>();
@@ -738,17 +743,49 @@ pub fn handle_start_request_execution(
         if let Ok(mut initial_events) = initial_events_for_sink.lock() {
             initial_events.push(event_dto.clone());
         }
-        let _ = app_for_sink.emit(REQUEST_EXECUTION_EVENT, event_dto);
+        let app_state = app_for_sink.state::<AppState>();
+        if let Some(stage) = diagnostic_stage {
+            app_state
+                .diagnostics
+                .record_execution_stage(execution_id, stage, Some(sequence));
+        }
+        let emit_stage = if app_for_sink
+            .emit(REQUEST_EXECUTION_EVENT, event_dto)
+            .is_ok()
+        {
+            "event.emit.succeeded"
+        } else {
+            "event.emit.failed"
+        };
+        app_state.diagnostics.record_execution_stage(
+            execution_id,
+            emit_stage,
+            Some(sequence),
+        );
     });
 
     let oauth = Arc::clone(&state.oauth);
     let secrets = Arc::clone(&state.secrets);
+    let app_for_queue = app.clone();
+    let app_for_running = app.clone();
     let result = state
         .executions
-        .start_with_id(
+        .start_with_id_observed(
             execution_id,
             request,
             sink,
+            move |execution_id| {
+                app_for_queue
+                    .state::<AppState>()
+                    .diagnostics
+                    .record_execution_stage(execution_id, "coordinator.queued", None);
+            },
+            move |execution_id| {
+                app_for_running
+                    .state::<AppState>()
+                    .diagnostics
+                    .record_execution_stage(execution_id, "coordinator.running", None);
+            },
             move |execution_id, request, cancellation, coordinator, sink| {
                 let oauth = Arc::clone(&oauth);
                 let secrets = Arc::clone(&secrets);
@@ -791,10 +828,26 @@ pub fn handle_start_request_execution(
         .lock()
         .map(|mut events| events.close())
         .unwrap_or_default();
+    state
+        .diagnostics
+        .record_execution_stage(execution_id, "ipc.start.returned", None);
     Ok(StartRequestExecutionOutput {
         execution_id: result.execution_id.to_string(),
         initial_events,
     })
+}
+
+fn execution_event_diagnostic_stage(kind: &ExecutionEventKind) -> Option<&'static str> {
+    match kind {
+        ExecutionEventKind::Started { .. } => Some("http.started"),
+        ExecutionEventKind::ResponseHeaders { .. } => Some("http.response-headers"),
+        ExecutionEventKind::Completed { .. } => Some("http.completed"),
+        ExecutionEventKind::Failed { .. } => Some("http.failed"),
+        ExecutionEventKind::Cancelled => Some("http.cancelled"),
+        ExecutionEventKind::Redirected { .. }
+        | ExecutionEventKind::UploadProgress { .. }
+        | ExecutionEventKind::DownloadProgress { .. } => None,
+    }
 }
 
 struct InitialExecutionEvents {

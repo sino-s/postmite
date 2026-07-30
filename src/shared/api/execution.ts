@@ -4,6 +4,7 @@ import type {
   CancelRequestExecutionInput,
   ExecutionEventDto,
   ExecutionProxyMetadataDto,
+  FrontendExecutionTraceStageDto,
   ResponseFileMetadataDto,
   SaveResponseFileInput,
   ExecutionTimingMetadataDto,
@@ -70,12 +71,19 @@ export type ResponseExecutionStateByDraft = Record<
 export async function startRequestExecution(
   input: StartRequestExecutionInput,
 ): Promise<RequestExecutionResult> {
-  const result = await requestIpc.startRequestExecution(input);
-  return {
-    status: "queued",
-    executionId: result.executionId,
-    initialEvents: result.initialEvents ?? [],
-  };
+  void recordFrontendExecutionTrace(input.executionId, "START_REQUESTED");
+  try {
+    const result = await requestIpc.startRequestExecution(input);
+    void recordFrontendExecutionTrace(input.executionId, "START_RESOLVED");
+    return {
+      status: "queued",
+      executionId: result.executionId,
+      initialEvents: result.initialEvents ?? [],
+    };
+  } catch (error) {
+    void recordFrontendExecutionTrace(input.executionId, "START_REJECTED");
+    throw error;
+  }
 }
 
 export async function cancelRequestExecution(
@@ -92,8 +100,58 @@ export async function listenToRequestExecutionEvents(
   onEvent: (event: ExecutionEventDto) => void,
 ) {
   return listen<ExecutionEventDto>(REQUEST_EXECUTION_EVENT, (event) => {
+    if (
+      event.payload.kind.type === "STARTED" ||
+      event.payload.kind.type === "RESPONSE_HEADERS" ||
+      event.payload.kind.type === "COMPLETED" ||
+      event.payload.kind.type === "FAILED" ||
+      event.payload.kind.type === "CANCELLED"
+    ) {
+      void recordFrontendExecutionTrace(
+        event.payload.executionId,
+        "EVENT_RECEIVED",
+        event.payload.sequence,
+      );
+    }
     onEvent(event.payload);
   });
+}
+
+export async function recordFrontendExecutionTrace(
+  executionId: string,
+  stage: FrontendExecutionTraceStageDto,
+  sequence: bigint | null = null,
+) {
+  try {
+    await requestIpc.recordFrontendExecutionTrace({
+      executionId,
+      stage,
+      sequence,
+    });
+  } catch {
+    // Diagnostics must never interrupt request execution.
+  }
+}
+
+type ExecutionCrypto = Pick<Crypto, "getRandomValues"> &
+  Partial<Pick<Crypto, "randomUUID">>;
+
+export function createExecutionId(cryptoApi: ExecutionCrypto = globalThis.crypto): string {
+  if (typeof cryptoApi.randomUUID === "function") {
+    return cryptoApi.randomUUID();
+  }
+
+  const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+  return [
+    hex.slice(0, 4).join(""),
+    hex.slice(4, 6).join(""),
+    hex.slice(6, 8).join(""),
+    hex.slice(8, 10).join(""),
+    hex.slice(10, 16).join(""),
+  ].join("-");
 }
 
 export function reduceRequestExecutionEvent(

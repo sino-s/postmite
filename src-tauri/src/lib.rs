@@ -93,6 +93,7 @@ pub fn run() {
             ipc::export_recoverable_database,
             ipc::get_diagnostic_bundle_preview,
             ipc::set_diagnostic_debug_logging,
+            ipc::record_frontend_execution_trace,
             ipc::export_diagnostic_bundle,
             ipc::check_for_update,
             ipc::preview_curl_import,

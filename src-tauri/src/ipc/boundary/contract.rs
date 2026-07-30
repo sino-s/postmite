@@ -67,6 +67,8 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         RecoverableDatabaseExportInput::export_to_string(&cfg)?,
         RecoverableDatabaseExportDto::export_to_string(&cfg)?,
         DiagnosticDebugLoggingInput::export_to_string(&cfg)?,
+        FrontendExecutionTraceStageDto::export_to_string(&cfg)?,
+        FrontendExecutionTraceInput::export_to_string(&cfg)?,
         DiagnosticBundleExportInput::export_to_string(&cfg)?,
         DiagnosticBundlePreviewDto::export_to_string(&cfg)?,
         DiagnosticDebugLoggingStatusDto::export_to_string(&cfg)?,
@@ -333,6 +335,10 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \tset_diagnostic_debug_logging: {\n\
          \t\tinput: DiagnosticDebugLoggingInput;\n\
          \t\toutput: DiagnosticDebugLoggingStatusDto;\n\
+         \t};\n\
+         \trecord_frontend_execution_trace: {\n\
+         \t\tinput: FrontendExecutionTraceInput;\n\
+         \t\toutput: undefined;\n\
          \t};\n\
          \texport_diagnostic_bundle: {\n\
          \t\tinput: DiagnosticBundleExportInput;\n\

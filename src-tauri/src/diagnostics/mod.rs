@@ -18,7 +18,7 @@ use zip::{write::SimpleFileOptions, ZipWriter};
 
 use crate::{
     application::execution::{
-        ExecutionCoordinator, ExecutionEvent, ExecutionEventKind, ExecutionRequest,
+        ExecutionCoordinator, ExecutionEvent, ExecutionEventKind, ExecutionId, ExecutionRequest,
     },
     application::{
         request::{RequestRepository, RequestService, REDACTED_VALUE},
@@ -567,6 +567,7 @@ impl DiagnosticsService {
 
     pub fn record_startup(&self, migration_mode: &str, duration: Duration) {
         self.record(DiagnosticEvent {
+            recorded_at_epoch_ms: epoch_millis(),
             category: "startup",
             code: if migration_mode == "safe" {
                 "migration.safe-mode"
@@ -575,15 +576,40 @@ impl DiagnosticsService {
             },
             duration_ms: duration.as_millis() as u64,
             debug: false,
+            execution_id: None,
+            sequence: None,
         });
     }
 
     pub fn record_command(&self, category: &'static str, code: &'static str, duration: Duration) {
         self.record(DiagnosticEvent {
+            recorded_at_epoch_ms: epoch_millis(),
             category,
             code,
             duration_ms: duration.as_millis() as u64,
             debug: self.debug_logging_status().enabled,
+            execution_id: None,
+            sequence: None,
+        });
+    }
+
+    pub fn record_execution_stage(
+        &self,
+        execution_id: ExecutionId,
+        stage: &'static str,
+        sequence: Option<u64>,
+    ) {
+        if !self.debug_logging_status().enabled {
+            return;
+        }
+        self.record(DiagnosticEvent {
+            recorded_at_epoch_ms: epoch_millis(),
+            category: "execution",
+            code: stage,
+            duration_ms: 0,
+            debug: true,
+            execution_id: Some(execution_id.to_string()),
+            sequence,
         });
     }
 
@@ -606,10 +632,13 @@ impl DiagnosticsService {
             .lock()
             .map_err(|_| DiagnosticsError::Storage)? = None;
         self.record(DiagnosticEvent {
+            recorded_at_epoch_ms: epoch_millis(),
             category: "diagnostics",
             code: "debug.disabled",
             duration_ms: 0,
             debug: false,
+            execution_id: None,
+            sequence: None,
         });
         Ok(self.debug_logging_status())
     }
@@ -767,10 +796,15 @@ impl DiagnosticsService {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DiagnosticEvent {
+    recorded_at_epoch_ms: u64,
     category: &'static str,
     code: &'static str,
     duration_ms: u64,
     debug: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequence: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -791,6 +825,13 @@ fn write_zip_json<T: Serialize>(
     archive
         .write_all(b"\n")
         .map_err(|_| DiagnosticsError::Storage)
+}
+
+fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 impl PerfSettings {
@@ -822,12 +863,13 @@ fn parse_tab_count(value: &str) -> Result<u8, Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, time::Duration};
+    use std::{fs, str::FromStr, time::Duration};
 
+    use serde_json::Value;
     use tempfile::tempdir;
     use zip::ZipArchive;
 
-    use super::{parse_tab_count, DiagnosticsService, MAX_DIAGNOSTICS_LOG_FILES};
+    use super::{parse_tab_count, DiagnosticsService, ExecutionId, MAX_DIAGNOSTICS_LOG_FILES};
 
     #[test]
     fn parses_valid_perf_tab_count() {
@@ -860,6 +902,51 @@ mod tests {
         assert!(!log.contains("POSTMITE_SECRET_AUTH_HEADER_29"));
         assert!(!log.contains("https://private.example.test/path?token=POSTMITE_SECRET"));
         assert!(!log.contains("panic payload"));
+    }
+
+    #[test]
+    fn execution_trace_is_debug_gated_and_contains_only_correlation_fields() {
+        let directory = tempdir().expect("temporary directory");
+        let diagnostics = DiagnosticsService::new(directory.path()).expect("diagnostics");
+        let execution_id =
+            ExecutionId::from_str("2c4eb6a7-7909-4e24-8a01-00a4e57b0062").expect("execution id");
+        diagnostics.record_execution_stage(execution_id, "http.started", Some(1));
+        diagnostics
+            .set_debug_logging(1)
+            .expect("enable temporary debug logging");
+        diagnostics.record_execution_stage(execution_id, "http.completed", Some(3));
+
+        let log = fs::read_to_string(
+            directory
+                .path()
+                .join("diagnostics/postmite-diagnostics-0.jsonl"),
+        )
+        .expect("diagnostic log");
+        assert!(!log.contains("http.started"));
+        let event: Value =
+            serde_json::from_str(log.lines().last().expect("execution event")).expect("json");
+        assert_eq!(event["category"], "execution");
+        assert_eq!(event["code"], "http.completed");
+        assert_eq!(event["executionId"], execution_id.to_string());
+        assert_eq!(event["sequence"], 3);
+        let keys = event
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            [
+                "category",
+                "code",
+                "debug",
+                "durationMs",
+                "executionId",
+                "recordedAtEpochMs",
+                "sequence",
+            ],
+        );
     }
 
     #[test]

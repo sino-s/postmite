@@ -68,6 +68,7 @@ const executionApiMock = vi.hoisted(() => ({
   cancelRequestExecution: vi.fn(),
   emitExecutionEvent: vi.fn(),
   listenToRequestExecutionEvents: vi.fn(),
+  recordFrontendExecutionTrace: vi.fn(),
   startRequestExecution: vi.fn(),
 }));
 
@@ -81,6 +82,8 @@ vi.mock("../shared/api/execution", async (importActual) => {
     cancelRequestExecution: executionApiMock.cancelRequestExecution,
     listenToRequestExecutionEvents:
       executionApiMock.listenToRequestExecutionEvents,
+    recordFrontendExecutionTrace:
+      executionApiMock.recordFrontendExecutionTrace,
     startRequestExecution: executionApiMock.startRequestExecution,
   };
 });
@@ -286,6 +289,21 @@ describe("App request editor", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
   });
 
+  it("disables Send and exposes listener registration failures", async () => {
+    executionApiMock.listenToRequestExecutionEvents.mockRejectedValueOnce(
+      new Error("event.listen denied"),
+    );
+    renderApp(requestSnapshot({ content: requestContent(), isDirty: true }));
+
+    expect(
+      await screen.findByText(
+        "Response event listener is unavailable. Restart Postmite and try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(executionApiMock.startRequestExecution).not.toHaveBeenCalled();
+  });
+
   it("displays status headers JSON body and timing from execution events", async () => {
     const user = userEvent.setup();
     renderApp(
@@ -325,6 +343,11 @@ describe("App request editor", () => {
     expect(screen.getByText(/"ok": true/)).toBeInTheDocument();
     expect(screen.getByText(/^Time \d+ ms$/)).toBeInTheDocument();
     expect(screen.getByText(/Timing queue 0 ms/)).toBeInTheDocument();
+    expect(executionApiMock.recordFrontendExecutionTrace).toHaveBeenCalledWith(
+      "execution-1",
+      "EVENT_APPLIED",
+      3n,
+    );
   });
 
   it("applies fast response events that arrive before start returns", async () => {
@@ -377,6 +400,47 @@ describe("App request editor", () => {
     expect(await screen.findByText("Completed")).toBeInTheDocument();
     expect(screen.getByText("returned response")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    expect(executionApiMock.recordFrontendExecutionTrace).toHaveBeenCalledWith(
+      "execution-initial",
+      "START_RECONCILED_TERMINAL",
+    );
+  });
+
+  it("classifies a buffered terminal event from start reconciliation as terminal", async () => {
+    const user = userEvent.setup();
+    renderApp(
+      requestSnapshot({ content: requestContent(), isDirty: true }),
+    );
+    requestApiMock.updateRequestDraft.mockResolvedValue(undefined);
+    executionApiMock.startRequestExecution.mockImplementationOnce(async () => {
+      executionApiMock.emitExecutionEvent(
+        executionEvent("execution-buffered", 1n, {
+          type: "COMPLETED",
+          status: 200,
+          bodyPreview: "buffered response",
+          bodyTruncated: false,
+        }),
+      );
+      return {
+        status: "queued",
+        executionId: "execution-buffered",
+        initialEvents: [],
+      };
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText("Completed")).toBeInTheDocument();
+    expect(screen.getByText("buffered response")).toBeInTheDocument();
+    expect(executionApiMock.recordFrontendExecutionTrace).toHaveBeenCalledWith(
+      "execution-buffered",
+      "EVENT_BUFFERED",
+      1n,
+    );
+    expect(executionApiMock.recordFrontendExecutionTrace).toHaveBeenCalledWith(
+      "execution-buffered",
+      "START_RECONCILED_TERMINAL",
+    );
   });
 
   it("marks pre-registered executions failed when start rejects", async () => {

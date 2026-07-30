@@ -5,6 +5,7 @@ import type { ExecutionEventDto } from "./generated/ipc";
 const listenMock = vi.hoisted(() => vi.fn());
 const requestIpcMock = vi.hoisted(() => ({
   cancelRequestExecution: vi.fn(),
+  recordFrontendExecutionTrace: vi.fn(),
   saveResponseFile: vi.fn(),
   startRequestExecution: vi.fn(),
 }));
@@ -20,6 +21,7 @@ vi.mock("./ipc", () => ({
 import {
   REQUEST_EXECUTION_EVENT,
   cancelRequestExecution,
+  createExecutionId,
   createQueuedResponseExecutionState,
   listenToRequestExecutionEvents,
   reduceRequestExecutionEvent,
@@ -90,6 +92,30 @@ describe("request execution API", () => {
         transport: defaultTransport(),
       },
     });
+    await vi.waitFor(() => {
+      expect(requestIpcMock.recordFrontendExecutionTrace).toHaveBeenCalledWith({
+        executionId: "execution-1",
+        stage: "START_REQUESTED",
+        sequence: null,
+      });
+      expect(requestIpcMock.recordFrontendExecutionTrace).toHaveBeenCalledWith({
+        executionId: "execution-1",
+        stage: "START_RESOLVED",
+        sequence: null,
+      });
+    });
+  });
+
+  it("creates a UUID when randomUUID is unavailable in the WebView", () => {
+    const bytes = Uint8Array.from({ length: 16 }, (_, index) => index);
+    const executionId = createExecutionId({
+      getRandomValues: vi.fn((target: Uint8Array) => {
+        target.set(bytes);
+        return target;
+      }) as Crypto["getRandomValues"],
+    });
+
+    expect(executionId).toBe("00010203-0405-4607-8809-0a0b0c0d0e0f");
   });
 
   it("cancels execution through typed Rust IPC", async () => {
@@ -147,6 +173,13 @@ describe("request execution API", () => {
       expect.any(Function),
     );
     expect(onEvent).toHaveBeenCalledWith(payload);
+    await vi.waitFor(() => {
+      expect(requestIpcMock.recordFrontendExecutionTrace).toHaveBeenCalledWith({
+        executionId: "execution-1",
+        stage: "EVENT_RECEIVED",
+        sequence: 1n,
+      });
+    });
   });
 
   it("ignores stale and out-of-order execution events", () => {
