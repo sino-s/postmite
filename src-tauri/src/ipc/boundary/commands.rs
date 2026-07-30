@@ -494,9 +494,36 @@ pub fn import_curl_as_draft(
 }
 
 #[tauri::command]
-pub fn generate_curl(input: CurlGenerateInput) -> Result<CurlGenerateResultDto, IpcError> {
-    let input = ApplicationCurlGenerateInput::from(input);
-    CurlService::generate(input)
+pub fn generate_curl(
+    state: State<'_, AppState>,
+    input: CurlGenerateInput,
+) -> Result<CurlGenerateResultDto, IpcError> {
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let environment_id = parse_optional_environment_id(input.environment_id)?;
+    let content = RequestContent::from(input.content);
+    let application_input = if input.include_secrets {
+        let requests = state.requests.lock().map_err(map_poison_error)?;
+        let content = requests.materialize_request_content_for_curl(
+            workspace_id,
+            environment_id,
+            content,
+        )?;
+        ApplicationCurlGenerateInput {
+            content,
+            resolved: None,
+            include_secrets: true,
+        }
+    } else {
+        let resolved = input
+            .resolved
+            .map(|resolved| resolved_request_content_from_dto(resolved, &content));
+        ApplicationCurlGenerateInput {
+            content,
+            resolved,
+            include_secrets: false,
+        }
+    };
+    CurlService::generate(application_input)
         .map(CurlGenerateResultDto::from)
         .map_err(IpcError::from)
 }

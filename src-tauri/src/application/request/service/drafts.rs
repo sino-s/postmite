@@ -318,6 +318,21 @@ where
         ))
     }
 
+    pub fn materialize_request_content_for_curl(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_environment_id: Option<EnvironmentId>,
+        content: RequestContent,
+    ) -> Result<RequestContent, RequestError> {
+        let snapshot = self.repository.list_request_workspace(workspace_id)?;
+        materialize_request_content_for_curl(
+            &snapshot,
+            expected_environment_id,
+            content,
+            &|reference| self.secrets.get(reference).ok(),
+        )
+    }
+
     pub fn selected_environment_id(
         &self,
         workspace_id: WorkspaceId,

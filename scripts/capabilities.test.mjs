@@ -16,6 +16,7 @@ describe("Tauri capabilities", () => {
     expect(capability.permissions).toEqual([
       "core:event:allow-listen",
       "core:event:allow-unlisten",
+      "clipboard-manager:allow-write-text",
     ]);
   });
 });

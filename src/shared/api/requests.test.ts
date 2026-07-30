@@ -173,12 +173,16 @@ describe("request query API", () => {
     });
 
     await generateCurl({
+      workspaceId: "workspace-1",
+      environmentId: null,
       content: emptyContent(),
       resolved: null,
       includeSecrets: false,
     });
 
     expect(requestIpcMock.generateCurl).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      environmentId: null,
       content: emptyContent(),
       resolved: null,
       includeSecrets: false,

@@ -772,6 +772,8 @@ pub struct CurlImportInput {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CurlGenerateInput {
+    pub workspace_id: String,
+    pub environment_id: Option<String>,
     pub content: RequestContentDto,
     pub resolved: Option<ResolvedRequestContentDto>,
     pub include_secrets: bool,

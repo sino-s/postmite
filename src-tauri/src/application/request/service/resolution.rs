@@ -244,6 +244,138 @@ pub fn materialize_request_auth(
     materialize_request_auth_with_secret_resolver(snapshot, content, &|_| None)
 }
 
+pub(crate) fn materialize_request_content_for_curl(
+    snapshot: &RequestWorkspaceSnapshot,
+    expected_environment_id: Option<EnvironmentId>,
+    content: RequestContent,
+    secret_resolver: &dyn Fn(&str) -> Option<String>,
+) -> Result<RequestContent, RequestError> {
+    use std::cell::Cell;
+
+    let selected_environment_id = snapshot
+        .environments
+        .iter()
+        .find(|environment| environment.is_selected)
+        .map(|environment| environment.id);
+    if selected_environment_id != expected_environment_id {
+        return Err(RequestError::InvalidInput(
+            "curl.resolution.stale".to_owned(),
+        ));
+    }
+
+    let missing_secret = Cell::new(false);
+    let tracked_secret_resolver = |reference: &str| {
+        let value = secret_resolver(reference);
+        if value.is_none() {
+            missing_secret.set(true);
+        }
+        value
+    };
+    let mut materialized = content;
+    let original_query_count = materialized.query.len();
+    let original_header_count = materialized.headers.len();
+    let resolved = resolve_request_content_with_secret_resolver(
+        snapshot,
+        &materialized,
+        &tracked_secret_resolver,
+    );
+    materialized.url = resolved.url.value;
+    materialized.body = materialize_request_body(materialized.body, &resolved.body_kind);
+    materialized.query = resolved_fields_to_ordered(
+        resolved
+            .query
+            .into_iter()
+            .take(original_query_count)
+            .collect(),
+    );
+    materialized.headers = resolved_fields_to_ordered(
+        resolved
+            .headers
+            .into_iter()
+            .take(original_header_count)
+            .collect(),
+    );
+    let scope = VariableScope::from_snapshot(snapshot);
+    let mut state = ResolutionState::default();
+    materialized.auth = match materialized.auth {
+        RequestAuth::None => RequestAuth::None,
+        RequestAuth::Basic { username, password } => RequestAuth::Basic {
+            username: resolve_text(
+                &username,
+                &scope,
+                &mut state,
+                &tracked_secret_resolver,
+            )
+            .value,
+            password: resolve_text(
+                &password,
+                &scope,
+                &mut state,
+                &tracked_secret_resolver,
+            )
+            .value,
+        },
+        RequestAuth::Bearer { token } => RequestAuth::Bearer {
+            token: resolve_text(&token, &scope, &mut state, &tracked_secret_resolver).value,
+        },
+        RequestAuth::ApiKey {
+            placement,
+            name,
+            value,
+        } => RequestAuth::ApiKey {
+            placement,
+            name: resolve_text(&name, &scope, &mut state, &tracked_secret_resolver).value,
+            value: resolve_text(&value, &scope, &mut state, &tracked_secret_resolver).value,
+        },
+        RequestAuth::ClientCredentials {
+            token_endpoint,
+            client_id,
+            client_secret,
+            scopes,
+        } => RequestAuth::ClientCredentials {
+            token_endpoint: resolve_text(
+                &token_endpoint,
+                &scope,
+                &mut state,
+                &tracked_secret_resolver,
+            )
+            .value,
+            client_id: resolve_text(
+                &client_id,
+                &scope,
+                &mut state,
+                &tracked_secret_resolver,
+            )
+            .value,
+            client_secret: resolve_text(
+                &client_secret,
+                &scope,
+                &mut state,
+                &tracked_secret_resolver,
+            )
+            .value,
+            scopes: scopes
+                .into_iter()
+                .map(|scope_value| {
+                    resolve_text(
+                        &scope_value,
+                        &scope,
+                        &mut state,
+                        &tracked_secret_resolver,
+                    )
+                    .value
+                })
+                .collect(),
+        },
+    };
+    if missing_secret.get() {
+        return Err(RequestError::InvalidInput(
+            "curl.secret.unavailable".to_owned(),
+        ));
+    }
+    Ok(materialized)
+}
+
 fn materialize_request_auth_with_secret_resolver(
     snapshot: &RequestWorkspaceSnapshot,
     mut content: RequestContent,
