@@ -4,6 +4,7 @@ import { AppHeader } from "./AppHeader";
 import { Button } from "../components/ui/button";
 import { I18nProvider, useI18n } from "./i18n";
 import { PreferencesProvider, usePreferences } from "./preferences";
+import type { RequestResponseSplit } from "./preferences";
 import { CollectionsSidebar } from "../features/request-editor/panels/CollectionsSidebar";
 import { RequestLine } from "../features/request-editor/controls/RequestLine";
 import { TabStrip } from "../features/request-editor/controls/TabStrip";
@@ -15,6 +16,7 @@ import type { RequestContentDto } from "../shared/api/generated/ipc";
 
 type ScreenshotVariant = {
   density: "comfortable" | "compact";
+  requestResponseSplit: RequestResponseSplit;
   state: "workspace" | "empty";
   theme: "light" | "dark";
 };
@@ -33,7 +35,14 @@ function ScreenshotWorkspace() {
   const isEditorResizableLayout = useMediaQuery("(min-width: 1024px)", true);
   const variant = useMemo(readVariant, []);
   const { locale, setLocale } = useI18n();
-  const { density, setDensity, setTheme, theme } = usePreferences();
+  const {
+    density,
+    requestResponseSplit,
+    setDensity,
+    setRequestResponseSplit,
+    setTheme,
+    theme,
+  } = usePreferences();
   const [content, setContent] = useState<RequestContentDto>(
     screenshotSnapshot.drafts[0].content,
   );
@@ -41,7 +50,8 @@ function ScreenshotWorkspace() {
   useEffect(() => {
     setTheme(variant.theme);
     setDensity(variant.density);
-  }, [setDensity, setTheme, variant]);
+    setRequestResponseSplit(variant.requestResponseSplit);
+  }, [setDensity, setRequestResponseSplit, setTheme, variant]);
 
   if (variant.state === "empty") {
     return <EmptyWorkspace variant={variant} />;
@@ -107,9 +117,11 @@ function ScreenshotWorkspace() {
           onSaveCookie={() => undefined}
           onToggleHistoryDisabled={() => undefined}
           onToggleHistoryPinned={() => undefined}
+          requestResponseSplit={requestResponseSplit}
           resizable={isEditorResizableLayout}
           resolution={screenshotResolution}
           resolving={false}
+          setRequestResponseSplit={setRequestResponseSplit}
           workspaceId={screenshotSnapshot.workspaceId}
         />
       </section>
@@ -145,6 +157,7 @@ function readVariant(): ScreenshotVariant {
   const params = new URLSearchParams(window.location.search);
   return {
     density: params.get("density") === "compact" ? "compact" : "comfortable",
+    requestResponseSplit: params.get("split") === "vertical" ? "vertical" : "horizontal",
     state: params.get("state") === "empty" ? "empty" : "workspace",
     theme: params.get("theme") === "dark" ? "dark" : "light",
   };

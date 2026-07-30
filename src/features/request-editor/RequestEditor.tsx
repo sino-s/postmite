@@ -88,7 +88,14 @@ export function RequestEditor({
 }: RequestEditorProps) {
   const isEditorResizableLayout = useMediaQuery("(min-width: 1024px)", true);
   const { locale, setLocale, t } = useI18n();
-  const { density, setDensity, setTheme, theme } = usePreferences();
+  const {
+    density,
+    requestResponseSplit,
+    setDensity,
+    setRequestResponseSplit,
+    setTheme,
+    theme,
+  } = usePreferences();
   const queryClient = useQueryClient();
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<OverrideMap>({});
@@ -646,9 +653,11 @@ export function RequestEditor({
               void handleToggleHistoryDisabled(disabled)
             }
             onToggleHistoryPinned={(record) => void handleToggleHistoryPinned(record)}
+            requestResponseSplit={requestResponseSplit}
             resizable={isEditorResizableLayout}
             resolution={resolution.data ?? null}
             resolving={resolution.isFetching}
+            setRequestResponseSplit={setRequestResponseSplit}
             workspaceId={selectedWorkspaceId}
           />
         </section>
