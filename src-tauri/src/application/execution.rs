@@ -215,9 +215,30 @@ impl ExecutionCoordinator {
             + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
+        self.start_with_id(ExecutionId::new(), request, sink, run)
+    }
+
+    pub fn start_with_id<F, Fut>(
+        self: &Arc<Self>,
+        execution_id: ExecutionId,
+        request: ExecutionRequest,
+        sink: ExecutionEventSink,
+        run: F,
+    ) -> Result<StartExecutionResult, ExecutionError>
+    where
+        F: FnOnce(
+                ExecutionId,
+                ExecutionRequest,
+                CancellationToken,
+                Arc<Self>,
+                ExecutionEventSink,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
         validate_request(&request)?;
 
-        let execution_id = ExecutionId::new();
         let cancellation = CancellationToken::new();
         let replaced = {
             let mut state = self

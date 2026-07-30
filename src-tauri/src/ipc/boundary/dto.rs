@@ -1066,6 +1066,7 @@ pub struct ExecutionRecordIdInput {
 pub struct StartRequestExecutionInput {
     pub workspace_id: String,
     pub draft_id: String,
+    pub execution_id: String,
     pub content: RequestContentDto,
 }
 
@@ -1073,6 +1074,7 @@ pub struct StartRequestExecutionInput {
 #[serde(rename_all = "camelCase")]
 pub struct StartRequestExecutionOutput {
     pub execution_id: String,
+    pub initial_events: Vec<ExecutionEventDto>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]

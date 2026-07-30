@@ -104,6 +104,9 @@ describe("App request editor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "execution-1" as ReturnType<Crypto["randomUUID"]>,
+    );
     workspaceApiMock.workspaceQuery.queryFn.mockResolvedValue(
       workspaceSnapshot(),
     );
@@ -127,10 +130,13 @@ describe("App request editor", () => {
     );
     requestApiMock.resolveRequestContent.mockResolvedValue(emptyResolution());
     requestApiMock.revealCookieValue.mockResolvedValue({ value: "sid-value" });
-    executionApiMock.startRequestExecution.mockResolvedValue({
-      status: "queued",
-      executionId: "execution-1",
-    });
+    executionApiMock.startRequestExecution.mockImplementation(
+      async (input: { executionId: string }) => ({
+        status: "queued",
+        executionId: input.executionId,
+        initialEvents: [],
+      }),
+    );
     executionApiMock.cancelRequestExecution.mockResolvedValue({
       executionId: "execution-1",
       cancelled: true,
@@ -274,6 +280,7 @@ describe("App request editor", () => {
     expect(executionApiMock.startRequestExecution).toHaveBeenCalledWith({
       workspaceId: "workspace-1",
       draftId: "draft-1",
+      executionId: "execution-1",
       content: requestContent(),
     });
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
@@ -326,23 +333,68 @@ describe("App request editor", () => {
       requestSnapshot({ content: requestContent(), isDirty: true }),
     );
     requestApiMock.updateRequestDraft.mockResolvedValue(undefined);
-    executionApiMock.startRequestExecution.mockImplementationOnce(async () => {
+    executionApiMock.startRequestExecution.mockImplementationOnce(async (input) => {
       executionApiMock.emitExecutionEvent(
-        executionEvent("execution-fast", 1n, {
+        executionEvent(input.executionId, 1n, {
           type: "COMPLETED",
           status: 200,
           bodyPreview: "fast response",
           bodyTruncated: false,
         }),
       );
-      return { status: "queued", executionId: "execution-fast" };
+      return { status: "queued", executionId: input.executionId, initialEvents: [] };
     });
 
     await user.click(await screen.findByRole("button", { name: "Send" }));
 
     expect(await screen.findByText("Completed")).toBeInTheDocument();
     expect(screen.getByText("fast response")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     expect(screen.queryByText("Running")).not.toBeInTheDocument();
+  });
+
+  it("applies terminal events returned with the start result", async () => {
+    const user = userEvent.setup();
+    renderApp(
+      requestSnapshot({ content: requestContent(), isDirty: true }),
+    );
+    requestApiMock.updateRequestDraft.mockResolvedValue(undefined);
+    executionApiMock.startRequestExecution.mockResolvedValueOnce({
+      status: "queued",
+      executionId: "execution-initial",
+      initialEvents: [
+        executionEvent("execution-initial", 1n, {
+          type: "COMPLETED",
+          status: 200,
+          bodyPreview: "returned response",
+          bodyTruncated: false,
+        }),
+      ],
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText("Completed")).toBeInTheDocument();
+    expect(screen.getByText("returned response")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+
+  it("marks pre-registered executions failed when start rejects", async () => {
+    const user = userEvent.setup();
+    renderApp(
+      requestSnapshot({ content: requestContent(), isDirty: true }),
+    );
+    requestApiMock.updateRequestDraft.mockResolvedValue(undefined);
+    executionApiMock.startRequestExecution.mockRejectedValueOnce(
+      new Error("request input is invalid"),
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText("request input is invalid")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
   });
 
   it("cancels an in-flight execution through typed IPC", async () => {
@@ -402,8 +454,16 @@ describe("App request editor", () => {
     renderApp(twoTabRequestSnapshot());
     requestApiMock.updateRequestDraft.mockResolvedValue(undefined);
     executionApiMock.startRequestExecution
-      .mockResolvedValueOnce({ status: "queued", executionId: "execution-1" })
-      .mockResolvedValueOnce({ status: "queued", executionId: "execution-2" });
+      .mockResolvedValueOnce({
+        status: "queued",
+        executionId: "execution-1",
+        initialEvents: [],
+      })
+      .mockResolvedValueOnce({
+        status: "queued",
+        executionId: "execution-2",
+        initialEvents: [],
+      });
 
     await user.click(await screen.findByRole("button", { name: "Send" }));
     executionApiMock.emitExecutionEvent(

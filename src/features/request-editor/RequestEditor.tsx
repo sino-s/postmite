@@ -412,24 +412,62 @@ export function RequestEditor({
     }
 
     await persistDraft(activeDraft, activeContent);
-    const result = await onExecute({
-      workspaceId: activeDraft.workspaceId,
-      draftId: activeDraft.id,
-      content: activeContent,
-    });
-    setExecutions((current) => {
-      const queued = createQueuedResponseExecutionState({
+    const executionId = crypto.randomUUID();
+    setExecutions((current) => ({
+      ...current,
+      [activeDraft.id]: createQueuedResponseExecutionState({
         draftId: activeDraft.id,
-        executionId: result.executionId,
+        executionId,
         nowMs: Date.now(),
+      }),
+    }));
+    let result;
+    try {
+      result = await onExecute({
+        workspaceId: activeDraft.workspaceId,
+        draftId: activeDraft.id,
+        executionId,
+        content: activeContent,
       });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("app.unavailable");
+      setExecutions((current) => {
+        const currentExecution = current[activeDraft.id];
+        if (currentExecution?.executionId !== executionId) {
+          return current;
+        }
+        return {
+          ...current,
+          [activeDraft.id]: {
+            ...currentExecution,
+            phase: "failed",
+            completedAtMs: Date.now(),
+            error: message,
+          },
+        };
+      });
+      return;
+    }
+    setExecutions((current) => {
+      const currentExecution = current[activeDraft.id];
+      const base =
+        currentExecution?.executionId === result.executionId
+          ? currentExecution
+          : createQueuedResponseExecutionState({
+              draftId: activeDraft.id,
+              executionId: result.executionId,
+              nowMs: Date.now(),
+            });
       const pending = pendingExecutionEventsRef.current.get(result.executionId) ?? [];
       pendingExecutionEventsRef.current.delete(result.executionId);
+      const initialEvents = [...result.initialEvents, ...pending].sort((left, right) =>
+        Number(left.sequence - right.sequence),
+      );
       return {
         ...current,
         [activeDraft.id]: applyResponseExecutionEvents(
-          queued,
-          pending,
+          base,
+          initialEvents,
           Date.now(),
         ),
       };
