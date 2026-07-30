@@ -1,18 +1,10 @@
 import { useState, type KeyboardEvent, type ReactNode } from "react";
-import { SquareSplitHorizontal, SquareSplitVertical } from "lucide-react";
 
-import { Button } from "../../../components/ui/button";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "../../../components/ui/resizable";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "../../../components/ui/tooltip";
 import type { RequestResponseSplit } from "../../../app/preferences";
 import type { ResponseExecutionState } from "../../../shared/api/execution";
 import type {
@@ -51,7 +43,6 @@ type RequestEditorPanelsProps = {
   resizable: boolean;
   resolution: ResolvedRequestContentDto | null;
   resolving: boolean;
-  setRequestResponseSplit: (split: RequestResponseSplit) => void;
   workspaceId: string;
 };
 
@@ -74,13 +65,10 @@ export function RequestEditorPanels({
   resizable,
   resolution,
   resolving,
-  setRequestResponseSplit,
   workspaceId,
 }: RequestEditorPanelsProps) {
   const requestOptions = (
     <RequestOptionsTabs
-      setSplit={setRequestResponseSplit}
-      split={requestResponseSplit}
       tabs={[
         {
           content: (
@@ -180,7 +168,7 @@ export function RequestEditorPanels({
 
   if (!resizable) {
     return (
-      <div className="grid min-h-0 gap-4">
+      <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-4 overflow-hidden">
         {requestOptions}
         <ResponsePanel execution={execution} />
       </div>
@@ -201,7 +189,7 @@ export function RequestEditorPanels({
         defaultSize={requestDefaultSize}
         minSize="260px"
       >
-        <div className="h-full min-h-0 overflow-auto p-4">
+        <div className="h-full min-h-0 overflow-hidden p-4">
           {requestOptions}
         </div>
       </ResizablePanel>
@@ -215,7 +203,7 @@ export function RequestEditorPanels({
         defaultSize={responseDefaultSize}
         minSize="220px"
       >
-        <div className="h-full min-h-0 overflow-auto p-4">
+        <div className="h-full min-h-0 overflow-hidden p-4">
           <ResponsePanel execution={execution} />
         </div>
       </ResizablePanel>
@@ -224,8 +212,6 @@ export function RequestEditorPanels({
 }
 
 type RequestOptionsTabsProps = {
-  split: RequestResponseSplit;
-  setSplit: (split: RequestResponseSplit) => void;
   tabs: Array<{
     content: ReactNode;
     label: string;
@@ -233,7 +219,7 @@ type RequestOptionsTabsProps = {
   }>;
 };
 
-function RequestOptionsTabs({ split, setSplit, tabs }: RequestOptionsTabsProps) {
+function RequestOptionsTabs({ tabs }: RequestOptionsTabsProps) {
   const [activeTab, setActiveTab] = useState(tabs[0]?.value ?? "");
   const activePanel = tabs.find((tab) => tab.value === activeTab) ?? tabs[0];
 
@@ -259,9 +245,9 @@ function RequestOptionsTabs({ split, setSplit, tabs }: RequestOptionsTabsProps) 
   }
 
   return (
-    <section aria-label="Request options" className="flex min-h-0 min-w-0 flex-col">
-      <div className="flex min-h-0 min-w-0 flex-col">
-        <div className="flex min-w-0 items-center justify-between gap-3">
+    <section aria-label="Request options" className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+      <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+        <div className="flex shrink-0 min-w-0 items-center">
           <div
             aria-label="Request option tabs"
             className="inline-flex h-auto min-w-0 max-w-full items-center justify-start overflow-x-auto rounded-md bg-muted p-1 text-muted-foreground"
@@ -285,11 +271,10 @@ function RequestOptionsTabs({ split, setSplit, tabs }: RequestOptionsTabsProps) 
               </button>
             ))}
           </div>
-          <SplitToggle setSplit={setSplit} split={split} />
         </div>
         <div
           aria-labelledby={`request-option-tab-${activePanel.value}`}
-          className="mt-2 min-h-0 min-w-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring [&>section]:min-h-0"
+          className="mt-2 min-h-0 min-w-0 flex-1 overflow-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring [&>section]:min-h-0"
           id={`request-option-${activePanel.value}`}
           role="tabpanel"
           tabIndex={0}
@@ -298,56 +283,5 @@ function RequestOptionsTabs({ split, setSplit, tabs }: RequestOptionsTabsProps) 
         </div>
       </div>
     </section>
-  );
-}
-
-function SplitToggle({
-  split,
-  setSplit,
-}: {
-  split: RequestResponseSplit;
-  setSplit: (split: RequestResponseSplit) => void;
-}) {
-  return (
-    <TooltipProvider delayDuration={0}>
-      <div
-        aria-label="Request and response split"
-        className="inline-flex shrink-0 rounded-md border border-input bg-background p-0.5"
-        role="group"
-      >
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              aria-label="Stack request options above response"
-              aria-pressed={split === "horizontal"}
-              className={split === "horizontal" ? "bg-accent text-accent-foreground" : ""}
-              onClick={() => setSplit("horizontal")}
-              size="icon"
-              type="button"
-              variant="ghost"
-            >
-              <SquareSplitHorizontal aria-hidden="true" size={16} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Stack request options above response</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              aria-label="Place request options beside response"
-              aria-pressed={split === "vertical"}
-              className={split === "vertical" ? "bg-accent text-accent-foreground" : ""}
-              onClick={() => setSplit("vertical")}
-              size="icon"
-              type="button"
-              variant="ghost"
-            >
-              <SquareSplitVertical aria-hidden="true" size={16} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Place request options beside response</TooltipContent>
-        </Tooltip>
-      </div>
-    </TooltipProvider>
   );
 }

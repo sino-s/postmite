@@ -20,9 +20,13 @@ export function RequestWorkspaceShell({
 
   if (!isDesktopLayout) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col">
-        {sidebar}
-        {editorPane}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="max-h-[34vh] min-h-0 shrink-0 overflow-hidden [&>aside]:h-full">
+          {sidebar}
+        </div>
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {editorPane}
+        </div>
       </div>
     );
   }

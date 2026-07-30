@@ -347,14 +347,14 @@ export function RequestEditor({
     );
   }
 
-  async function handleMoveSavedRequest(request: SavedRequestDto, direction: -1 | 1) {
+  async function handleMoveSavedRequest(
+    request: SavedRequestDto,
+    location: { collectionId: string | null; position: number },
+  ) {
     await moveSavedRequest(queryClient, {
       workspaceId: request.workspaceId,
       savedRequestId: request.id,
-      location: {
-        collectionId: request.collectionId,
-        position: Math.max(0, request.position + direction),
-      },
+      location,
     });
   }
 
@@ -671,7 +671,7 @@ export function RequestEditor({
 
   if (workspaces.isPending || requestWorkspace.isPending) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-100 text-slate-950">
+      <main className="flex h-full items-center justify-center overflow-hidden bg-slate-100 text-slate-950">
         <p className="text-sm">{t("app.loading")}</p>
       </main>
     );
@@ -679,7 +679,7 @@ export function RequestEditor({
 
   if (workspaces.isError || requestWorkspace.isError || !selectedWorkspaceId) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-100 p-6 text-slate-950">
+      <main className="flex h-full items-center justify-center overflow-hidden bg-slate-100 p-6 text-slate-950">
         <section
           aria-labelledby="request-editor-error"
           className="w-full max-w-xl rounded-md border border-red-300 bg-white p-5"
@@ -717,8 +717,8 @@ export function RequestEditor({
       onMoveFolder={(folder, direction) =>
         void handleMoveCollectionFolder(folder, direction)
       }
-      onMoveRequest={(request, direction) =>
-        void handleMoveSavedRequest(request, direction)
+      onMoveRequest={(request, location) =>
+        void handleMoveSavedRequest(request, location)
       }
       onOpenRequest={(request) => void handleOpenSavedRequest(request)}
       onRenameFolder={(folder) => void handleRenameCollectionFolder(folder)}
@@ -743,7 +743,7 @@ export function RequestEditor({
       {activeDraft && activeContent ? (
         <section
           aria-label="Request editor"
-          className="flex min-h-0 flex-1 flex-col gap-4 p-4"
+          className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-4"
         >
           <RequestLine
             content={activeContent}
@@ -782,7 +782,6 @@ export function RequestEditor({
             resizable={isEditorResizableLayout}
             resolution={resolution.data ?? null}
             resolving={resolution.isFetching}
-            setRequestResponseSplit={setRequestResponseSplit}
             workspaceId={selectedWorkspaceId}
           />
         </section>
@@ -799,7 +798,7 @@ export function RequestEditor({
 
   return (
     <main
-      className="flex min-h-screen flex-col bg-muted text-foreground"
+      className="flex h-full flex-col overflow-hidden bg-muted text-foreground"
       onKeyDown={handleEditorKeyDown}
     >
       <AppHeader
@@ -813,8 +812,10 @@ export function RequestEditor({
         onRelinkBodyFiles={() => void handleRelinkBodyFiles()}
         onSetBaseDirectory={() => void handleSetBaseDirectory()}
         onToggleDiagnostics={() => setDiagnosticsOpen((open) => !open)}
+        requestResponseSplit={requestResponseSplit}
         setDensity={setDensity}
         setLocale={setLocale}
+        setRequestResponseSplit={setRequestResponseSplit}
         setTheme={setTheme}
         theme={theme}
         updateError={updateCheckMutation.isError}

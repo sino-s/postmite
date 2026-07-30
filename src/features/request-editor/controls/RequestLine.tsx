@@ -5,6 +5,7 @@ import { Input } from "../../../components/ui/input";
 import { NativeSelect } from "../../../components/ui/native-select";
 import type { RequestContentDto } from "../../../shared/api/generated/ipc";
 import type { ResponseExecutionPhase } from "../../../shared/api/execution";
+import { methodColorClass } from "../models/method-colors";
 import { queryFromUrl } from "../models/ordered-fields";
 import { useI18n } from "../../../app/i18n";
 
@@ -69,6 +70,7 @@ export function RequestLine({
         {t("request.method")}
       </label>
       <NativeSelect
+        className={methodColorClass(content.method)}
         id="request-method"
         onChange={(event) =>
           onChange((current) => ({

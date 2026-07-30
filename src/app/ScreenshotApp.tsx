@@ -122,7 +122,6 @@ function ScreenshotWorkspace() {
           resizable={isEditorResizableLayout}
           resolution={screenshotResolution}
           resolving={false}
-          setRequestResponseSplit={setRequestResponseSplit}
           workspaceId={screenshotSnapshot.workspaceId}
         />
       </section>
@@ -130,7 +129,7 @@ function ScreenshotWorkspace() {
   );
 
   return (
-    <main className="flex min-h-screen flex-col bg-muted text-foreground">
+    <main className="flex h-full flex-col overflow-hidden bg-muted text-foreground">
       <AppHeader
         checkingUpdates={false}
         density={density}
@@ -142,8 +141,10 @@ function ScreenshotWorkspace() {
         onRelinkBodyFiles={() => undefined}
         onSetBaseDirectory={() => undefined}
         onToggleDiagnostics={() => undefined}
+        requestResponseSplit={requestResponseSplit}
         setDensity={setDensity}
         setLocale={setLocale}
+        setRequestResponseSplit={setRequestResponseSplit}
         setTheme={setTheme}
         theme={theme}
         updateError={false}
@@ -166,11 +167,19 @@ function readVariant(): ScreenshotVariant {
 
 function EmptyWorkspace({ variant }: { variant: ScreenshotVariant }) {
   const { locale, setLocale } = useI18n();
-  const { density, setDensity, setTheme, theme } = usePreferences();
+  const {
+    density,
+    requestResponseSplit,
+    setDensity,
+    setRequestResponseSplit,
+    setTheme,
+    theme,
+  } = usePreferences();
   useEffect(() => {
     setTheme(variant.theme);
     setDensity(variant.density);
-  }, [setDensity, setTheme, variant]);
+    setRequestResponseSplit(variant.requestResponseSplit);
+  }, [setDensity, setRequestResponseSplit, setTheme, variant]);
 
   const sidebar = (
     <CollectionsSidebar
@@ -209,7 +218,7 @@ function EmptyWorkspace({ variant }: { variant: ScreenshotVariant }) {
   );
 
   return (
-    <main className="flex min-h-screen flex-col bg-muted text-foreground">
+    <main className="flex h-full flex-col overflow-hidden bg-muted text-foreground">
       <AppHeader
         checkingUpdates={false}
         density={density}
@@ -221,8 +230,10 @@ function EmptyWorkspace({ variant }: { variant: ScreenshotVariant }) {
         onRelinkBodyFiles={() => undefined}
         onSetBaseDirectory={() => undefined}
         onToggleDiagnostics={() => undefined}
+        requestResponseSplit={requestResponseSplit}
         setDensity={setDensity}
         setLocale={setLocale}
+        setRequestResponseSplit={setRequestResponseSplit}
         setTheme={setTheme}
         theme={theme}
         updateError={false}

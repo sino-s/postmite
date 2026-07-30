@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Copy, Edit3, FileText, Folder, FolderPlus, Trash2 } from "lucide-react";
 
 import { Button } from "../../../components/ui/button";
@@ -7,6 +7,7 @@ import { ScrollArea } from "../../../components/ui/scroll-area";
 import type { CollectionFolderDto, EnvironmentDto, SavedRequestDto } from "../../../shared/api/generated/ipc";
 import { IconButton } from "../controls/IconButton";
 import { useI18n } from "../../../app/i18n";
+import { methodColorClass } from "../models/method-colors";
 
 type CollectionsSidebarProps = {
   environments: EnvironmentDto[];
@@ -17,7 +18,10 @@ type CollectionsSidebarProps = {
   onDuplicateFolder: (folder: CollectionFolderDto) => void;
   onDuplicateRequest: (request: SavedRequestDto) => void;
   onMoveFolder: (folder: CollectionFolderDto, direction: -1 | 1) => void;
-  onMoveRequest: (request: SavedRequestDto, direction: -1 | 1) => void;
+  onMoveRequest: (
+    request: SavedRequestDto,
+    location: { collectionId: string | null; position: number },
+  ) => void;
   onOpenRequest: (request: SavedRequestDto) => void;
   onRenameFolder: (folder: CollectionFolderDto) => void;
   onSelectEnvironment: (environmentId: string | null) => void;
@@ -54,6 +58,7 @@ export function CollectionsSidebar({
   requests,
 }: CollectionsSidebarProps) {
   const { t } = useI18n();
+  const [draggedRequestId, setDraggedRequestId] = useState<string | null>(null);
   const rows = useMemo(
     () => buildCollectionRows(folders, requests, null, 0),
     [folders, requests],
@@ -134,15 +139,62 @@ export function CollectionsSidebar({
       >
         {rows.map((row) => {
           const label = row.kind === "folder" ? row.folder.name : row.request.content.name;
+          const draggedRequest = requests.find((candidate) => candidate.id === draggedRequestId);
+          const canDrop =
+            row.kind === "folder"
+              ? Boolean(draggedRequest && draggedRequest.collectionId !== row.folder.id)
+              : Boolean(draggedRequest && draggedRequest.id !== row.request.id);
           return (
             <div
-              className="group flex h-9 items-center gap-1 px-2"
+              className={[
+                "group flex min-h-9 items-center gap-1 px-2",
+                canDrop ? "data-[drop=active]:bg-accent" : "",
+              ].join(" ")}
+              data-drop={canDrop ? "active" : undefined}
+              draggable={row.kind === "request"}
+              onDragEnd={() => setDraggedRequestId(null)}
+              onDragOver={(event) => {
+                if (canDrop) {
+                  event.preventDefault();
+                }
+              }}
+              onDragStart={(event) => {
+                if (row.kind !== "request") {
+                  return;
+                }
+                setDraggedRequestId(row.request.id);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", row.request.id);
+              }}
+              onDrop={(event) => {
+                if (!canDrop) {
+                  return;
+                }
+                event.preventDefault();
+                const requestId = event.dataTransfer.getData("text/plain") || draggedRequestId;
+                const droppedRequest = requests.find((candidate) => candidate.id === requestId);
+                setDraggedRequestId(null);
+                if (!droppedRequest) {
+                  return;
+                }
+                if (row.kind === "folder") {
+                  onMoveRequest(droppedRequest, {
+                    collectionId: row.folder.id,
+                    position: requests.filter((request) => request.collectionId === row.folder.id).length,
+                  });
+                  return;
+                }
+                onMoveRequest(droppedRequest, {
+                  collectionId: row.request.collectionId,
+                  position: row.request.position,
+                });
+              }}
               key={`${row.kind}-${row.id}`}
               role="none"
               style={{ paddingLeft: `${8 + row.depth * 16}px` }}
             >
               <button
-                className="inline-flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
+                className="inline-flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
                 data-tree-item
                 onClick={() => {
                   if (row.kind === "request") {
@@ -158,6 +210,14 @@ export function CollectionsSidebar({
                 ) : (
                   <FileText aria-hidden="true" className="shrink-0 text-sky-700" size={16} />
                 )}
+                {row.kind === "request" ? (
+                  <span
+                    aria-hidden="true"
+                    className={`rounded border px-1.5 py-0.5 text-[0.625rem] font-semibold ${methodColorClass(row.request.content.method)}`}
+                  >
+                    {row.request.content.method}
+                  </span>
+                ) : null}
                 <span className="truncate">{label}</span>
               </button>
               {row.kind === "folder" ? (
@@ -173,8 +233,6 @@ export function CollectionsSidebar({
                 <RequestTreeActions
                   onDelete={() => onDeleteRequest(row.request)}
                   onDuplicate={() => onDuplicateRequest(row.request)}
-                  onMoveDown={() => onMoveRequest(row.request, 1)}
-                  onMoveUp={() => onMoveRequest(row.request, -1)}
                 />
               )}
             </div>
@@ -233,25 +291,15 @@ function TreeActions({
 type RequestTreeActionsProps = {
   onDelete: () => void;
   onDuplicate: () => void;
-  onMoveDown: () => void;
-  onMoveUp: () => void;
 };
 
 function RequestTreeActions({
   onDelete,
   onDuplicate,
-  onMoveDown,
-  onMoveUp,
 }: RequestTreeActionsProps) {
   const { t } = useI18n();
   return (
-    <div className="flex shrink-0 items-center opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
-      <IconButton label={t("actions.moveRequestUp")} onClick={onMoveUp}>
-        <ArrowUp aria-hidden="true" size={14} />
-      </IconButton>
-      <IconButton label={t("actions.moveRequestDown")} onClick={onMoveDown}>
-        <ArrowDown aria-hidden="true" size={14} />
-      </IconButton>
+    <div className="flex shrink-0 items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
       <IconButton label={t("actions.duplicateRequest")} onClick={onDuplicate}>
         <Copy aria-hidden="true" size={14} />
       </IconButton>

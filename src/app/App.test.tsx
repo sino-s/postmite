@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { axe } from "jest-axe";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -338,9 +338,15 @@ describe("App request editor", () => {
 
     expect(await screen.findByText("Completed")).toBeInTheDocument();
     expect(screen.getByText("Status 200")).toBeInTheDocument();
+    expect(screen.getByText(/"ok": true/)).toBeInTheDocument();
+    await user.click(
+      within(screen.getByRole("tablist", { name: "Response details" })).getByRole(
+        "tab",
+        { name: "Headers" },
+      ),
+    );
     expect(screen.getByText("content-type")).toBeInTheDocument();
     expect(screen.getByText("application/json")).toBeInTheDocument();
-    expect(screen.getByText(/"ok": true/)).toBeInTheDocument();
     expect(screen.getByText(/^Time \d+ ms$/)).toBeInTheDocument();
     expect(screen.getByText(/Timing queue 0 ms/)).toBeInTheDocument();
     expect(executionApiMock.recordFrontendExecutionTrace).toHaveBeenCalledWith(
@@ -574,7 +580,7 @@ describe("App request editor", () => {
   it("runs collection tree pointer actions through typed request APIs", async () => {
     const user = userEvent.setup();
     const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Renamed");
-    const snapshot = collectionRequestSnapshot();
+    const snapshot = collectionRequestSnapshot({ includeMoveTarget: true });
     renderApp(snapshot);
     requestApiMock.createCollectionFolder.mockResolvedValue(snapshot);
     requestApiMock.renameCollectionFolder.mockResolvedValue(snapshot);
@@ -583,10 +589,37 @@ describe("App request editor", () => {
     requestApiMock.deleteSavedRequest.mockResolvedValue(snapshot);
 
     await user.click(await screen.findByRole("button", { name: "New root folder" }));
-    await user.click(screen.getByRole("button", { name: "Rename folder" }));
-    await user.click(screen.getByRole("button", { name: "Move request down" }));
-    await user.click(screen.getByRole("button", { name: "Duplicate request" }));
-    await user.click(screen.getByRole("button", { name: "Delete request" }));
+    await user.click(screen.getAllByRole("button", { name: "Rename folder" })[0]);
+    const dataTransfer = {
+      data: "",
+      effectAllowed: "move",
+      getData: vi.fn(() => dataTransfer.data),
+      setData: vi.fn((_type: string, value: string) => {
+        dataTransfer.data = value;
+      }),
+    };
+    fireEvent.dragStart(screen.getByRole("treeitem", { name: "Saved Request" }).parentElement!, {
+      dataTransfer,
+    });
+    fireEvent.drop(screen.getByRole("treeitem", { name: "Archive" }).parentElement!, {
+      dataTransfer,
+    });
+    const reorderTransfer = {
+      data: "",
+      effectAllowed: "move",
+      getData: vi.fn(() => reorderTransfer.data),
+      setData: vi.fn((_type: string, value: string) => {
+        reorderTransfer.data = value;
+      }),
+    };
+    fireEvent.dragStart(screen.getByRole("treeitem", { name: "Later Request" }).parentElement!, {
+      dataTransfer: reorderTransfer,
+    });
+    fireEvent.drop(screen.getByRole("treeitem", { name: "Saved Request" }).parentElement!, {
+      dataTransfer: reorderTransfer,
+    });
+    await user.click(screen.getAllByRole("button", { name: "Duplicate request" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Delete request" })[0]);
 
     expect(requestApiMock.createCollectionFolder).toHaveBeenCalledWith(
       expect.any(QueryClient),
@@ -609,7 +642,15 @@ describe("App request editor", () => {
       {
         workspaceId: "workspace-1",
         savedRequestId: "saved-1",
-        location: { collectionId: "collection-1", position: 1 },
+        location: { collectionId: "collection-2", position: 0 },
+      },
+    );
+    expect(requestApiMock.moveSavedRequest).toHaveBeenCalledWith(
+      expect.any(QueryClient),
+      {
+        workspaceId: "workspace-1",
+        savedRequestId: "saved-2",
+        location: { collectionId: "collection-1", position: 0 },
       },
     );
     expect(requestApiMock.duplicateSavedRequest).toHaveBeenCalledWith(
@@ -882,6 +923,7 @@ describe("App request editor", () => {
     const user = userEvent.setup();
     renderApp(requestSnapshot({ content: requestContent(), isDirty: true }));
 
+    await user.click(screen.getByRole("button", { name: "Application menu" }));
     await screen.findByLabelText("Theme");
     await user.selectOptions(screen.getByLabelText("Theme"), "dark");
     await user.selectOptions(screen.getByLabelText("Density"), "compact");
@@ -1146,8 +1188,10 @@ function twoTabRequestSnapshot(): RequestWorkspaceSnapshotDto {
 
 function collectionRequestSnapshot({
   activeSavedRequestId = null,
+  includeMoveTarget = false,
 }: {
   activeSavedRequestId?: string | null;
+  includeMoveTarget?: boolean;
 } = {}): RequestWorkspaceSnapshotDto {
   const content = requestContent({ name: "Saved Request" });
   return {
@@ -1160,6 +1204,17 @@ function collectionRequestSnapshot({
         name: "Folder",
         position: 0,
       },
+      ...(includeMoveTarget
+        ? [
+            {
+              id: "collection-2",
+              workspaceId: "workspace-1",
+              parentCollectionId: null,
+              name: "Archive",
+              position: 1,
+            },
+          ]
+        : []),
     ],
     environments: [],
     collectionVariables: [],
@@ -1172,6 +1227,17 @@ function collectionRequestSnapshot({
         position: 0,
         content,
       },
+      ...(includeMoveTarget
+        ? [
+            {
+              id: "saved-2",
+              workspaceId: "workspace-1",
+              collectionId: "collection-1",
+              position: 1,
+              content: requestContent({ name: "Later Request", method: "POST" }),
+            },
+          ]
+        : []),
     ],
     drafts: activeSavedRequestId
       ? [
