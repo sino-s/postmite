@@ -320,6 +320,31 @@ describe("App request editor", () => {
     expect(screen.getByText(/Timing queue 0 ms/)).toBeInTheDocument();
   });
 
+  it("applies fast response events that arrive before start returns", async () => {
+    const user = userEvent.setup();
+    renderApp(
+      requestSnapshot({ content: requestContent(), isDirty: true }),
+    );
+    requestApiMock.updateRequestDraft.mockResolvedValue(undefined);
+    executionApiMock.startRequestExecution.mockImplementationOnce(async () => {
+      executionApiMock.emitExecutionEvent(
+        executionEvent("execution-fast", 1n, {
+          type: "COMPLETED",
+          status: 200,
+          bodyPreview: "fast response",
+          bodyTruncated: false,
+        }),
+      );
+      return { status: "queued", executionId: "execution-fast" };
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText("Completed")).toBeInTheDocument();
+    expect(screen.getByText("fast response")).toBeInTheDocument();
+    expect(screen.queryByText("Running")).not.toBeInTheDocument();
+  });
+
   it("cancels an in-flight execution through typed IPC", async () => {
     const user = userEvent.setup();
     renderApp(

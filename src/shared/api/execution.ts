@@ -13,6 +13,7 @@ import type {
 import { requestIpc } from "./ipc";
 
 export const REQUEST_EXECUTION_EVENT = "request_execution_event";
+export type { ExecutionEventDto };
 
 export type RequestExecutionResult = {
   status: "queued";
@@ -176,6 +177,17 @@ export function reduceResponseExecutionStates(
     ...states,
     [draftId]: next,
   };
+}
+
+export function applyResponseExecutionEvents(
+  state: ResponseExecutionState,
+  events: ExecutionEventDto[],
+  nowMs: number,
+): ResponseExecutionState {
+  return events.reduce(
+    (current, event) => reduceResponseExecutionState(current, event, nowMs),
+    state,
+  );
 }
 
 export function reduceResponseExecutionState(

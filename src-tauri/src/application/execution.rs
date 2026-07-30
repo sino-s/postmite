@@ -336,13 +336,20 @@ impl ExecutionCoordinator {
         execution_id: ExecutionId,
         kind: ExecutionEventKind,
     ) -> Option<ExecutionEvent> {
+        let mut notify_queue_waiters = false;
         let mut state = self.state.lock().ok()?;
         let draft_id = state.executions.get(&execution_id)?.draft_id;
 
         if state.latest_by_draft.get(&draft_id) != Some(&execution_id) {
             if kind.is_terminal() {
                 state.executions.remove(&execution_id);
+                let initial_queue_len = state.queue.len();
                 state.queue.retain(|id| *id != execution_id);
+                notify_queue_waiters = state.queue.len() != initial_queue_len;
+            }
+            drop(state);
+            if notify_queue_waiters {
+                self.queue_notify.notify_waiters();
             }
             return None;
         }
@@ -359,17 +366,24 @@ impl ExecutionCoordinator {
         if is_terminal {
             execution.terminal_emitted = true;
             state.executions.remove(&execution_id);
+            let initial_queue_len = state.queue.len();
             state.queue.retain(|id| *id != execution_id);
+            notify_queue_waiters = state.queue.len() != initial_queue_len;
             if state.latest_by_draft.get(&draft_id) == Some(&execution_id) {
                 state.latest_by_draft.remove(&draft_id);
             }
         }
 
-        Some(ExecutionEvent {
+        let event = ExecutionEvent {
             execution_id,
             sequence,
             kind,
-        })
+        };
+        drop(state);
+        if notify_queue_waiters {
+            self.queue_notify.notify_waiters();
+        }
+        Some(event)
     }
 
     pub fn queued_ms(&self, execution_id: ExecutionId) -> u64 {
@@ -427,7 +441,6 @@ impl ExecutionCoordinator {
     fn emit_cancelled_if_current(&self, execution_id: ExecutionId, sink: &ExecutionEventSink) {
         if let Some(event) = self.record_event(execution_id, ExecutionEventKind::Cancelled) {
             sink(event);
-            self.queue_notify.notify_waiters();
         }
     }
 
@@ -728,6 +741,51 @@ mod tests {
         release_tx.send(()).expect("release first");
     }
 
+    #[tokio::test]
+    async fn replacing_a_queued_execution_wakes_the_replacement() {
+        let coordinator = Arc::new(ExecutionCoordinator::with_concurrency(1));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (release_tx, release_rx) = oneshot::channel();
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+
+        coordinator
+            .start(request(), Arc::new(|_| {}), {
+                let started_tx = started_tx.clone();
+                move |_, _, _, _, _| async move {
+                    started_tx.send("first").expect("first started");
+                    let _ = release_rx.await;
+                }
+            })
+            .expect("start first");
+        assert_eq!(started_rx.recv().await, Some("first"));
+
+        let draft_id = RequestDraftId::new();
+        coordinator
+            .start(
+                request_with_draft(draft_id),
+                event_sink(&events),
+                move |_, _, _, _, _| async move {
+                    panic!("replaced queued execution must not run");
+                },
+            )
+            .expect("start replaced queued execution");
+
+        coordinator
+            .start(request_with_draft(draft_id), Arc::new(|_| {}), {
+                let started_tx = started_tx.clone();
+                move |_, _, _, _, _| async move {
+                    started_tx.send("replacement").expect("replacement started");
+                }
+            })
+            .expect("start replacement");
+
+        sleep(Duration::from_millis(50)).await;
+        assert!(started_rx.try_recv().is_err());
+
+        release_tx.send(()).expect("release first");
+        assert_eq!(started_rx.recv().await, Some("replacement"));
+    }
+
     fn insert_active(
         coordinator: &Arc<ExecutionCoordinator>,
         draft_id: RequestDraftId,
@@ -750,8 +808,12 @@ mod tests {
     }
 
     fn request() -> ExecutionRequest {
+        request_with_draft(RequestDraftId::new())
+    }
+
+    fn request_with_draft(draft_id: RequestDraftId) -> ExecutionRequest {
         ExecutionRequest {
-            draft_id: RequestDraftId::new(),
+            draft_id,
             workspace_base_directory: None,
             content: RequestContent {
                 url: "http://127.0.0.1".to_owned(),
