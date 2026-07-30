@@ -36,6 +36,44 @@ describe("ResponsePanel", () => {
     expect(await screen.findByText(/"ok": true/)).toBeInTheDocument();
     await user.type(screen.getByLabelText("Search response"), "ok");
     expect(await screen.findByText("1 matches")).toBeInTheDocument();
+    expect(screen.getByText("ok").tagName).toBe("MARK");
+  });
+
+  it("switches between body and headers without rendering them side by side", async () => {
+    const user = userEvent.setup();
+    render(
+      <ResponsePanel
+        execution={execution({
+          headers: [{ name: "x-long-header", value: "long readable value" }],
+          bodyPreview: "response body",
+          decodedBytes: 13n,
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Body" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("x-long-header")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Headers" }));
+
+    expect(screen.getByRole("tab", { name: "Headers" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("x-long-header")).toBeInTheDocument();
+    expect(screen.queryByText("response body")).not.toBeInTheDocument();
+  });
+
+  it("hides raw mode when it would match the pretty response", async () => {
+    render(
+      <ResponsePanel
+        execution={execution({
+          headers: [{ name: "content-type", value: "application/json" }],
+          bodyPreview: "{}",
+          decodedBytes: 2n,
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("{}")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Raw" })).not.toBeInTheDocument();
   });
 
   it("uses a scriptless sandbox for HTML previews", async () => {

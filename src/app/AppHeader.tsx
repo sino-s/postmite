@@ -1,9 +1,8 @@
-import { Bug, Folder, Plus, RefreshCw, RotateCcw } from "lucide-react";
-import type { ReactNode } from "react";
+import { Bug, Folder, Menu, Plus, RefreshCw, RotateCcw } from "lucide-react";
+import { useState, type ReactNode } from "react";
 
 import { Button } from "../components/ui/button";
 import { NativeSelect } from "../components/ui/native-select";
-import { Separator } from "../components/ui/separator";
 import {
   Tooltip,
   TooltipContent,
@@ -11,7 +10,8 @@ import {
   TooltipTrigger,
 } from "../components/ui/tooltip";
 import { useI18n, type AppLocale } from "./i18n";
-import type { Density, Theme } from "./preferences";
+import type { Density, RequestResponseSplit, Theme } from "./preferences";
+import { SplitToggle } from "../features/request-editor/controls/SplitToggle";
 
 type AppHeaderProps = {
   checkingUpdates: boolean;
@@ -24,8 +24,10 @@ type AppHeaderProps = {
   onRelinkBodyFiles: () => void;
   onSetBaseDirectory: () => void;
   onToggleDiagnostics: () => void;
+  requestResponseSplit: RequestResponseSplit;
   setDensity: (density: Density) => void;
   setLocale: (locale: AppLocale) => void;
+  setRequestResponseSplit: (split: RequestResponseSplit) => void;
   setTheme: (theme: Theme) => void;
   theme: Theme;
   updateError: boolean;
@@ -43,44 +45,63 @@ export function AppHeader({
   onRelinkBodyFiles,
   onSetBaseDirectory,
   onToggleDiagnostics,
+  requestResponseSplit,
   setDensity,
   setLocale,
+  setRequestResponseSplit,
   setTheme,
   theme,
   updateError,
   updateResult,
 }: AppHeaderProps) {
   const { t } = useI18n();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   return (
     <header className="relative flex min-h-12 flex-wrap items-center gap-2 border-b border-border bg-background px-3 py-2 sm:px-4">
-      <h1 className="shrink-0 text-sm font-semibold">Postmite</h1>
-      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
-        <label className="sr-only" htmlFor="app-theme">{t("app.theme")}</label>
-        <NativeSelect
-          aria-label={t("app.theme")}
-          className="w-[7.75rem] max-w-full"
-          id="app-theme"
-          onChange={(event) => setTheme(event.currentTarget.value as Theme)}
-          value={theme}
+      <div className="relative flex shrink-0 items-center gap-2">
+        <Button
+          aria-expanded={menuOpen}
+          aria-label={t("app.menu")}
+          aria-controls="app-header-menu"
+          onClick={() => setMenuOpen((open) => !open)}
+          size="icon"
+          type="button"
+          variant="outline"
         >
-          <option value="light">{t("app.theme.light")}</option>
-          <option value="dark">{t("app.theme.dark")}</option>
-          <option value="system">{t("app.theme.system")}</option>
-        </NativeSelect>
-        <label className="sr-only" htmlFor="app-density">{t("app.density")}</label>
-        <NativeSelect
-          aria-label={t("app.density")}
-          className="w-[8.5rem] max-w-full"
-          id="app-density"
-          onChange={(event) => setDensity(event.currentTarget.value as Density)}
-          value={density}
-        >
-          <option value="comfortable">{t("app.density.comfortable")}</option>
-          <option value="compact">{t("app.density.compact")}</option>
-        </NativeSelect>
-        <TooltipProvider delayDuration={0}>
-          <HeaderTooltip label={checkingUpdates ? t("app.checkingUpdates") : t("app.checkUpdates")}>
+          <Menu aria-hidden="true" size={16} />
+        </Button>
+        <h1 className="text-sm font-semibold">Postmite</h1>
+        {menuOpen ? (
+          <div
+            className="absolute left-0 top-full z-30 mt-2 grid w-72 gap-3 rounded-md border border-border bg-popover p-3 text-sm text-popover-foreground shadow-lg"
+            id="app-header-menu"
+          >
+            <label className="grid gap-1 text-xs font-semibold" htmlFor="app-theme">
+              {t("app.theme")}
+              <NativeSelect
+                aria-label={t("app.theme")}
+                id="app-theme"
+                onChange={(event) => setTheme(event.currentTarget.value as Theme)}
+                value={theme}
+              >
+                <option value="light">{t("app.theme.light")}</option>
+                <option value="dark">{t("app.theme.dark")}</option>
+                <option value="system">{t("app.theme.system")}</option>
+              </NativeSelect>
+            </label>
+            <label className="grid gap-1 text-xs font-semibold" htmlFor="app-density">
+              {t("app.density")}
+              <NativeSelect
+                aria-label={t("app.density")}
+                id="app-density"
+                onChange={(event) => setDensity(event.currentTarget.value as Density)}
+                value={density}
+              >
+                <option value="comfortable">{t("app.density.comfortable")}</option>
+                <option value="compact">{t("app.density.compact")}</option>
+              </NativeSelect>
+            </label>
             <Button
               aria-label={checkingUpdates ? t("app.checkingUpdates") : t("app.checkUpdates")}
               aria-live="polite"
@@ -91,11 +112,26 @@ export function AppHeader({
               variant="outline"
             >
               <RefreshCw aria-hidden="true" size={16} />
-              <span className="hidden xl:inline">
-                {checkingUpdates ? t("app.checkingUpdates") : t("app.checkUpdates")}
-              </span>
+              {checkingUpdates ? t("app.checkingUpdates") : t("app.checkUpdates")}
             </Button>
-          </HeaderTooltip>
+            <label className="grid gap-1 text-xs font-semibold" htmlFor="app-language">
+              {t("app.language")}
+              <NativeSelect
+                aria-label={t("app.language")}
+                id="app-language"
+                onChange={(event) => setLocale(event.currentTarget.value as AppLocale)}
+                value={locale}
+              >
+                <option value="en">English</option>
+                <option value="ja">日本語</option>
+              </NativeSelect>
+            </label>
+          </div>
+        ) : null}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+        <TooltipProvider delayDuration={0}>
+          <SplitToggle setSplit={setRequestResponseSplit} split={requestResponseSplit} />
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -148,18 +184,6 @@ export function AppHeader({
             </Button>
           </HeaderTooltip>
         </TooltipProvider>
-        <Separator className="hidden h-6 sm:block" orientation="vertical" />
-        <label className="sr-only" htmlFor="app-language">{t("app.language")}</label>
-        <NativeSelect
-          aria-label={t("app.language")}
-          className="w-[7.25rem] max-w-full"
-          id="app-language"
-          onChange={(event) => setLocale(event.currentTarget.value as AppLocale)}
-          value={locale}
-        >
-          <option value="en">English</option>
-          <option value="ja">日本語</option>
-        </NativeSelect>
       </div>
       {updateResult ? (
         <p
