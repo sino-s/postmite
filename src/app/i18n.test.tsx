@@ -19,6 +19,8 @@ function LocaleFixture() {
         <option value="ja">Japanese</option>
       </select>
       <p>{t("request.send")}</p>
+      <p>{t("body.formatJson")}</p>
+      <p>{t("body.jsonInvalid", { line: 3, column: 7 })}</p>
       <p>{formatError({ code: "STATE_UNAVAILABLE" })}</p>
     </>
   );
@@ -53,6 +55,8 @@ describe("i18n", () => {
     await user.selectOptions(screen.getByLabelText("language"), "ja");
 
     expect(screen.getByText("送信")).toBeInTheDocument();
+    expect(screen.getByText("JSON を整形")).toBeInTheDocument();
+    expect(screen.getByText("JSON が正しくありません（3 行、7 列）。")).toBeInTheDocument();
     expect(screen.getByText("アプリケーションの状態を利用できません。再試行してください。")).toBeInTheDocument();
     expect(screen.getByLabelText("draft")).toHaveValue("unsaved request");
   });
