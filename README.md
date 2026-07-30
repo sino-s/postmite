@@ -37,6 +37,10 @@ Release performance budgets are measured from the Tauri release binary:
 pnpm perf:release
 ```
 
+On Linux, the command reports both RSS and proportional set size (PSS) for the Tauri/WebKit process tree.
+RSS remains in the JSON output as a diagnostic value because summing RSS across WebKit processes can double-count shared pages.
+The v0.1.0 memory budget uses one-tab aggregate PSS with a 165 MiB budget as the primary pass/fail metric, falling back to RSS only when Linux PSS data is unavailable.
+
 The command reports budget failures without failing by default. Use `pnpm perf:release:strict` when a reference environment should reject a performance regression.
 
 On a headless Linux machine, run the performance command under Xvfb:
