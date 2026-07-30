@@ -103,6 +103,7 @@ vi.mock("../features/request-editor/editors/CodeMirrorBodyEditor", () => ({
 describe("App request editor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     workspaceApiMock.workspaceQuery.queryFn.mockResolvedValue(
       workspaceSnapshot(),
     );
@@ -182,7 +183,8 @@ describe("App request editor", () => {
     replaceInputText("Name", "Create user");
     await user.selectOptions(screen.getByLabelText("Method"), "POST");
     replaceInputText("URL", "https://example.test/users?tag=first&tag=");
-    await user.click(screen.getByRole("button", { name: "Raw" }));
+    await user.click(screen.getByRole("tab", { name: "Body" }));
+    await user.click(await screen.findByRole("button", { name: "Raw" }));
     replaceInputText("Raw body editor", "{\"ok\":true}");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await user.click(screen.getByRole("button", { name: "Close Untitled Request" }));
@@ -513,6 +515,7 @@ describe("App request editor", () => {
       environmentId: "env-prod",
     });
     expect(requestApiMock.updateRequestDraft).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("tab", { name: "Variables" }));
     expect(await screen.findByText("baseUrl")).toBeInTheDocument();
     expect(screen.getAllByText("Environment").length).toBeGreaterThan(1);
     expect(screen.getByText("https://prod.example.test")).toBeInTheDocument();
@@ -544,6 +547,59 @@ describe("App request editor", () => {
     );
   });
 
+  it("groups request options behind tabs and toggles the response split", async () => {
+    const user = userEvent.setup();
+    renderApp(
+      requestSnapshot({
+        content: requestContent({
+          headers: [{ enabled: true, order: 0, name: "Accept", value: "application/json" }],
+        }),
+        isDirty: true,
+      }),
+      executionHistorySnapshot(),
+      cookieJarSnapshot(),
+    );
+
+    expect(await screen.findByRole("tablist", { name: "Request option tabs" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Params" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("region", { name: "Response" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pin history record" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Inspect sid cookie" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Headers" }));
+    const headersTab = screen.getByRole("tab", { name: "Headers" });
+    expect(headersTab).toHaveAttribute("aria-selected", "true");
+    expect(headersTab).toHaveFocus();
+    expect(screen.getByLabelText("Headers row 1 name")).toBeInTheDocument();
+
+    await user.keyboard("{ArrowRight}");
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Body" })).toHaveAttribute("aria-selected", "true"),
+    );
+    expect(screen.getByRole("button", { name: "Raw" })).toBeInTheDocument();
+
+    await user.keyboard("{Home}");
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Params" })).toHaveAttribute("aria-selected", "true"),
+    );
+    await user.keyboard("{End}");
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Cookies" })).toHaveAttribute("aria-selected", "true"),
+    );
+    expect(screen.getByRole("button", { name: "Inspect sid cookie" })).toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: "Stack request options above response" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await user.click(screen.getByRole("button", { name: "Place request options beside response" }));
+    expect(screen.getByRole("button", { name: "Place request options beside response" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(window.localStorage.getItem("postmite.requestResponseSplit")).toBe("vertical");
+  });
+
   it("pins disables and opens execution history without mutating saved requests", async () => {
     const user = userEvent.setup();
     const queryClient = renderApp(
@@ -571,6 +627,7 @@ describe("App request editor", () => {
       },
     );
 
+    await user.click(await screen.findByRole("tab", { name: "History" }));
     await user.click(await screen.findByRole("button", { name: "Pin history record" }));
     await user.click(screen.getByLabelText("Disable history"));
     await user.click(screen.getByRole("button", { name: /History Request/ }));
@@ -602,6 +659,7 @@ describe("App request editor", () => {
       cookieJarSnapshot(),
     );
 
+    await user.click(await screen.findByRole("tab", { name: "Cookies" }));
     expect(await screen.findByText("Value ********")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Inspect sid cookie" }));
@@ -651,6 +709,7 @@ describe("App request editor", () => {
       cookieJarSnapshot(),
     );
 
+    await user.click(await screen.findByRole("tab", { name: "Cookies" }));
     expect(await screen.findByText("Value ********")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Inspect sid cookie" }));
 
@@ -681,6 +740,7 @@ describe("App request editor", () => {
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     expect(document.documentElement).toHaveAttribute("data-resolved-theme", "dark");
     expect(document.documentElement).toHaveAttribute("data-density", "compact");
+    expect(getComputedStyle(document.documentElement).getPropertyValue("--content-gap").trim()).toBe("0.625rem");
     expect(screen.getByRole("status")).toHaveTextContent("Ready to send request.");
 
     await user.click(screen.getByRole("button", { name: "Send" }));
