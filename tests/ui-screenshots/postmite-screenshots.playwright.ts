@@ -51,6 +51,66 @@ test("captures request workspace screenshots", async ({ page }, testInfo) => {
     path: `${outputDir}/${variant}.png`,
   });
 
+  await page
+    .getByRole("tablist", { name: "Request option tabs" })
+    .getByRole("tab", { name: "Body" })
+    .click();
+  const rawEditor = page.getByRole("textbox", { name: "Raw body editor" });
+  const formatJson = page.getByRole("button", { name: "Format JSON" });
+  await expect(rawEditor).toBeVisible();
+  await expect(formatJson).toBeVisible();
+
+  const precisionSource =
+    '{"unsafe":9007199254740993,"decimal":1.2300,"exponent":6.02e+23,"same":1,"same":2,"escaped":"\\\\u0041"}';
+  await rawEditor.fill(precisionSource);
+  await expect(formatJson).toBeEnabled();
+  await formatJson.hover();
+  await expect(page.getByRole("tooltip")).toContainText("Format JSON");
+  await formatJson.focus();
+  await formatJson.press("Enter");
+  await expect(rawEditor).toContainText("9007199254740993");
+  await expect(rawEditor).toContainText("1.2300");
+  await expect(rawEditor).toContainText("6.02e+23");
+  await expect(rawEditor).toContainText("\\u0041");
+  await expect(rawEditor.locator(".cm-line").filter({ hasText: '"same"' })).toHaveCount(2);
+  await formatJson.focus();
+  await page.screenshot({
+    animations: "disabled",
+    path: `${outputDir}/${variant}-json-valid-keyboard.png`,
+  });
+
+  await rawEditor.press("Control+z");
+  await expect(rawEditor).toHaveText(precisionSource);
+
+  await rawEditor.fill('{\n  "valid": true,\n  "broken":\n}');
+  await expect(page.getByTestId("json-validation-summary")).toContainText(
+    "Invalid JSON at line",
+  );
+  await expect(formatJson).toBeDisabled();
+  await page.getByRole("heading", { name: "Raw Body" }).scrollIntoViewIfNeeded();
+  await page.screenshot({
+    animations: "disabled",
+    path: `${outputDir}/${variant}-json-invalid.png`,
+  });
+
+  await rawEditor.fill("   ");
+  await expect(formatJson).toBeDisabled();
+  await expect(page.getByTestId("json-validation-summary")).toBeEmpty();
+  await page.getByRole("heading", { name: "Raw Body" }).scrollIntoViewIfNeeded();
+  await page.screenshot({
+    animations: "disabled",
+    path: `${outputDir}/${variant}-json-empty.png`,
+  });
+
+  await page.getByRole("button", { name: "TEXT" }).click();
+  await expect(formatJson).not.toBeVisible();
+  await expect(page.getByTestId("json-validation-summary")).toBeEmpty();
+  await page.getByRole("heading", { name: "Raw Body" }).scrollIntoViewIfNeeded();
+  await page.screenshot({
+    animations: "disabled",
+    path: `${outputDir}/${variant}-text-mode.png`,
+  });
+
   if (variant === "desktop-light") {
     await page.getByRole("button", { name: "Application menu" }).click();
     await expect(page.getByLabel("Theme")).toBeVisible();
