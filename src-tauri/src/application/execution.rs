@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -180,6 +180,7 @@ pub type ExecutionEventSink = Arc<dyn Fn(ExecutionEvent) + Send + Sync + 'static
 pub struct ExecutionCoordinator {
     state: Mutex<ExecutionState>,
     permits: Arc<Semaphore>,
+    queue_notify: Notify,
 }
 
 impl ExecutionCoordinator {
@@ -192,6 +193,7 @@ impl ExecutionCoordinator {
         Self {
             state: Mutex::new(ExecutionState::default()),
             permits: Arc::new(Semaphore::new(concurrency)),
+            queue_notify: Notify::new(),
         }
     }
 
@@ -249,7 +251,19 @@ impl ExecutionCoordinator {
 
         let coordinator = Arc::clone(self);
         let permits = Arc::clone(&self.permits);
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
+            let is_next = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    coordinator.emit_cancelled_if_current(execution_id, &sink);
+                    return;
+                }
+                is_next = coordinator.wait_until_next_in_queue(execution_id) => is_next,
+            };
+            if !is_next {
+                coordinator.emit_cancelled_if_current(execution_id, &sink);
+                return;
+            }
+
             let permit = tokio::select! {
                 _ = cancellation.cancelled() => {
                     coordinator.emit_cancelled_if_current(execution_id, &sink);
@@ -394,6 +408,9 @@ impl ExecutionCoordinator {
             Ok(state) => state,
             Err(_) => return false,
         };
+        if state.queue.front() != Some(&execution_id) {
+            return false;
+        }
         state.queue.retain(|id| *id != execution_id);
         let Some(execution) = state.executions.get_mut(&execution_id) else {
             return false;
@@ -402,12 +419,34 @@ impl ExecutionCoordinator {
             return false;
         }
         execution.status = ExecutionStatus::Running;
+        drop(state);
+        self.queue_notify.notify_waiters();
         true
     }
 
     fn emit_cancelled_if_current(&self, execution_id: ExecutionId, sink: &ExecutionEventSink) {
         if let Some(event) = self.record_event(execution_id, ExecutionEventKind::Cancelled) {
             sink(event);
+            self.queue_notify.notify_waiters();
+        }
+    }
+
+    async fn wait_until_next_in_queue(&self, execution_id: ExecutionId) -> bool {
+        loop {
+            let notified = self.queue_notify.notified();
+            {
+                let state = match self.state.lock() {
+                    Ok(state) => state,
+                    Err(_) => return false,
+                };
+                if state.queue.front() == Some(&execution_id) {
+                    return true;
+                }
+                if !state.executions.contains_key(&execution_id) {
+                    return false;
+                }
+            }
+            notified.await;
         }
     }
 }
@@ -486,6 +525,7 @@ fn body_text_bytes(body: &RequestBody) -> usize {
 mod tests {
     use super::*;
     use crate::domain::request::RequestContent;
+    use std::sync::mpsc as std_mpsc;
     use tokio::sync::{mpsc, oneshot};
     use tokio::time::{sleep, Duration};
 
@@ -563,6 +603,42 @@ mod tests {
         assert!(matches!(error, ExecutionError::InvalidInput(_)));
     }
 
+    #[test]
+    fn start_can_be_called_without_a_tokio_reactor() {
+        let coordinator = Arc::new(ExecutionCoordinator::with_concurrency(1));
+        let (started_tx, started_rx) = std_mpsc::channel();
+
+        coordinator
+            .start(
+                request(),
+                Arc::new(|_| {}),
+                move |execution_id, _, _, coordinator, sink| async move {
+                    started_tx
+                        .send(execution_id)
+                        .expect("send started execution");
+                    if let Some(event) = coordinator.record_event(
+                        execution_id,
+                        ExecutionEventKind::Completed {
+                            status: 200,
+                            body_preview: String::new(),
+                            body_truncated: false,
+                            decoded_bytes: 0,
+                            wire_bytes: Some(0),
+                            response_file: None,
+                            timing: ExecutionTimingMetadata::default(),
+                        },
+                    ) {
+                        sink(event);
+                    }
+                },
+            )
+            .expect("start execution");
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("execution task started outside tokio reactor");
+    }
+
     #[tokio::test]
     async fn ninth_execution_waits_until_a_slot_opens() {
         let coordinator = Arc::new(ExecutionCoordinator::with_concurrency(8));
@@ -603,6 +679,7 @@ mod tests {
         for _ in 0..8 {
             started.push(started_rx.recv().await.expect("started execution"));
         }
+        started.sort_unstable();
         assert_eq!(started, vec![0, 1, 2, 3, 4, 5, 6, 7]);
         sleep(Duration::from_millis(50)).await;
         assert!(started_rx.try_recv().is_err());
