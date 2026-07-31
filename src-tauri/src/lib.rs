@@ -25,6 +25,7 @@ use infrastructure::{
     sqlite::{DatabaseRecoveryMode, DatabaseRecoveryState, SqliteWorkspaceRepository},
 };
 use tauri::{Manager, WindowEvent};
+use tauri_plugin_window_state::StateFlags;
 
 const SESSION_ONLY_SECRETS_ENV: &str = "POSTMITE_SESSION_ONLY_SECRETS";
 
@@ -45,6 +46,11 @@ pub fn run() {
     let started_at = Instant::now();
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::SIZE)
+                .build(),
+        )
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             ipc::list_workspaces,

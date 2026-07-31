@@ -1045,6 +1045,27 @@ describe("App request editor", () => {
     expect(window.localStorage.getItem("postmite.requestResponseSplit")).toBe("vertical");
   });
 
+  it("restores the saved request and response orientation", async () => {
+    const defaultMatchMedia = window.matchMedia;
+    vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+      ...defaultMatchMedia(query),
+      matches: query.includes("min-width"),
+    }));
+    window.localStorage.setItem("postmite.requestResponseSplit", "vertical");
+    window.localStorage.setItem(
+      "postmite.requestResponseLayout.vertical",
+      JSON.stringify({ request: 43, response: 57 }),
+    );
+
+    renderApp(requestSnapshot({ content: requestContent(), isDirty: true }));
+
+    expect(
+      await screen.findByRole("button", { name: "Place request options beside response" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(document.getElementById("request-response-vertical")).toBeInTheDocument();
+    expect(document.getElementById("request")).toHaveStyle({ flexGrow: "43" });
+  });
+
   it("pins disables and opens execution history without mutating saved requests", async () => {
     const user = userEvent.setup();
     const queryClient = renderApp(
