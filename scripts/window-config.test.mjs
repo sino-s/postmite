@@ -29,4 +29,26 @@ describe("main Tauri window", () => {
     expect(application).toContain(".with_state_flags(StateFlags::SIZE)");
     expect(application).not.toContain("StateFlags::all()");
   });
+
+  it("builds web assets before the Tauri CI build", () => {
+    const packageManifest = JSON.parse(
+      readFileSync(resolve(repoRoot, "package.json"), "utf8"),
+    );
+    const ciConfig = JSON.parse(
+      readFileSync(resolve(repoRoot, "src-tauri/tauri.ci.conf.json"), "utf8"),
+    );
+    const workflow = readFileSync(
+      resolve(repoRoot, ".github/workflows/ci.yml"),
+      "utf8",
+    );
+
+    expect(packageManifest.scripts["ci:build"]).toBe(
+      "pnpm build:web && pnpm build:tauri:ci",
+    );
+    expect(packageManifest.scripts["build:tauri:ci"]).toContain(
+      "--config src-tauri/tauri.ci.conf.json",
+    );
+    expect(ciConfig.build.beforeBuildCommand).toBe("true");
+    expect(workflow).toContain("run: pnpm ci:build");
+  });
 });
