@@ -355,6 +355,121 @@ impl RequestRepository for SqliteWorkspaceRepository {
         Ok(snapshot)
     }
 
+    fn create_environment(
+        &mut self,
+        workspace_id: WorkspaceId,
+        name: String,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        validate_collection_name(&name)?;
+        let environment_id = EnvironmentId::new();
+        let position: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(position) + 1, 0) FROM environments WHERE workspace_id = ?1",
+                params![workspace_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(RequestError::persistence)?;
+        tx.execute(
+            "INSERT INTO environments (id, workspace_id, name, position) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                environment_id.to_string(),
+                workspace_id.to_string(),
+                name.trim(),
+                position,
+            ],
+        )
+        .map_err(map_request_sqlite_error)?;
+        tx.execute(
+            "INSERT INTO selected_environments (workspace_id, environment_id)
+             VALUES (?1, ?2)
+             ON CONFLICT(workspace_id) DO UPDATE SET
+                 environment_id = excluded.environment_id,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![workspace_id.to_string(), environment_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn update_environment(
+        &mut self,
+        workspace_id: WorkspaceId,
+        environment_id: EnvironmentId,
+        name: String,
+        variables: Vec<Variable>,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        ensure_environment_in_workspace(&tx, workspace_id, environment_id)?;
+        validate_collection_name(&name)?;
+        tx.execute(
+            "UPDATE environments
+             SET name = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE workspace_id = ?2 AND id = ?3",
+            params![name.trim(), workspace_id.to_string(), environment_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+        tx.execute(
+            "DELETE FROM environment_variables WHERE workspace_id = ?1 AND environment_id = ?2",
+            params![workspace_id.to_string(), environment_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+        for (position, variable) in variables.into_iter().enumerate() {
+            let (plain_value, secret_ref) = match variable.value {
+                VariableValue::Plain(value) => (Some(value), None),
+                VariableValue::SecretReference(reference) => (None, Some(reference)),
+            };
+            tx.execute(
+                "INSERT INTO environment_variables
+                    (environment_id, workspace_id, name, plain_value, secret_ref, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    environment_id.to_string(),
+                    workspace_id.to_string(),
+                    variable.name,
+                    plain_value,
+                    secret_ref,
+                    i64::try_from(position).map_err(RequestError::persistence)?,
+                ],
+            )
+            .map_err(map_request_sqlite_error)?;
+        }
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
+    fn delete_environment(
+        &mut self,
+        workspace_id: WorkspaceId,
+        environment_id: EnvironmentId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(RequestError::persistence)?;
+        ensure_request_workspace_exists(&tx, workspace_id)?;
+        ensure_environment_in_workspace(&tx, workspace_id, environment_id)?;
+        tx.execute(
+            "DELETE FROM environments WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace_id.to_string(), environment_id.to_string()],
+        )
+        .map_err(map_request_sqlite_error)?;
+        let snapshot = load_request_snapshot(&tx, workspace_id)?;
+        tx.commit().map_err(RequestError::persistence)?;
+        Ok(snapshot)
+    }
+
     fn rename_collection_folder(
         &mut self,
         workspace_id: WorkspaceId,

@@ -95,6 +95,33 @@ pub fn select_environment(
 }
 
 #[tauri::command]
+pub fn create_environment(
+    state: State<'_, AppState>,
+    input: CreateEnvironmentInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_create_environment(service, input)
+}
+
+#[tauri::command]
+pub fn update_environment(
+    state: State<'_, AppState>,
+    input: UpdateEnvironmentInput,
+) -> Result<EnvironmentMutationResultDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_update_environment(service, input)
+}
+
+#[tauri::command]
+pub fn delete_environment(
+    state: State<'_, AppState>,
+    input: EnvironmentIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError> {
+    let service = state.requests.lock().map_err(map_poison_error)?;
+    handle_delete_environment(service, input)
+}
+
+#[tauri::command]
 pub fn resolve_request_content(
     state: State<'_, AppState>,
     input: ResolveRequestContentInput,

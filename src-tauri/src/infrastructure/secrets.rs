@@ -132,7 +132,22 @@ fn map_error(error: SecretServiceError) -> SecretError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::secrets::SecretClass;
+    use std::sync::Arc;
+
+    use tempfile::NamedTempFile;
+
+    use crate::{
+        application::{
+            request::{
+                EnvironmentVariableDraft, EnvironmentVariableDraftValue, RequestRepository,
+                RequestService,
+            },
+            secrets::SecretClass,
+            workspace::WorkspaceRepository,
+        },
+        domain::request::{RequestContent, VariableValue},
+        infrastructure::sqlite::SqliteWorkspaceRepository,
+    };
 
     #[test]
     #[ignore = "requires an isolated unlocked Secret Service session"]
@@ -155,5 +170,72 @@ mod tests {
             store.get(&write.reference),
             Err(SecretError::NotFound | SecretError::Unavailable | SecretError::Locked)
         ));
+    }
+
+    #[test]
+    #[ignore = "requires an isolated unlocked Secret Service session"]
+    fn environment_secret_resolves_after_service_restart() {
+        let db = NamedTempFile::new().expect("temporary database");
+        let workspace_id = {
+            let mut workspaces =
+                SqliteWorkspaceRepository::open(db.path()).expect("open workspace repository");
+            workspaces
+                .initialize()
+                .expect("initialize workspace")
+                .selected_workspace_id
+        };
+        let environment_id = {
+            let mut repository =
+                SqliteWorkspaceRepository::open(db.path()).expect("open request repository");
+            repository
+                .create_environment(workspace_id, "Native".to_owned())
+                .expect("create environment")
+                .environments[0]
+                .id
+        };
+        let secret_value = ["native", "restart", "fixture"].join("-");
+
+        {
+            let repository =
+                SqliteWorkspaceRepository::open(db.path()).expect("open service repository");
+            let secrets: Arc<dyn SecretStore> = Arc::new(LinuxSecretServiceStore::new());
+            let mut service = RequestService::new(repository, secrets);
+            let result = service
+                .update_environment(
+                    workspace_id,
+                    environment_id,
+                    "Native",
+                    vec![EnvironmentVariableDraft {
+                        previous_name: None,
+                        name: "token".to_owned(),
+                        value: EnvironmentVariableDraftValue::Secret {
+                            value: Some(secret_value.clone()),
+                        },
+                    }],
+                )
+                .expect("store environment secret");
+            assert!(matches!(
+                result.snapshot.environment_variables[0].variable.value,
+                VariableValue::SecretReference(_)
+            ));
+        }
+
+        let repository =
+            SqliteWorkspaceRepository::open(db.path()).expect("reopen service repository");
+        let secrets: Arc<dyn SecretStore> = Arc::new(LinuxSecretServiceStore::new());
+        let mut restarted = RequestService::new(repository, secrets);
+        let resolved = restarted
+            .materialize_request_content(
+                workspace_id,
+                RequestContent {
+                    url: "https://example.test/{{token}}".to_owned(),
+                    ..RequestContent::blank()
+                },
+            )
+            .expect("resolve after restart");
+        assert_eq!(resolved.url, format!("https://example.test/{secret_value}"));
+        restarted
+            .delete_environment(workspace_id, environment_id)
+            .expect("delete test environment and secret");
     }
 }

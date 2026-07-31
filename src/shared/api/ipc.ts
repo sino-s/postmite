@@ -8,6 +8,7 @@ import type {
   CollectionFolderIdInput,
   CreateSavedRequestInput,
   CreateCollectionFolderInput,
+  CreateEnvironmentInput,
   CreateWorkspaceInput,
   CurlGenerateInput,
   CurlImportInput,
@@ -16,6 +17,7 @@ import type {
   FrontendExecutionTraceInput,
   DescribeBodyFileInput,
   ExecutionRecordIdInput,
+  EnvironmentIdInput,
   IpcCommandContracts,
   IpcError,
   MoveCollectionFolderInput,
@@ -42,6 +44,7 @@ import type {
   StartOAuthAuthorizationInput,
   StartRequestExecutionInput,
   UpdateRequestDraftInput,
+  UpdateEnvironmentInput,
   UpsertCookieInput,
   WorkspaceIdInput,
 } from "./generated/ipc";
@@ -102,6 +105,12 @@ export const requestIpc = {
     invokeCommand("create_collection_folder", input),
   selectEnvironment: (input: SelectEnvironmentInput) =>
     invokeCommand("select_environment", input),
+  createEnvironment: (input: CreateEnvironmentInput) =>
+    invokeCommand("create_environment", input),
+  updateEnvironment: (input: UpdateEnvironmentInput) =>
+    invokeCommand("update_environment", input),
+  deleteEnvironment: (input: EnvironmentIdInput) =>
+    invokeCommand("delete_environment", input),
   resolveRequestContent: (input: ResolveRequestContentInput) =>
     invokeCommand("resolve_request_content", input),
   renameCollectionFolder: (input: RenameCollectionFolderInput) =>

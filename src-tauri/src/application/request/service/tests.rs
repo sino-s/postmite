@@ -73,6 +73,70 @@ mod tests {
             self.list_request_workspace(workspace_id)
         }
 
+        fn create_environment(
+            &mut self,
+            workspace_id: WorkspaceId,
+            name: String,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            let mut snapshot = self.list_request_workspace(workspace_id)?;
+            for environment in &mut snapshot.environments {
+                environment.is_selected = false;
+            }
+            snapshot.environments.push(Environment {
+                id: EnvironmentId::new(),
+                workspace_id,
+                name,
+                position: snapshot.environments.len() as u32,
+                is_selected: true,
+            });
+            self.snapshot = Some(snapshot.clone());
+            Ok(snapshot)
+        }
+
+        fn update_environment(
+            &mut self,
+            workspace_id: WorkspaceId,
+            environment_id: EnvironmentId,
+            name: String,
+            variables: Vec<Variable>,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            let mut snapshot = self.list_request_workspace(workspace_id)?;
+            let environment = snapshot
+                .environments
+                .iter_mut()
+                .find(|environment| environment.id == environment_id)
+                .ok_or(RequestError::NotFound)?;
+            environment.name = name;
+            snapshot
+                .environment_variables
+                .retain(|variable| variable.environment_id != environment_id);
+            snapshot.environment_variables.extend(
+                variables.into_iter().map(|variable| EnvironmentVariable {
+                    environment_id,
+                    workspace_id,
+                    variable,
+                }),
+            );
+            self.snapshot = Some(snapshot.clone());
+            Ok(snapshot)
+        }
+
+        fn delete_environment(
+            &mut self,
+            workspace_id: WorkspaceId,
+            environment_id: EnvironmentId,
+        ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+            let mut snapshot = self.list_request_workspace(workspace_id)?;
+            snapshot
+                .environments
+                .retain(|environment| environment.id != environment_id);
+            snapshot
+                .environment_variables
+                .retain(|variable| variable.environment_id != environment_id);
+            self.snapshot = Some(snapshot.clone());
+            Ok(snapshot)
+        }
+
         fn rename_collection_folder(
             &mut self,
             workspace_id: WorkspaceId,
@@ -590,6 +654,150 @@ mod tests {
                 .source,
             VariableSource::Environment
         );
+    }
+
+    #[test]
+    fn environment_secret_updates_return_only_references_and_session_fallback_expires() {
+        let workspace_id = WorkspaceId::new();
+        let environment_id = EnvironmentId::new();
+        let repository = FakeRequestRepository {
+            snapshot: Some(RequestWorkspaceSnapshot {
+                workspace_id,
+                collection_folders: Vec::new(),
+                environments: vec![Environment {
+                    id: environment_id,
+                    workspace_id,
+                    name: "Development".to_owned(),
+                    position: 0,
+                    is_selected: true,
+                }],
+                collection_variables: Vec::new(),
+                environment_variables: Vec::new(),
+                saved_requests: Vec::new(),
+                drafts: Vec::new(),
+                tabs: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let mut service = RequestService::new_for_test(repository);
+        let secret_value = ["environment", "protected", "fixture"].join("-");
+
+        let result = service
+            .update_environment(
+                workspace_id,
+                environment_id,
+                "Development",
+                vec![
+                    EnvironmentVariableDraft {
+                        previous_name: None,
+                        name: "baseUrl".to_owned(),
+                        value: EnvironmentVariableDraftValue::Plain(
+                            "https://example.test".to_owned(),
+                        ),
+                    },
+                    EnvironmentVariableDraft {
+                        previous_name: None,
+                        name: "token".to_owned(),
+                        value: EnvironmentVariableDraftValue::Secret {
+                            value: Some(secret_value.clone()),
+                        },
+                    },
+                ],
+            )
+            .expect("update environment");
+
+        assert_eq!(
+            result.secret_persistence,
+            Some(SecretPersistence::SessionOnly)
+        );
+        let reference = match &result.snapshot.environment_variables[1].variable.value {
+            VariableValue::SecretReference(reference) => reference.clone(),
+            VariableValue::Plain(_) => panic!("secret must be represented by a reference"),
+        };
+        assert!(!format!("{:?}", result.snapshot).contains(&secret_value));
+        assert_eq!(
+            service.secrets.get(&reference).expect("resolve current session"),
+            secret_value
+        );
+        let current_session = service
+            .materialize_request_content(
+                workspace_id,
+                RequestContent {
+                    url: "https://example.test/{{token}}".to_owned(),
+                    ..RequestContent::blank()
+                },
+            )
+            .expect("resolve current-session secret");
+        assert_eq!(
+            current_session.url,
+            format!("https://example.test/{secret_value}")
+        );
+
+        let preserved = service
+            .update_environment(
+                workspace_id,
+                environment_id,
+                "Development",
+                vec![EnvironmentVariableDraft {
+                    previous_name: Some("token".to_owned()),
+                    name: "renamedToken".to_owned(),
+                    value: EnvironmentVariableDraftValue::Secret { value: None },
+                }],
+            )
+            .expect("preserve stored secret without returning plaintext");
+        assert!(matches!(
+            preserved.snapshot.environment_variables[0].variable.value,
+            VariableValue::SecretReference(ref preserved_reference)
+                if preserved_reference == &reference
+        ));
+
+        let restarted_secrets = crate::application::secrets::SessionSecretStore::new();
+        assert!(matches!(
+            restarted_secrets.get(&reference),
+            Err(crate::application::secrets::SecretError::NotFound)
+        ));
+        let restarted_repository = FakeRequestRepository {
+            snapshot: Some(preserved.snapshot.clone()),
+            ..Default::default()
+        };
+        let restarted = RequestService::new(
+            restarted_repository,
+            Arc::new(restarted_secrets),
+        );
+        assert!(matches!(
+            restarted.materialize_request_content(
+                workspace_id,
+                RequestContent {
+                    url: "https://example.test/{{renamedToken}}".to_owned(),
+                    ..RequestContent::blank()
+                },
+            ),
+            Err(RequestError::InvalidInput(detail))
+                if detail == "request.secret.unavailable"
+        ));
+        let disabled_secret = restarted
+            .materialize_request_content(
+                workspace_id,
+                RequestContent {
+                    url: "https://example.test/health".to_owned(),
+                    query: vec![OrderedField {
+                        enabled: false,
+                        order: 0,
+                        name: "token".to_owned(),
+                        value: "{{renamedToken}}".to_owned(),
+                    }],
+                    ..RequestContent::blank()
+                },
+            )
+            .expect("ignore unavailable Secret used only by a disabled field");
+        assert_eq!(disabled_secret.url, "https://example.test/health");
+        service
+            .delete_environment(workspace_id, environment_id)
+            .expect("delete environment");
+        assert!(matches!(
+            service.secrets.get(&reference),
+            Err(crate::application::secrets::SecretError::NotFound)
+        ));
     }
 
     #[test]

@@ -293,7 +293,7 @@ fn load_environment_variables(
             "SELECT environment_id, workspace_id, name, plain_value, secret_ref
              FROM environment_variables
              WHERE workspace_id = ?1
-             ORDER BY environment_id, name",
+             ORDER BY environment_id, position, name",
         )
         .map_err(RequestError::persistence)?;
     let variables = statement

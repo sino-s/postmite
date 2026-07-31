@@ -48,11 +48,13 @@ use crate::{
     },
     application::request::{
         CloseTabDecision, CollectionLocation, CookieJarSnapshot, ExecutionHistorySnapshot,
+        EnvironmentMutationResult, EnvironmentVariableDraft, EnvironmentVariableDraftValue,
         RequestError, RequestRepository, RequestService, RequestWorkspaceSnapshot, ResolvedField,
         ResolvedMultipartPart, ResolvedRequestBody, ResolvedRequestContent, ResolvedValue,
         ResolvedVariableReference, VariableResolutionError, VariableResolutionErrorKind,
         VariableSource, REDACTED_VALUE,
     },
+    application::secrets::SecretPersistence,
     application::workspace::{WorkspaceError, WorkspaceService, WorkspaceSnapshot},
     diagnostics::{
         DebugLoggingStatus, DiagnosticBundleExport, DiagnosticBundlePreview, DiagnosticsError,
@@ -88,6 +90,9 @@ pub const OPEN_UNSAVED_REQUEST_TAB_COMMAND: &str = "open_unsaved_request_tab";
 pub const CREATE_SAVED_REQUEST_COMMAND: &str = "create_saved_request";
 pub const CREATE_COLLECTION_FOLDER_COMMAND: &str = "create_collection_folder";
 pub const SELECT_ENVIRONMENT_COMMAND: &str = "select_environment";
+pub const CREATE_ENVIRONMENT_COMMAND: &str = "create_environment";
+pub const UPDATE_ENVIRONMENT_COMMAND: &str = "update_environment";
+pub const DELETE_ENVIRONMENT_COMMAND: &str = "delete_environment";
 pub const RESOLVE_REQUEST_CONTENT_COMMAND: &str = "resolve_request_content";
 pub const RENAME_COLLECTION_FOLDER_COMMAND: &str = "rename_collection_folder";
 pub const MOVE_COLLECTION_FOLDER_COMMAND: &str = "move_collection_folder";
@@ -929,6 +934,62 @@ pub struct CollectionLocationDto {
 pub struct SelectEnvironmentInput {
     pub workspace_id: String,
     pub environment_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateEnvironmentInput {
+    pub workspace_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentIdInput {
+    pub workspace_id: String,
+    pub environment_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateEnvironmentInput {
+    pub workspace_id: String,
+    pub environment_id: String,
+    pub name: String,
+    pub variables: Vec<EnvironmentVariableDraftDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentVariableDraftDto {
+    pub previous_name: Option<String>,
+    pub name: String,
+    pub value: EnvironmentVariableDraftValueDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum EnvironmentVariableDraftValueDto {
+    Plain { value: String },
+    Secret { value: Option<String> },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SecretPersistenceDto {
+    Native,
+    SessionOnly,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentMutationResultDto {
+    pub snapshot: RequestWorkspaceSnapshotDto,
+    pub secret_persistence: Option<SecretPersistenceDto>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]

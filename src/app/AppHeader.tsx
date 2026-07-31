@@ -1,4 +1,4 @@
-import { Bug, Folder, Menu, Plus, RefreshCw, RotateCcw } from "lucide-react";
+import { Bug, Folder, Menu, Plus, RefreshCw, RotateCcw, Settings2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { Button } from "../components/ui/button";
@@ -12,6 +12,7 @@ import {
 import { useI18n, type AppLocale } from "./i18n";
 import type { Density, RequestResponseSplit, Theme } from "./preferences";
 import { SplitToggle } from "../features/request-editor/controls/SplitToggle";
+import type { WorkspaceSummaryDto } from "../shared/api/generated/ipc";
 
 type AppHeaderProps = {
   checkingUpdates: boolean;
@@ -21,9 +22,11 @@ type AppHeaderProps = {
   newRequestPending: boolean;
   onCheckUpdates: () => void;
   onNewRequest: () => void;
+  onManageWorkspaces: () => void;
   onRelinkBodyFiles: () => void;
   onSetBaseDirectory: () => void;
   onToggleDiagnostics: () => void;
+  onSelectWorkspace: (workspaceId: string) => void;
   requestResponseSplit: RequestResponseSplit;
   setDensity: (density: Density) => void;
   setLocale: (locale: AppLocale) => void;
@@ -32,6 +35,8 @@ type AppHeaderProps = {
   theme: Theme;
   updateError: boolean;
   updateResult: { latestVersion: string; updateAvailable: boolean } | null;
+  selectedWorkspaceId: string;
+  workspaces: WorkspaceSummaryDto[];
 };
 
 export function AppHeader({
@@ -42,9 +47,11 @@ export function AppHeader({
   newRequestPending,
   onCheckUpdates,
   onNewRequest,
+  onManageWorkspaces,
   onRelinkBodyFiles,
   onSetBaseDirectory,
   onToggleDiagnostics,
+  onSelectWorkspace,
   requestResponseSplit,
   setDensity,
   setLocale,
@@ -53,6 +60,8 @@ export function AppHeader({
   theme,
   updateError,
   updateResult,
+  selectedWorkspaceId,
+  workspaces,
 }: AppHeaderProps) {
   const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -129,7 +138,30 @@ export function AppHeader({
           </div>
         ) : null}
       </div>
-      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+      <div className="flex min-w-0 flex-1 items-center gap-1 md:min-w-48 md:flex-none">
+        <NativeSelect
+          aria-label={t("workspace.current")}
+          onChange={(event) => onSelectWorkspace(event.currentTarget.value)}
+          value={selectedWorkspaceId}
+        >
+          {workspaces.map((workspace) => (
+            <option key={workspace.id} value={workspace.id}>
+              {workspace.name}
+            </option>
+          ))}
+        </NativeSelect>
+        <Button
+          aria-label={t("workspace.manage")}
+          onClick={onManageWorkspaces}
+          size="icon"
+          title={t("workspace.manage")}
+          type="button"
+          variant="outline"
+        >
+          <Settings2 aria-hidden="true" size={16} />
+        </Button>
+      </div>
+      <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 md:w-auto md:flex-1">
         <TooltipProvider delayDuration={0}>
           <SplitToggle setSplit={setRequestResponseSplit} split={requestResponseSplit} />
           <Tooltip>
