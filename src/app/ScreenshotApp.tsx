@@ -13,11 +13,14 @@ import { screenshotCookies, screenshotExecution, screenshotHistory, screenshotRe
 import { useMediaQuery } from "../features/request-editor/hooks/useMediaQuery";
 import { RequestEditorPanels } from "../features/request-editor/layout/RequestEditorPanels";
 import { RequestWorkspaceShell } from "../features/request-editor/layout/RequestWorkspaceShell";
+import { WorkspaceManagerDialog } from "../features/workspace/WorkspaceManagerDialog";
+import { EnvironmentManagerDialog } from "../features/environment/EnvironmentManagerDialog";
 import type { RequestContentDto } from "../shared/api/generated/ipc";
 
 type ScreenshotVariant = {
   curlConfirmation: boolean;
   density: "comfortable" | "compact";
+  manager: "workspace" | "environment" | null;
   requestResponseSplit: RequestResponseSplit;
   state: "workspace" | "empty";
   theme: "light" | "dark";
@@ -74,6 +77,7 @@ function ScreenshotWorkspace() {
       onMoveFolder={() => undefined}
       onMoveRequest={() => undefined}
       onOpenRequest={() => undefined}
+      onManageEnvironments={() => undefined}
       onRenameFolder={() => undefined}
       onSelectEnvironment={() => undefined}
       requests={screenshotSnapshot.savedRequests}
@@ -152,9 +156,11 @@ function ScreenshotWorkspace() {
         newRequestPending={false}
         onCheckUpdates={() => undefined}
         onNewRequest={() => undefined}
+        onManageWorkspaces={() => undefined}
         onRelinkBodyFiles={() => undefined}
         onSetBaseDirectory={() => undefined}
         onToggleDiagnostics={() => undefined}
+        onSelectWorkspace={() => undefined}
         requestResponseSplit={requestResponseSplit}
         setDensity={setDensity}
         setLocale={setLocale}
@@ -163,8 +169,68 @@ function ScreenshotWorkspace() {
         theme={theme}
         updateError={false}
         updateResult={null}
+        selectedWorkspaceId={screenshotSnapshot.workspaceId}
+        workspaces={[{
+          id: screenshotSnapshot.workspaceId,
+          name: "Personal",
+          isSelected: true,
+          baseDirectory: null,
+        }]}
       />
       <RequestWorkspaceShell editorPane={editorPane} sidebar={sidebar} />
+      <WorkspaceManagerDialog
+        onCreate={async () => undefined}
+        onDelete={async () => undefined}
+        onOpenChange={() => undefined}
+        onRename={async () => undefined}
+        onSelect={async () => undefined}
+        open={variant.manager === "workspace"}
+        selectedWorkspaceId={screenshotSnapshot.workspaceId}
+        workspaces={[
+          {
+            id: screenshotSnapshot.workspaceId,
+            name: "Personal",
+            isSelected: true,
+            baseDirectory: null,
+          },
+          {
+            id: "workspace-client",
+            name: "Client APIs",
+            isSelected: false,
+            baseDirectory: null,
+          },
+        ]}
+      />
+      <EnvironmentManagerDialog
+        environments={screenshotSnapshot.environments}
+        environmentVariables={[
+          {
+            environmentId: "environment-review",
+            workspaceId: screenshotSnapshot.workspaceId,
+            variable: {
+              name: "baseUrl",
+              value: { type: "PLAIN", value: "https://api.example.test" },
+            },
+          },
+          {
+            environmentId: "environment-review",
+            workspaceId: screenshotSnapshot.workspaceId,
+            variable: {
+              name: "token",
+              value: {
+                type: "SECRET_REFERENCE",
+                reference: "secret://postmite/screenshot-reference",
+              },
+            },
+          },
+        ]}
+        onCreate={async () => screenshotSnapshot}
+        onDelete={async () => screenshotSnapshot}
+        onOpenChange={() => undefined}
+        onSave={async () => ({ snapshot: screenshotSnapshot, secretPersistence: "NATIVE" })}
+        onSelect={async () => undefined}
+        open={variant.manager === "environment"}
+      />
     </main>
   );
 }
@@ -174,6 +240,10 @@ function readVariant(): ScreenshotVariant {
   return {
     curlConfirmation: params.get("curl") === "confirm",
     density: params.get("density") === "compact" ? "compact" : "comfortable",
+    manager:
+      params.get("manager") === "workspace" || params.get("manager") === "environment"
+        ? params.get("manager") as "workspace" | "environment"
+        : null,
     requestResponseSplit: params.get("split") === "vertical" ? "vertical" : "horizontal",
     state: params.get("state") === "empty" ? "empty" : "workspace",
     theme: params.get("theme") === "dark" ? "dark" : "light",
@@ -208,6 +278,7 @@ function EmptyWorkspace({ variant }: { variant: ScreenshotVariant }) {
       onMoveFolder={() => undefined}
       onMoveRequest={() => undefined}
       onOpenRequest={() => undefined}
+      onManageEnvironments={() => undefined}
       onRenameFolder={() => undefined}
       onSelectEnvironment={() => undefined}
       requests={[]}
@@ -242,9 +313,11 @@ function EmptyWorkspace({ variant }: { variant: ScreenshotVariant }) {
         newRequestPending={false}
         onCheckUpdates={() => undefined}
         onNewRequest={() => undefined}
+        onManageWorkspaces={() => undefined}
         onRelinkBodyFiles={() => undefined}
         onSetBaseDirectory={() => undefined}
         onToggleDiagnostics={() => undefined}
+        onSelectWorkspace={() => undefined}
         requestResponseSplit={requestResponseSplit}
         setDensity={setDensity}
         setLocale={setLocale}
@@ -253,6 +326,13 @@ function EmptyWorkspace({ variant }: { variant: ScreenshotVariant }) {
         theme={theme}
         updateError={false}
         updateResult={null}
+        selectedWorkspaceId="workspace-empty"
+        workspaces={[{
+          id: "workspace-empty",
+          name: "Personal",
+          isSelected: true,
+          baseDirectory: null,
+        }]}
       />
       <RequestWorkspaceShell editorPane={editorPane} sidebar={sidebar} />
     </main>

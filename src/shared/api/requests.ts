@@ -4,6 +4,7 @@ import type {
   CollectionFolderIdInput,
   CloseRequestTabInput,
   CreateCollectionFolderInput,
+  CreateEnvironmentInput,
   CreateSavedRequestInput,
   CookieIdInput,
   CurlGenerateInput,
@@ -11,6 +12,7 @@ import type {
   CookieJarSnapshotDto,
   DescribeBodyFileInput,
   ExecutionRecordIdInput,
+  EnvironmentIdInput,
   ExecutionHistorySnapshotDto,
   MoveCollectionFolderInput,
   MoveSavedRequestInput,
@@ -28,6 +30,7 @@ import type {
   SetExecutionHistoryDisabledInput,
   SetExecutionRecordPinnedInput,
   UpdateRequestDraftInput,
+  UpdateEnvironmentInput,
   UpsertCookieInput,
   WorkspaceIdInput,
 } from "./generated/ipc";
@@ -98,6 +101,40 @@ export async function selectEnvironment(
     queryClient,
     input.workspaceId,
     requestIpc.selectEnvironment(input),
+  );
+}
+
+export async function createEnvironment(
+  queryClient: QueryClient,
+  input: CreateEnvironmentInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.createEnvironment(input),
+  );
+}
+
+export async function updateEnvironment(
+  queryClient: QueryClient,
+  input: UpdateEnvironmentInput,
+) {
+  const result = await requestIpc.updateEnvironment(input);
+  queryClient.setQueryData(
+    requestWorkspaceQueryKey(input.workspaceId),
+    result.snapshot,
+  );
+  return result;
+}
+
+export async function deleteEnvironment(
+  queryClient: QueryClient,
+  input: EnvironmentIdInput,
+) {
+  return updateRequestWorkspaceSnapshot(
+    queryClient,
+    input.workspaceId,
+    requestIpc.deleteEnvironment(input),
   );
 }
 

@@ -93,6 +93,13 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
         CreateSavedRequestInput::export_to_string(&cfg)?,
         CollectionLocationDto::export_to_string(&cfg)?,
         SelectEnvironmentInput::export_to_string(&cfg)?,
+        CreateEnvironmentInput::export_to_string(&cfg)?,
+        EnvironmentIdInput::export_to_string(&cfg)?,
+        UpdateEnvironmentInput::export_to_string(&cfg)?,
+        EnvironmentVariableDraftDto::export_to_string(&cfg)?,
+        EnvironmentVariableDraftValueDto::export_to_string(&cfg)?,
+        SecretPersistenceDto::export_to_string(&cfg)?,
+        EnvironmentMutationResultDto::export_to_string(&cfg)?,
         ResolveRequestContentInput::export_to_string(&cfg)?,
         ResolvedRequestContentDto::export_to_string(&cfg)?,
         ResolvedFieldDto::export_to_string(&cfg)?,
@@ -190,6 +197,18 @@ pub fn render_contract() -> Result<String, ts_rs::ExportError> {
          \t};\n\
          \tselect_environment: {\n\
          \t\tinput: SelectEnvironmentInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tcreate_environment: {\n\
+         \t\tinput: CreateEnvironmentInput;\n\
+         \t\toutput: RequestWorkspaceSnapshotDto;\n\
+         \t};\n\
+         \tupdate_environment: {\n\
+         \t\tinput: UpdateEnvironmentInput;\n\
+         \t\toutput: EnvironmentMutationResultDto;\n\
+         \t};\n\
+         \tdelete_environment: {\n\
+         \t\tinput: EnvironmentIdInput;\n\
          \t\toutput: RequestWorkspaceSnapshotDto;\n\
          \t};\n\
          \tresolve_request_content: {\n\

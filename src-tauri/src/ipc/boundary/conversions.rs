@@ -277,6 +277,41 @@ impl From<EnvironmentVariable> for EnvironmentVariableDto {
     }
 }
 
+impl From<EnvironmentVariableDraftDto> for EnvironmentVariableDraft {
+    fn from(draft: EnvironmentVariableDraftDto) -> Self {
+        Self {
+            previous_name: draft.previous_name,
+            name: draft.name,
+            value: match draft.value {
+                EnvironmentVariableDraftValueDto::Plain { value } => {
+                    EnvironmentVariableDraftValue::Plain(value)
+                }
+                EnvironmentVariableDraftValueDto::Secret { value } => {
+                    EnvironmentVariableDraftValue::Secret { value }
+                }
+            },
+        }
+    }
+}
+
+impl From<SecretPersistence> for SecretPersistenceDto {
+    fn from(persistence: SecretPersistence) -> Self {
+        match persistence {
+            SecretPersistence::Native => Self::Native,
+            SecretPersistence::SessionOnly => Self::SessionOnly,
+        }
+    }
+}
+
+impl From<EnvironmentMutationResult> for EnvironmentMutationResultDto {
+    fn from(result: EnvironmentMutationResult) -> Self {
+        Self {
+            snapshot: RequestWorkspaceSnapshotDto::from(result.snapshot),
+            secret_persistence: result.secret_persistence.map(SecretPersistenceDto::from),
+        }
+    }
+}
+
 impl From<Variable> for VariableDto {
     fn from(variable: Variable) -> Self {
         Self {

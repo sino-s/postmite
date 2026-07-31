@@ -9,8 +9,10 @@ import type {
 const requestIpcMock = vi.hoisted(() => ({
   closeRequestTab: vi.fn(),
   createCollectionFolder: vi.fn(),
+  createEnvironment: vi.fn(),
   createSavedRequest: vi.fn(),
   deleteCollectionFolder: vi.fn(),
+  deleteEnvironment: vi.fn(),
   deleteSavedRequest: vi.fn(),
   duplicateCollectionFolder: vi.fn(),
   duplicateSavedRequest: vi.fn(),
@@ -32,6 +34,7 @@ const requestIpcMock = vi.hoisted(() => ({
   setExecutionHistoryDisabled: vi.fn(),
   setExecutionRecordPinned: vi.fn(),
   updateRequestDraft: vi.fn(),
+  updateEnvironment: vi.fn(),
 }));
 
 vi.mock("./ipc", () => ({
@@ -39,6 +42,8 @@ vi.mock("./ipc", () => ({
 }));
 
 import {
+  createEnvironment,
+  deleteEnvironment,
   executionHistoryQuery,
   executionHistoryQueryKey,
   generateCurl,
@@ -50,6 +55,7 @@ import {
   requestWorkspaceQueryKey,
   setExecutionHistoryDisabled,
   updateRequestDraft,
+  updateEnvironment,
 } from "./requests";
 
 describe("request query API", () => {
@@ -85,8 +91,59 @@ describe("request query API", () => {
     });
 
     expect(result).toBe(snapshot);
-    expect(queryClient.getQueryData(requestWorkspaceQueryKey("workspace-1"))).toBe(
+    expect(queryClient.getQueryData(requestWorkspaceQueryKey("workspace-1"))).toEqual(
       snapshot,
+    );
+  });
+
+  it("keeps Environment create, update, and delete results in the scoped cache", async () => {
+    const created = requestSnapshot("workspace-1");
+    const updated = {
+      ...requestSnapshot("workspace-1"),
+      environments: [
+        {
+          id: "environment-1",
+          workspaceId: "workspace-1",
+          name: "Development",
+          position: 0,
+          isSelected: true,
+        },
+      ],
+    };
+    requestIpcMock.createEnvironment.mockResolvedValue(created);
+    requestIpcMock.updateEnvironment.mockResolvedValue({
+      snapshot: updated,
+      secretPersistence: "SESSION_ONLY",
+    });
+    requestIpcMock.deleteEnvironment.mockResolvedValue(created);
+
+    await createEnvironment(queryClient, {
+      workspaceId: "workspace-1",
+      name: "Development",
+    });
+    const result = await updateEnvironment(queryClient, {
+      workspaceId: "workspace-1",
+      environmentId: "environment-1",
+      name: "Development",
+      variables: [
+        {
+          previousName: null,
+          name: "token",
+          value: { type: "SECRET", value: ["typed", "ipc", "value"].join("-") },
+        },
+      ],
+    });
+    expect(result.secretPersistence).toBe("SESSION_ONLY");
+    expect(queryClient.getQueryData(requestWorkspaceQueryKey("workspace-1"))).toEqual(
+      updated,
+    );
+
+    await deleteEnvironment(queryClient, {
+      workspaceId: "workspace-1",
+      environmentId: "environment-1",
+    });
+    expect(queryClient.getQueryData(requestWorkspaceQueryKey("workspace-1"))).toEqual(
+      created,
     );
   });
 

@@ -11,7 +11,7 @@ mod tests {
         application::workspace::WorkspaceRepository,
         domain::request::{
             CookieDraft, CookieSameSite, EnvironmentId, OrderedField, RequestBody, RequestContent,
-            RequestDraftId, VariableValue,
+            RequestDraftId, Variable, VariableValue,
         },
         domain::workspace::WorkspaceName,
     };
@@ -566,6 +566,61 @@ mod tests {
             )
             .expect("inspect protected value");
         assert_eq!(leaked, 0);
+    }
+
+    #[test]
+    fn environment_management_restores_selection_plain_values_and_order_after_restart() {
+        let db = NamedTempFile::new().expect("temporary database");
+        let (workspace_id, environment_id) = {
+            let mut repository = SqliteWorkspaceRepository::open(db.path()).expect("open database");
+            let workspace_id = repository
+                .initialize()
+                .expect("initialize")
+                .selected_workspace_id;
+            let created = repository
+                .create_environment(workspace_id, "Development".to_owned())
+                .expect("create environment");
+            let environment_id = created.environments[0].id;
+            let updated = repository
+                .update_environment(
+                    workspace_id,
+                    environment_id,
+                    "Local development".to_owned(),
+                    vec![
+                        Variable {
+                            name: "baseUrl".to_owned(),
+                            value: VariableValue::Plain("http://127.0.0.1:18080".to_owned()),
+                        },
+                        Variable {
+                            name: "region".to_owned(),
+                            value: VariableValue::Plain("local".to_owned()),
+                        },
+                    ],
+                )
+                .expect("update environment");
+            assert_eq!(updated.environment_variables[0].variable.name, "baseUrl");
+            assert_eq!(updated.environment_variables[1].variable.name, "region");
+            (workspace_id, environment_id)
+        };
+
+        let mut restarted = SqliteWorkspaceRepository::open(db.path()).expect("reopen database");
+        let snapshot = restarted
+            .list_request_workspace(workspace_id)
+            .expect("load restarted snapshot");
+        assert_eq!(snapshot.environments[0].name, "Local development");
+        assert!(snapshot.environments[0].is_selected);
+        assert_eq!(snapshot.environment_variables[0].variable.name, "baseUrl");
+        assert!(matches!(
+            snapshot.environment_variables[0].variable.value,
+            VariableValue::Plain(ref value) if value == "http://127.0.0.1:18080"
+        ));
+        assert_eq!(snapshot.environment_variables[1].variable.name, "region");
+
+        let deleted = restarted
+            .delete_environment(workspace_id, environment_id)
+            .expect("delete environment");
+        assert!(deleted.environments.is_empty());
+        assert!(deleted.environment_variables.is_empty());
     }
 
     #[test]

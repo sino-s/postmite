@@ -151,6 +151,58 @@ where
         .map_err(|error| BoundaryError::Request(error).into())
 }
 
+pub fn handle_create_environment<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: CreateEnvironmentInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    service
+        .create_environment(workspace_id, input.name)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_update_environment<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: UpdateEnvironmentInput,
+) -> Result<EnvironmentMutationResultDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let environment_id = parse_environment_id(&input.environment_id)?;
+    service
+        .update_environment(
+            workspace_id,
+            environment_id,
+            input.name,
+            input.variables
+                .into_iter()
+                .map(EnvironmentVariableDraft::from)
+                .collect(),
+        )
+        .map(EnvironmentMutationResultDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
+pub fn handle_delete_environment<R>(
+    mut service: MutexGuard<'_, RequestService<R>>,
+    input: EnvironmentIdInput,
+) -> Result<RequestWorkspaceSnapshotDto, IpcError>
+where
+    R: RequestRepository,
+{
+    let workspace_id = parse_workspace_id(&input.workspace_id)?;
+    let environment_id = parse_environment_id(&input.environment_id)?;
+    service
+        .delete_environment(workspace_id, environment_id)
+        .map(RequestWorkspaceSnapshotDto::from)
+        .map_err(|error| BoundaryError::Request(error).into())
+}
+
 pub fn handle_resolve_request_content<R>(
     service: MutexGuard<'_, RequestService<R>>,
     input: ResolveRequestContentInput,

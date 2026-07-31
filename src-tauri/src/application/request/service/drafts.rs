@@ -12,12 +12,14 @@ use crate::domain::{
         CookieDraft, CookieId, CookieSameSite, Environment, EnvironmentId, EnvironmentVariable,
         ExecutionRecord, ExecutionRecordId, ExecutionRecordResponse, MultipartPart, OrderedField,
         RequestAuth, RequestBody, RequestContent, RequestDraft, RequestDraftId, RequestTab,
-        RequestTabId, SavedRequest, SavedRequestId, VariableValue, WorkspaceCookie,
+        RequestTabId, SavedRequest, SavedRequestId, Variable, VariableValue, WorkspaceCookie,
     },
     workspace::WorkspaceId,
 };
 
-use crate::application::secrets::{SecretClass, SecretOwner, SecretStore};
+use crate::application::secrets::{
+    SecretClass, SecretOwner, SecretPersistence, SecretStore,
+};
 
 pub const EXECUTION_HISTORY_RETENTION_DAYS: i64 = 30;
 pub const EXECUTION_HISTORY_RETENTION_LIMIT: usize = 1_000;
@@ -33,6 +35,45 @@ pub struct RequestWorkspaceSnapshot {
     pub saved_requests: Vec<SavedRequest>,
     pub drafts: Vec<RequestDraft>,
     pub tabs: Vec<RequestTab>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnvironmentVariableDraft {
+    pub previous_name: Option<String>,
+    pub name: String,
+    pub value: EnvironmentVariableDraftValue,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EnvironmentVariableDraftValue {
+    Plain(String),
+    Secret { value: Option<String> },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnvironmentMutationResult {
+    pub snapshot: RequestWorkspaceSnapshot,
+    pub secret_persistence: Option<SecretPersistence>,
+}
+
+fn cleanup_secret_references(secrets: &dyn SecretStore, references: &[String]) {
+    for reference in references {
+        let _ = secrets.delete(reference);
+    }
+}
+
+fn execution_active_content(content: &RequestContent) -> RequestContent {
+    let mut active = content.clone();
+    active.query.retain(|field| field.enabled);
+    active.headers.retain(|field| field.enabled);
+    match &mut active.body {
+        RequestBody::UrlEncoded { fields } => fields.retain(|field| field.enabled),
+        RequestBody::Multipart { parts } => parts.retain(|part| match part {
+            MultipartPart::Field { enabled, .. } | MultipartPart::File { enabled, .. } => *enabled,
+        }),
+        RequestBody::None | RequestBody::Raw { .. } | RequestBody::Binary { .. } => {}
+    }
+    active
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -106,6 +147,23 @@ pub trait RequestRepository {
         &mut self,
         workspace_id: WorkspaceId,
         environment_id: Option<EnvironmentId>,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn create_environment(
+        &mut self,
+        workspace_id: WorkspaceId,
+        name: String,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn update_environment(
+        &mut self,
+        workspace_id: WorkspaceId,
+        environment_id: EnvironmentId,
+        name: String,
+        variables: Vec<Variable>,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError>;
+    fn delete_environment(
+        &mut self,
+        workspace_id: WorkspaceId,
+        environment_id: EnvironmentId,
     ) -> Result<RequestWorkspaceSnapshot, RequestError>;
     fn rename_collection_folder(
         &mut self,
@@ -296,6 +354,168 @@ where
             .select_environment(workspace_id, environment_id)
     }
 
+    pub fn create_environment(
+        &mut self,
+        workspace_id: WorkspaceId,
+        name: impl Into<String>,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        self.repository.create_environment(workspace_id, name.into())
+    }
+
+    pub fn update_environment(
+        &mut self,
+        workspace_id: WorkspaceId,
+        environment_id: EnvironmentId,
+        name: impl Into<String>,
+        drafts: Vec<EnvironmentVariableDraft>,
+    ) -> Result<EnvironmentMutationResult, RequestError> {
+        let current = self.repository.list_request_workspace(workspace_id)?;
+        if !current
+            .environments
+            .iter()
+            .any(|environment| environment.id == environment_id)
+        {
+            return Err(RequestError::NotFound);
+        }
+
+        let current_variables = current
+            .environment_variables
+            .iter()
+            .filter(|variable| variable.environment_id == environment_id)
+            .map(|variable| (variable.variable.name.clone(), variable.variable.value.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut names = std::collections::HashSet::new();
+        let mut created_references = Vec::new();
+        let mut retained_references = std::collections::HashSet::new();
+        let mut secret_persistence = None;
+        let mut variables = Vec::with_capacity(drafts.len());
+
+        for draft in drafts {
+            let variable_name = draft.name.trim();
+            if variable_name.is_empty()
+                || variable_name.chars().count() > 256
+                || variable_name.chars().any(char::is_control)
+            {
+                cleanup_secret_references(self.secrets.as_ref(), &created_references);
+                return Err(RequestError::InvalidInput(
+                    "environment.variable.name.invalid".to_owned(),
+                ));
+            }
+            if !names.insert(variable_name.to_owned()) {
+                cleanup_secret_references(self.secrets.as_ref(), &created_references);
+                return Err(RequestError::InvalidInput(
+                    "environment.variable.name.duplicate".to_owned(),
+                ));
+            }
+
+            let value = match draft.value {
+                EnvironmentVariableDraftValue::Plain(value) => VariableValue::Plain(value),
+                EnvironmentVariableDraftValue::Secret { value: Some(value) } => {
+                    let write = self
+                        .secrets
+                        .put(
+                            &SecretOwner::new(
+                                workspace_id,
+                                SecretClass::ProtectedVariable,
+                                format!("environment:{environment_id}:{variable_name}"),
+                            ),
+                            &value,
+                        )
+                        .map_err(|error| {
+                            cleanup_secret_references(
+                                self.secrets.as_ref(),
+                                &created_references,
+                            );
+                            RequestError::Persistence(error.to_string())
+                        })?;
+                    secret_persistence = Some(match (secret_persistence, write.persistence) {
+                        (Some(SecretPersistence::SessionOnly), _) => {
+                            SecretPersistence::SessionOnly
+                        }
+                        (_, persistence) => persistence,
+                    });
+                    created_references.push(write.reference.clone());
+                    retained_references.insert(write.reference.clone());
+                    VariableValue::SecretReference(write.reference)
+                }
+                EnvironmentVariableDraftValue::Secret { value: None } => {
+                    let previous_name = draft.previous_name.as_deref().ok_or_else(|| {
+                        cleanup_secret_references(self.secrets.as_ref(), &created_references);
+                        RequestError::InvalidInput(
+                            "environment.variable.secret.required".to_owned(),
+                        )
+                    })?;
+                    let reference = match current_variables.get(previous_name) {
+                        Some(VariableValue::SecretReference(reference)) => reference.clone(),
+                        _ => {
+                            cleanup_secret_references(
+                                self.secrets.as_ref(),
+                                &created_references,
+                            );
+                            return Err(RequestError::InvalidInput(
+                                "environment.variable.secret.required".to_owned(),
+                            ));
+                        }
+                    };
+                    retained_references.insert(reference.clone());
+                    VariableValue::SecretReference(reference)
+                }
+            };
+            variables.push(Variable {
+                name: variable_name.to_owned(),
+                value,
+            });
+        }
+
+        let snapshot = match self.repository.update_environment(
+            workspace_id,
+            environment_id,
+            name.into(),
+            variables,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                cleanup_secret_references(self.secrets.as_ref(), &created_references);
+                return Err(error);
+            }
+        };
+
+        for value in current_variables.values() {
+            if let VariableValue::SecretReference(reference) = value {
+                if !retained_references.contains(reference) {
+                    let _ = self.secrets.delete(reference);
+                }
+            }
+        }
+
+        Ok(EnvironmentMutationResult {
+            snapshot,
+            secret_persistence,
+        })
+    }
+
+    pub fn delete_environment(
+        &mut self,
+        workspace_id: WorkspaceId,
+        environment_id: EnvironmentId,
+    ) -> Result<RequestWorkspaceSnapshot, RequestError> {
+        let current = self.repository.list_request_workspace(workspace_id)?;
+        let references = current
+            .environment_variables
+            .iter()
+            .filter(|variable| variable.environment_id == environment_id)
+            .filter_map(|variable| match &variable.variable.value {
+                VariableValue::SecretReference(reference) => Some(reference.clone()),
+                VariableValue::Plain(_) => None,
+            })
+            .collect::<Vec<_>>();
+        let snapshot = self
+            .repository
+            .delete_environment(workspace_id, environment_id)?;
+        cleanup_secret_references(self.secrets.as_ref(), &references);
+        Ok(snapshot)
+    }
+
     pub fn resolve_request_content(
         &self,
         workspace_id: WorkspaceId,
@@ -311,11 +531,37 @@ where
         content: RequestContent,
     ) -> Result<RequestContent, RequestError> {
         let snapshot = self.repository.list_request_workspace(workspace_id)?;
-        Ok(materialize_request_auth_with_secret_resolver(
+        let active_references = std::cell::RefCell::new(std::collections::HashSet::new());
+        let _ = materialize_request_auth_with_secret_resolver(
+            &snapshot,
+            execution_active_content(&content),
+            &|reference| {
+                active_references.borrow_mut().insert(reference.to_owned());
+                Some(REDACTED_VALUE.to_owned())
+            },
+        );
+        let missing_secret = std::cell::Cell::new(false);
+        let tracked_secret_resolver = |reference: &str| {
+            if !active_references.borrow().contains(reference) {
+                return Some(REDACTED_VALUE.to_owned());
+            }
+            let value = self.secrets.get(reference).ok();
+            if value.is_none() {
+                missing_secret.set(true);
+            }
+            value
+        };
+        let materialized = materialize_request_auth_with_secret_resolver(
             &snapshot,
             content,
-            &|reference| self.secrets.get(reference).ok(),
-        ))
+            &tracked_secret_resolver,
+        );
+        if missing_secret.get() {
+            return Err(RequestError::InvalidInput(
+                "request.secret.unavailable".to_owned(),
+            ));
+        }
+        Ok(materialized)
     }
 
     pub fn materialize_request_content_for_curl(

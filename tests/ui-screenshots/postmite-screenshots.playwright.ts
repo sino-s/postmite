@@ -158,6 +158,39 @@ test("captures request workspace screenshots", async ({ page }, testInfo) => {
       path: `${outputDir}/${variant}-menu.png`,
     });
 
+    await page.goto(`/?theme=${theme}&density=${density}&manager=workspace`);
+    const workspaceDialog = page.getByRole("dialog", {
+      name: "Workspace management",
+    });
+    await expect(workspaceDialog).toBeVisible();
+    await workspaceDialog.locator("#managed-workspace").focus();
+    await workspaceDialog.locator("#managed-workspace").press("Tab");
+    await expect(
+      workspaceDialog.getByLabel("Rename selected workspace"),
+    ).toBeFocused();
+    await page.screenshot({
+      animations: "disabled",
+      path: `${outputDir}/${variant}-workspace-management.png`,
+    });
+
+    await page.goto(`/?theme=${theme}&density=${density}&manager=environment`);
+    const environmentDialog = page.getByRole("dialog", {
+      name: "Environment management",
+    });
+    await expect(environmentDialog).toBeVisible();
+    await expect(environmentDialog.getByLabel("Variable value 2")).toHaveAttribute(
+      "type",
+      "password",
+    );
+    await expect(environmentDialog.getByLabel("Variable value 2")).toHaveValue("");
+    await environmentDialog.getByLabel("Variable name 1").focus();
+    await environmentDialog.getByLabel("Variable name 1").press("Tab");
+    await expect(environmentDialog.getByLabel("Variable type 1")).toBeFocused();
+    await page.screenshot({
+      animations: "disabled",
+      path: `${outputDir}/${variant}-environment-management.png`,
+    });
+
     await page.goto(`/?theme=${theme}&density=${density}&split=vertical`);
     await expect(page.getByRole("button", { name: "Place request options beside response" })).toHaveAttribute("aria-pressed", "true");
     await page.screenshot({

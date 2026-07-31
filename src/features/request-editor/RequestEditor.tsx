@@ -7,10 +7,12 @@ import { Button } from "../../components/ui/button";
 import {
   closeRequestTab,
   createCollectionFolder,
+  createEnvironment,
   clearCookies,
   cookieJarQuery,
   deleteCollectionFolder,
   deleteCookie,
+  deleteEnvironment,
   deleteSavedRequest,
   duplicateCollectionFolder,
   duplicateSavedRequest,
@@ -33,6 +35,7 @@ import {
   setExecutionRecordPinned,
   upsertCookie,
   updateRequestDraft,
+  updateEnvironment,
 } from "../../shared/api/requests";
 import {
   applyResponseExecutionEvents,
@@ -47,6 +50,10 @@ import {
 } from "../../shared/api/execution";
 import { writeClipboardText } from "../../shared/api/clipboard";
 import {
+  createWorkspace,
+  deleteWorkspace,
+  renameWorkspace,
+  switchWorkspace,
   workspaceQuery,
   workspaceQueryKey,
   setWorkspaceBaseDirectory,
@@ -65,6 +72,7 @@ import type {
   ResolvedRequestContentDto,
   SavedRequestDto,
   RequestTabDto,
+  EnvironmentVariableDraftDto,
 } from "../../shared/api/generated/ipc";
 import { RequestLine } from "./controls/RequestLine";
 import {
@@ -76,6 +84,8 @@ import { useMediaQuery } from "./hooks/useMediaQuery";
 import { RequestEditorPanels } from "./layout/RequestEditorPanels";
 import { RequestWorkspaceShell } from "./layout/RequestWorkspaceShell";
 import { CollectionsSidebar } from "./panels/CollectionsSidebar";
+import { WorkspaceManagerDialog } from "../workspace/WorkspaceManagerDialog";
+import { EnvironmentManagerDialog } from "../environment/EnvironmentManagerDialog";
 import { DiagnosticsPanel } from "./panels/DiagnosticsPanel";
 import { useI18n } from "../../app/i18n";
 import { usePreferences } from "../../app/preferences";
@@ -146,6 +156,8 @@ export function RequestEditor({
     "pending" | "ready" | "failed"
   >("pending");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
+  const [environmentManagerOpen, setEnvironmentManagerOpen] = useState(false);
   const [curlCopyFeedback, setCurlCopyFeedback] =
     useState<CurlCopyFeedback>(null);
   const [curlCopyPending, setCurlCopyPending] = useState(false);
@@ -478,6 +490,58 @@ export function RequestEditor({
     invalidateCurlCopyContext();
     await selectEnvironment(queryClient, {
       workspaceId: selectedWorkspaceId,
+      environmentId,
+    });
+  }
+
+  async function handleSwitchWorkspace(workspaceId: string) {
+    if (workspaceId === selectedWorkspaceId) return;
+    invalidateCurlCopyContext();
+    setActiveTabId(null);
+    await switchWorkspace(queryClient, { workspaceId });
+  }
+
+  async function handleCreateWorkspace(name: string) {
+    invalidateCurlCopyContext();
+    setActiveTabId(null);
+    await createWorkspace(queryClient, { name });
+    setWorkspaceManagerOpen(false);
+  }
+
+  async function handleRenameWorkspace(workspaceId: string, name: string) {
+    await renameWorkspace(queryClient, { workspaceId, name });
+  }
+
+  async function handleDeleteWorkspace(workspaceId: string) {
+    invalidateCurlCopyContext();
+    setActiveTabId(null);
+    await deleteWorkspace(queryClient, { workspaceId });
+    setWorkspaceManagerOpen(false);
+  }
+
+  async function handleCreateEnvironment(name: string) {
+    invalidateCurlCopyContext();
+    return createEnvironment(queryClient, { workspaceId: selectedWorkspaceId!, name });
+  }
+
+  async function handleUpdateEnvironment(
+    environmentId: string,
+    name: string,
+    variables: EnvironmentVariableDraftDto[],
+  ) {
+    invalidateCurlCopyContext();
+    return updateEnvironment(queryClient, {
+      workspaceId: selectedWorkspaceId!,
+      environmentId,
+      name,
+      variables,
+    });
+  }
+
+  async function handleDeleteEnvironment(environmentId: string) {
+    invalidateCurlCopyContext();
+    return deleteEnvironment(queryClient, {
+      workspaceId: selectedWorkspaceId!,
       environmentId,
     });
   }
@@ -911,6 +975,7 @@ export function RequestEditor({
         void handleMoveSavedRequest(request, location)
       }
       onOpenRequest={(request) => void handleOpenSavedRequest(request)}
+      onManageEnvironments={() => setEnvironmentManagerOpen(true)}
       onRenameFolder={(folder) => void handleRenameCollectionFolder(folder)}
       onSelectEnvironment={(environmentId) =>
         void handleSelectEnvironment(environmentId)
@@ -1017,9 +1082,11 @@ export function RequestEditor({
         newRequestPending={openTabMutation.isPending}
         onCheckUpdates={() => updateCheckMutation.mutate()}
         onNewRequest={() => openTabMutation.mutate()}
+        onManageWorkspaces={() => setWorkspaceManagerOpen(true)}
         onRelinkBodyFiles={() => void handleRelinkBodyFiles()}
         onSetBaseDirectory={() => void handleSetBaseDirectory()}
         onToggleDiagnostics={() => setDiagnosticsOpen((open) => !open)}
+        onSelectWorkspace={(workspaceId) => void handleSwitchWorkspace(workspaceId)}
         requestResponseSplit={requestResponseSplit}
         setDensity={setDensity}
         setLocale={setLocale}
@@ -1028,12 +1095,34 @@ export function RequestEditor({
         theme={theme}
         updateError={updateCheckMutation.isError}
         updateResult={updateCheckMutation.isSuccess ? updateCheckMutation.data : null}
+        selectedWorkspaceId={selectedWorkspaceId}
+        workspaces={workspaces.data?.workspaces ?? []}
       />
       <div className="relative">
         {diagnosticsOpen ? <DiagnosticsPanel onClose={() => setDiagnosticsOpen(false)} /> : null}
       </div>
 
       <RequestWorkspaceShell editorPane={editorPane} sidebar={sidebar} />
+      <WorkspaceManagerDialog
+        onCreate={handleCreateWorkspace}
+        onDelete={handleDeleteWorkspace}
+        onOpenChange={setWorkspaceManagerOpen}
+        onRename={handleRenameWorkspace}
+        onSelect={handleSwitchWorkspace}
+        open={workspaceManagerOpen}
+        selectedWorkspaceId={selectedWorkspaceId}
+        workspaces={workspaces.data?.workspaces ?? []}
+      />
+      <EnvironmentManagerDialog
+        environments={snapshot?.environments ?? []}
+        environmentVariables={snapshot?.environmentVariables ?? []}
+        onCreate={handleCreateEnvironment}
+        onDelete={handleDeleteEnvironment}
+        onOpenChange={setEnvironmentManagerOpen}
+        onSave={handleUpdateEnvironment}
+        onSelect={handleSelectEnvironment}
+        open={environmentManagerOpen}
+      />
     </main>
   );
 }

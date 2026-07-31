@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Copy, Edit3, FileText, Folder, FolderPlus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Copy, Edit3, FileText, Folder, FolderPlus, Settings2, Trash2 } from "lucide-react";
 
 import { Button } from "../../../components/ui/button";
 import { NativeSelect } from "../../../components/ui/native-select";
@@ -23,6 +23,7 @@ type CollectionsSidebarProps = {
     location: { collectionId: string | null; position: number },
   ) => void;
   onOpenRequest: (request: SavedRequestDto) => void;
+  onManageEnvironments: () => void;
   onRenameFolder: (folder: CollectionFolderDto) => void;
   onSelectEnvironment: (environmentId: string | null) => void;
   requests: SavedRequestDto[];
@@ -53,6 +54,7 @@ export function CollectionsSidebar({
   onMoveFolder,
   onMoveRequest,
   onOpenRequest,
+  onManageEnvironments,
   onRenameFolder,
   onSelectEnvironment,
   requests,
@@ -113,23 +115,35 @@ export function CollectionsSidebar({
         <label className="mb-1 block text-xs font-semibold text-slate-600" htmlFor="environment-select">
           {t("collections.environment")}
         </label>
-        <NativeSelect
-          id="environment-select"
-          onChange={(event) =>
-            onSelectEnvironment(event.currentTarget.value || null)
-          }
-          value={environments.find((environment) => environment.isSelected)?.id ?? ""}
-        >
-          <option value="">{t("collections.noEnvironment")}</option>
-          {environments
-            .slice()
-            .sort(compareTreeItems)
-            .map((environment) => (
-              <option key={environment.id} value={environment.id}>
-                {environment.name}
-              </option>
-            ))}
-        </NativeSelect>
+        <div className="flex gap-1">
+          <NativeSelect
+            id="environment-select"
+            onChange={(event) =>
+              onSelectEnvironment(event.currentTarget.value || null)
+            }
+            value={environments.find((environment) => environment.isSelected)?.id ?? ""}
+          >
+            <option value="">{t("collections.noEnvironment")}</option>
+            {environments
+              .slice()
+              .sort(compareTreeItems)
+              .map((environment) => (
+                <option key={environment.id} value={environment.id}>
+                  {environment.name}
+                </option>
+              ))}
+          </NativeSelect>
+          <Button
+            aria-label={t("environment.manage")}
+            onClick={onManageEnvironments}
+            size="icon"
+            title={t("environment.manage")}
+            type="button"
+            variant="outline"
+          >
+            <Settings2 aria-hidden="true" size={16} />
+          </Button>
+        </div>
       </div>
       <ScrollArea
         aria-label={t("collections.tree")}

@@ -366,6 +366,24 @@ ALTER TABLE postman_import_records ADD COLUMN collection_ids_json TEXT NOT NULL 
 ALTER TABLE postman_import_records ADD COLUMN environment_ids_json TEXT NOT NULL DEFAULT '[]';
 "#,
     },
+    Migration {
+        version: 14,
+        name: "order_environment_variables",
+        sql: r#"
+ALTER TABLE environment_variables ADD COLUMN position INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0);
+
+UPDATE environment_variables AS variable
+SET position = (
+    SELECT COUNT(*)
+    FROM environment_variables AS prior
+    WHERE prior.environment_id = variable.environment_id
+      AND prior.name < variable.name
+);
+
+CREATE INDEX environment_variables_environment_position
+    ON environment_variables(workspace_id, environment_id, position, name);
+"#,
+    },
 ];
 
 #[derive(Clone, Copy)]

@@ -378,16 +378,26 @@ fn insert_backup_environment_variable(
     variable: EnvironmentVariable,
 ) -> Result<(), NativeBackupError> {
     let (plain_value, secret_ref) = variable_value_columns(&variable.variable.value);
+    let position: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0)
+             FROM environment_variables
+             WHERE workspace_id = ?1 AND environment_id = ?2",
+            params![workspace_id.to_string(), environment_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(native_backup_sqlite_error)?;
     tx.execute(
         "INSERT INTO environment_variables
-            (environment_id, workspace_id, name, plain_value, secret_ref)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+            (environment_id, workspace_id, name, plain_value, secret_ref, position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             environment_id.to_string(),
             workspace_id.to_string(),
             variable.variable.name,
             plain_value,
             secret_ref,
+            position,
         ],
     )
     .map_err(native_backup_sqlite_error)?;
