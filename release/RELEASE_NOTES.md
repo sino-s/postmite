@@ -1,10 +1,21 @@
-# Postmite 0.1.0
+# Postmite 0.1.1
+
+v0.1.1 is a corrective release that supersedes v0.1.0 without moving its tag
+or replacing its published assets. It adds shipped UI flows to create, select,
+rename, and delete local workspaces and to create, select, edit, order, and
+delete Environment variables.
+
+Plain Environment values persist in the local workspace database. Secret
+values remain references to the Linux Secret Service, with an explicitly
+reported session-only fallback when protected storage is unavailable. An
+unavailable Secret reference is rejected before network execution and is never
+silently sent as a placeholder.
 
 ## Ubuntu 24.04 x86_64
 
-- `postmite_0.1.0_amd64.deb` installs the package.
-- `Postmite_0.1.0_amd64.AppImage` runs without installation after it is made executable.
-- These Ubuntu preview packages are unsigned; package signing is not included in v0.1.0.
+- `Postmite_0.1.1_amd64.deb` installs the package.
+- `Postmite_0.1.1_amd64.AppImage` runs without installation after it is made executable.
+- These Ubuntu preview packages are unsigned; package signing is not included in v0.1.1.
 - Verify the SHA-256 checksum before installing or running either artifact.
 - The AppImage contains Ubuntu's WebKit runtime closure under `usr/lib`; `APPIMAGE_BUDGET.json` records that excluded runtime size and the compressed Postmite payload used for the 30-MiB budget.
 

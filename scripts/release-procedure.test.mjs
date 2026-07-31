@@ -20,14 +20,24 @@ const releaseNotes = readFileSync(
   resolve(process.cwd(), "release/RELEASE_NOTES.md"),
   "utf8",
 );
+const ciWorkflow = readFileSync(
+  resolve(process.cwd(), ".github/workflows/ci.yml"),
+  "utf8",
+);
 
 describe("tracked release procedure", () => {
   it("binds publication to the exact reviewed commit and immutable tag", () => {
+    expect(packageManifest.version).toBe("0.1.1");
     expect(procedure).toContain("RELEASE_COMMIT=$(git rev-parse origin/main)");
     expect(procedure).toContain('--commit "$RELEASE_COMMIT"');
     expect(procedure).toContain('git tag --annotate "$RELEASE_TAG" "$RELEASE_COMMIT"');
     expect(procedure).toContain('git push origin "refs/tags/$RELEASE_TAG"');
     expect(procedure).toContain("Treat a pushed release tag as immutable.");
+    expect(procedure).toContain('PREVIOUS_RELEASE_TAG="v0.1.0"');
+    expect(procedure).toContain('test "$RELEASE_TAG" = "v0.1.1"');
+    expect(procedure).toContain('gh release view "$PREVIOUS_RELEASE_TAG"');
+    expect(procedure).toContain('! gh release view "$RELEASE_TAG"');
+    expect(procedure).toContain("this procedure never moves, deletes, or replaces v0.1.0");
     expect(procedure).toContain("--verify-tag");
     expect(tauriConfig.version).toBe(packageManifest.version);
     expect(cargoManifest).toMatch(
@@ -61,13 +71,18 @@ describe("tracked release procedure", () => {
     expect(procedure).toContain('gh run download "$TAG_RUN_ID"');
     expect(procedure).toContain('gh release download "$RELEASE_TAG"');
     expect(procedure).toContain("sha256sum --check SHA256SUMS");
+    expect(procedure).toContain('.version == "0.1.1"');
+    expect(ciWorkflow).toContain('id: release-version');
+    expect(ciWorkflow).toContain('artifacts/release/v${{ steps.release-version.outputs.value }}/linux-x86_64');
+    expect(ciWorkflow).not.toContain("artifacts/release/v0.1.0/linux-x86_64");
   });
 
   it("keeps publication explicit and bounded to the Ubuntu preview", () => {
     expect(procedure).toContain("Only `sino-s`");
     expect(procedure).toContain("unsigned Debian package and an unsigned AppImage");
     expect(releaseNotes).toContain("These Ubuntu preview packages are unsigned");
-    expect(releaseNotes).toContain("package signing is not included in v0.1.0");
+    expect(releaseNotes).toContain("package signing is not included in v0.1.1");
+    expect(releaseNotes).toContain("supersedes v0.1.0");
     expect(procedure).toContain("Ubuntu 24.04 x86_64");
     expect(procedure).toContain("POSTMITE_SESSION_ONLY_SECRETS");
     expect(procedure).toContain("Check for updates");
