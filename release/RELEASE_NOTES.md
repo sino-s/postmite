@@ -4,6 +4,7 @@
 
 - `postmite_0.1.0_amd64.deb` installs the package.
 - `Postmite_0.1.0_amd64.AppImage` runs without installation after it is made executable.
+- These Ubuntu preview packages are unsigned; package signing is not included in v0.1.0.
 - Verify the SHA-256 checksum before installing or running either artifact.
 - The AppImage contains Ubuntu's WebKit runtime closure under `usr/lib`; `APPIMAGE_BUDGET.json` records that excluded runtime size and the compressed Postmite payload used for the 30-MiB budget.
 
