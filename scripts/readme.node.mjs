@@ -19,15 +19,20 @@ const secretApplication = readFileSync(join(repoRoot, "src-tauri/src/application
 const workspaceDomain = readFileSync(join(repoRoot, "src-tauri/src/domain/workspace.rs"), "utf8");
 
 test("README describes the supported release artifacts and commands", () => {
+  const releaseVersion = packageJson.version.replaceAll(".", "\\.");
+  assert.equal(packageJson.version, "0.1.1");
   assert.doesNotMatch(readme, /実装開始前/);
   assert.match(readme, /Ubuntu 24\.04 LTS x86_64/);
-  assert.match(readme, /postmite_0\.1\.0_amd64\.deb/);
-  assert.match(readme, /Postmite_0\.1\.0_amd64\.AppImage/);
+  assert.match(readme, new RegExp(`Postmite_${releaseVersion}_amd64\\.deb`));
+  assert.match(readme, new RegExp(`Postmite_${releaseVersion}_amd64\\.AppImage`));
   assert.match(readme, /sha256sum --check SHA256SUMS/);
-  assert.match(readme, /sudo apt install \.\/postmite_0\.1\.0_amd64\.deb/);
-  assert.match(readme, /chmod \+x \.\/Postmite_0\.1\.0_amd64\.AppImage/);
-  assert.match(releaseNotes, /postmite_0\.1\.0_amd64\.deb/);
-  assert.match(releaseNotes, /Postmite_0\.1\.0_amd64\.AppImage/);
+  assert.match(readme, new RegExp(`sudo apt install \\./Postmite_${releaseVersion}_amd64\\.deb`));
+  assert.match(readme, new RegExp(`chmod \\+x \\./Postmite_${releaseVersion}_amd64\\.AppImage`));
+  assert.match(releaseNotes, new RegExp(`Postmite_${releaseVersion}_amd64\\.deb`));
+  assert.match(releaseNotes, new RegExp(`Postmite_${releaseVersion}_amd64\\.AppImage`));
+  assert.match(readme, /v0\.1\.1は、公開済みのv0\.1\.0を変更せず/);
+  assert.match(releaseNotes, /supersedes v0\.1\.0 without moving its tag/);
+  assert.doesNotMatch(readme, /Postmite_0\.1\.0_amd64/);
   assert.deepEqual(tauriConfig.bundle.targets, ["deb", "appimage"]);
 });
 

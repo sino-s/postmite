@@ -22,7 +22,7 @@ function inspectWithPermissions(t, permissions) {
 test("release candidate remains an unpublished Ubuntu preview with bounded native capabilities", (t) => {
   const evidence = inspectWithPermissions(t, canonicalPermissions);
   assert.deepEqual(inspectReleaseCandidate(), {
-    version: "0.1.0",
+    version: "0.1.1",
     productName: "Postmite",
     packageIdentifier: "io.github.sino-s.postmite",
     publisher: "sino-s",

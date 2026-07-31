@@ -2,8 +2,9 @@
 
 Postmiteは、個人のAPI開発作業を端末内で完結させる、Tauri製のデスクトップAPIクライアントです。
 
-v0.1.0はUbuntu 24.04 LTS x86_64向けのプレビューです。
+v0.1.1はUbuntu 24.04 LTS x86_64向けのプレビューです。
 ローカルワークスペースを中心に、HTTPリクエストの作成と実行、Collection、Environment、実行記録を一つのアプリで扱えます。
+v0.1.1は、公開済みのv0.1.0を変更せず、ワークスペースとEnvironmentの管理機能を追加した修正版です。
 
 ## 主な機能
 
@@ -15,15 +16,15 @@ v0.1.0はUbuntu 24.04 LTS x86_64向けのプレビューです。
 - Postman Collection v2.1とcURLのImport、Postman形式のExport、ネイティブバックアップと復元
 - 診断BundleのExport、SQLite破損時の復旧支援、日本語と英語の表示
 
-アカウント、クラウド同期、チーム共有、GraphQL、WebSocket、pre-request script、test script、OpenAPIはv0.1.0の対象外です。
-WindowsとmacOSもv0.1.0のサポート対象ではありません。
+アカウント、クラウド同期、チーム共有、GraphQL、WebSocket、pre-request script、test script、OpenAPIはv0.1.1の対象外です。
+WindowsとmacOSもv0.1.1のサポート対象ではありません。
 
 ## インストール
 
 [GitHub Releases](https://github.com/sino-s/postmite/releases)から、次の3ファイルを同じディレクトリへダウンロードしてください。
 
-- `postmite_0.1.0_amd64.deb`
-- `Postmite_0.1.0_amd64.AppImage`
+- `Postmite_0.1.1_amd64.deb`
+- `Postmite_0.1.1_amd64.AppImage`
 - `SHA256SUMS`
 
 配布する`.deb`とAppImageには署名がありません。
@@ -38,7 +39,7 @@ sha256sum --check SHA256SUMS
 ### Debian package
 
 ```bash
-sudo apt install ./postmite_0.1.0_amd64.deb
+sudo apt install ./Postmite_0.1.1_amd64.deb
 postmite
 ```
 
@@ -47,8 +48,8 @@ postmite
 ### AppImage
 
 ```bash
-chmod +x ./Postmite_0.1.0_amd64.AppImage
-./Postmite_0.1.0_amd64.AppImage
+chmod +x ./Postmite_0.1.1_amd64.AppImage
+./Postmite_0.1.1_amd64.AppImage
 ```
 
 AppImageはシステムへインストールせずに実行できます。
@@ -84,7 +85,7 @@ Secret Serviceが利用できない場合やロックされている場合、そ
 
 Postmiteはバックグラウンドで更新を確認しません。
 ユーザーが画面上の**Check for updates**を選んだときだけGitHub Releaseを確認します。
-v0.1.0に自動更新機能はありません。
+v0.1.1に自動更新機能はありません。
 
 変更内容は[Release notes](./release/RELEASE_NOTES.md)で確認できます。
 不具合や要望は[GitHub Issues](https://github.com/sino-s/postmite/issues)へ報告してください。

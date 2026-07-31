@@ -1,12 +1,16 @@
 # Publishing Postmite
 
-This procedure publishes the Ubuntu 24.04 x86_64 Postmite v0.1.0 release.
+This procedure publishes the Ubuntu 24.04 x86_64 Postmite v0.1.1 corrective release.
 End-user installation and initial-use instructions live in the
 [repository README](../README.md).
 
-Postmite v0.1.0 ships an unsigned Debian package and an unsigned AppImage.
+Postmite v0.1.1 ships an unsigned Debian package and an unsigned AppImage.
 Windows, macOS, package signing, automatic publication, and automatic updates
 are not part of this procedure.
+
+The public v0.1.0 tag, Release, notes, and assets are immutable. v0.1.1
+supersedes that release and must be published as a new tag with new artifacts;
+this procedure never moves, deletes, or replaces v0.1.0.
 
 ## Authority and stop rule
 
@@ -57,6 +61,7 @@ as `HOME` for release paths.
 RELEASE_VERSION=$(node -p "require('./package.json').version")
 RELEASE_TAG="v${RELEASE_VERSION}"
 RELEASE_COMMIT=$(git rev-parse origin/main)
+PREVIOUS_RELEASE_TAG="v0.1.0"
 ```
 
 Run the read-only repository and version checks:
@@ -71,30 +76,38 @@ TAURI_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
 test "$RELEASE_VERSION" = "$CARGO_VERSION"
 test "$RELEASE_VERSION" = "$TAURI_VERSION"
 
-test "$RELEASE_TAG" = "v0.1.0"
+test "$RELEASE_TAG" = "v0.1.1"
 test "$(node -p "require('./src-tauri/tauri.conf.json').identifier")" = "io.github.sino-s.postmite"
 test "$(node -p "require('./src-tauri/tauri.conf.json').bundle.targets.join(',')")" = "deb,appimage"
 ```
 
-For a first publication, all three commands below must report that the tag or
-Release does not exist. If any exists, stop and follow the correction rules
-instead of overwriting it.
+First verify that the prior public release remains present and immutable. The
+local and remote peeled tag targets must agree, and the GitHub Release must be
+public rather than a draft or prerelease.
 
 ```bash
-git show-ref --verify "refs/tags/$RELEASE_TAG"
-git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG"
-gh release view "$RELEASE_TAG"
+git show-ref --verify "refs/tags/$PREVIOUS_RELEASE_TAG"
+PREVIOUS_RELEASE_COMMIT=$(git rev-parse "$PREVIOUS_RELEASE_TAG^{}")
+test "$(git ls-remote origin "refs/tags/$PREVIOUS_RELEASE_TAG^{}" | cut -f1)" = "$PREVIOUS_RELEASE_COMMIT"
+test "$(gh release view "$PREVIOUS_RELEASE_TAG" --json isDraft --jq .isDraft)" = "false"
+test "$(gh release view "$PREVIOUS_RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = "false"
 ```
 
-An exit status indicating "not found" is the expected first-release result.
-Do not continue if any command finds an existing local tag, remote tag, or
-GitHub Release.
-
-Verify that release-preparation Issues #118, #119, and #120 are closed and that
-the publication Issue #121 is open:
+Then require the corrective tag and Release to be absent. A non-zero result is
+expected for each command. Stop if any command finds an existing v0.1.1 tag or
+Release; do not overwrite it.
 
 ```bash
-for ISSUE_NUMBER in 118 119 120; do
+! git show-ref --verify "refs/tags/$RELEASE_TAG"
+! git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG"
+! gh release view "$RELEASE_TAG"
+```
+
+Verify that all release-preparation Issues are closed and that publication
+Issue #121 is open:
+
+```bash
+for ISSUE_NUMBER in 118 119 120 125 127; do
   test "$(gh issue view "$ISSUE_NUMBER" --json state --jq .state)" = "CLOSED"
 done
 test "$(gh issue view 121 --json state --jq .state)" = "OPEN"
@@ -229,7 +242,7 @@ done
 (cd "$RELEASE_STAGE" && sha256sum --check SHA256SUMS)
 dpkg-deb --info "$RELEASE_STAGE"/*.deb
 jq -e \
-  '.version == "0.1.0" and
+  '.version == "0.1.1" and
    .packageIdentifier == "io.github.sino-s.postmite" and
    .publisher == "sino-s" and
    .platforms == ["Ubuntu 24.04 x86_64"]' \
@@ -281,6 +294,8 @@ gh release download "$RELEASE_TAG" --dir "$PUBLIC_STAGE"
 test "$(find "$PUBLIC_STAGE" -maxdepth 1 -type f | wc -l)" -eq 8
 (cd "$PUBLIC_STAGE" && sha256sum --check SHA256SUMS)
 test "$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | cut -f1)" = "$RELEASE_COMMIT"
+test "$(git ls-remote origin "refs/tags/$PREVIOUS_RELEASE_TAG^{}" | cut -f1)" = "$PREVIOUS_RELEASE_COMMIT"
+test "$(gh release view "$PREVIOUS_RELEASE_TAG" --json isDraft --jq .isDraft)" = "false"
 ```
 
 Record the release commit, tag, `MAIN_RUN_ID`, `TAG_RUN_ID`, Release URL,
@@ -310,7 +325,7 @@ with `gh release download`; do not copy files from the build machine.
    after restart. Never print, screenshot, log, or paste the value into Issue
    evidence.
 7. Select **Check for updates**. Confirm the request is manual-only and that the
-   latest GitHub Release resolves to the current `0.1.0` version without an
+   latest GitHub Release resolves to the current `0.1.1` version without an
    update-check error.
 
 Run the persistence and Secret checks for the Debian package. Run at least the
@@ -323,7 +338,7 @@ the clean-machine description on Issue #121.
   reviewed fix, and restart from the new exact `main` commit.
 - After pushing the tag but before publication: do not move the tag. Leave the
   failed tag unpublished, fix through a new Issue and pull request, increment
-  the version, and publish a superseding tag such as `v0.1.1`.
+  the version, and publish a superseding tag such as `v0.1.2`.
 - For a draft error: the authorized publisher may delete the never-public draft
   and recreate it for the same immutable tag only when the artifacts are
   byte-for-byte the outputs of the successful tag workflow. Otherwise use a
@@ -332,7 +347,7 @@ the clean-machine description on Issue #121.
   defect, delete and recreate the tag, or move the tag. Record the problem,
   publish a visible warning when users are at risk, fix through the Issue/PR
   workflow, and create a higher patch release.
-- Postmite v0.1.0 has no automatic updater. A rollback means withdrawing the
+- Postmite v0.1.1 has no automatic updater. A rollback means withdrawing the
   recommendation to install the affected release and publishing a corrected
   higher version; it does not mean mutating an installed client remotely.
 
@@ -356,6 +371,7 @@ gh api repos/sino-s/postmite/milestones/1 \
   --raw-field state=closed
 ```
 
-Finally, verify the GitHub Release remains public, both Issues are closed, the
-Milestone is closed with no open Issues, the tag still resolves to
-`RELEASE_COMMIT`, and local `main` is clean and equal to `origin/main`.
+Finally, verify both GitHub Releases remain public, both Issues are closed, the
+Milestone is closed with no open Issues, v0.1.0 still resolves to
+`PREVIOUS_RELEASE_COMMIT`, v0.1.1 resolves to `RELEASE_COMMIT`, and local
+`main` is clean and equal to `origin/main`.

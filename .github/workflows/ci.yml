@@ -213,6 +213,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Resolve release version
+        id: release-version
+        run: node -p '"value=" + require("./package.json").version' >> "$GITHUB_OUTPUT"
+
       - name: Build and verify Ubuntu packages
         run: |
           pnpm release:verify
@@ -225,7 +229,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: postmite-ubuntu-x86_64
-          path: artifacts/release/v0.1.0/linux-x86_64
+          path: artifacts/release/v${{ steps.release-version.outputs.value }}/linux-x86_64
           if-no-files-found: error
 
   release-smoke:
