@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 
 import {
   ResizableHandle,
@@ -6,6 +6,10 @@ import {
   ResizablePanelGroup,
 } from "../../../components/ui/resizable";
 import type { RequestResponseSplit } from "../../../app/preferences";
+import {
+  loadRequestResponseLayout,
+  saveRequestResponseLayout,
+} from "../../../app/presentation-layout";
 import type { ResponseExecutionState } from "../../../shared/api/execution";
 import type {
   ExecutionHistorySnapshotDto,
@@ -168,6 +172,10 @@ export function RequestEditorPanels({
       ]}
     />
   );
+  const defaultLayout = useMemo(
+    () => loadRequestResponseLayout(window.localStorage, requestResponseSplit),
+    [requestResponseSplit],
+  );
 
   if (!resizable) {
     return (
@@ -179,17 +187,25 @@ export function RequestEditorPanels({
   }
 
   const panelOrientation = requestResponseSplit === "horizontal" ? "vertical" : "horizontal";
-  const requestDefaultSize = requestResponseSplit === "horizontal" ? 52 : 56;
-  const responseDefaultSize = 100 - requestDefaultSize;
 
   return (
     <ResizablePanelGroup
       className="min-h-0 flex-1 rounded-md border border-border bg-background"
+      defaultLayout={defaultLayout}
+      id={`request-response-${requestResponseSplit}`}
+      key={requestResponseSplit}
+      onLayoutChanged={(layout, meta) =>
+        saveRequestResponseLayout(
+          window.localStorage,
+          requestResponseSplit,
+          layout,
+          meta,
+        )}
       orientation={panelOrientation}
     >
       <ResizablePanel
         className="overflow-hidden"
-        defaultSize={requestDefaultSize}
+        id="request"
         minSize="260px"
       >
         <div className="h-full min-h-0 overflow-hidden p-4">
@@ -203,7 +219,7 @@ export function RequestEditorPanels({
       />
       <ResizablePanel
         className="overflow-hidden"
-        defaultSize={responseDefaultSize}
+        id="response"
         minSize="220px"
       >
         <div className="h-full min-h-0 overflow-hidden p-4">

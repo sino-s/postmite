@@ -20,4 +20,13 @@ describe("main Tauri window", () => {
       fullscreen: false,
     });
   });
+
+  it("restores only native window size through Rust", () => {
+    const manifest = readFileSync(resolve(repoRoot, "src-tauri/Cargo.toml"), "utf8");
+    const application = readFileSync(resolve(repoRoot, "src-tauri/src/lib.rs"), "utf8");
+
+    expect(manifest).toContain('tauri-plugin-window-state = "2"');
+    expect(application).toContain(".with_state_flags(StateFlags::SIZE)");
+    expect(application).not.toContain("StateFlags::all()");
+  });
 });
