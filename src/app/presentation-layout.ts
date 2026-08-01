@@ -1,4 +1,7 @@
-import type { Layout, LayoutChangedMeta } from "react-resizable-panels";
+import type {
+  ResizableLayout,
+  ResizableLayoutChangedMeta,
+} from "../components/ui/resizable";
 
 import type { RequestResponseSplit } from "./preferences";
 
@@ -9,12 +12,12 @@ const layoutStorageKeys: Record<RequestResponseSplit, string> = {
   vertical: "postmite.requestResponseLayout.vertical",
 };
 
-const defaultLayouts: Record<RequestResponseSplit, Layout> = {
+const defaultLayouts: Record<RequestResponseSplit, ResizableLayout> = {
   horizontal: { request: 52, response: 48 },
   vertical: { request: 56, response: 44 },
 };
 
-function isBoundedLayout(value: unknown): value is Layout {
+function isBoundedLayout(value: unknown): value is ResizableLayout {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 
   const entries = Object.entries(value);
@@ -38,14 +41,14 @@ function isBoundedLayout(value: unknown): value is Layout {
     && Math.abs(request + response - 100) < 0.01;
 }
 
-export function defaultRequestResponseLayout(split: RequestResponseSplit): Layout {
+export function defaultRequestResponseLayout(split: RequestResponseSplit): ResizableLayout {
   return { ...defaultLayouts[split] };
 }
 
 export function loadRequestResponseLayout(
   storage: LayoutStorage,
   split: RequestResponseSplit,
-): Layout {
+): ResizableLayout {
   try {
     const stored = storage.getItem(layoutStorageKeys[split]);
     if (!stored) return defaultRequestResponseLayout(split);
@@ -59,8 +62,8 @@ export function loadRequestResponseLayout(
 export function saveRequestResponseLayout(
   storage: LayoutStorage,
   split: RequestResponseSplit,
-  layout: Layout,
-  meta: LayoutChangedMeta,
+  layout: ResizableLayout,
+  meta: ResizableLayoutChangedMeta,
 ) {
   if (!meta.isUserInteraction || !isBoundedLayout(layout)) return;
 

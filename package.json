@@ -30,6 +30,7 @@
     "security:scan-fixtures": "node scripts/security-scan-fixtures.mjs",
     "perf:release": "node scripts/perf-release.mjs",
     "perf:release:strict": "POSTMITE_PERF_STRICT=1 node scripts/perf-release.mjs",
+    "perf:resize": "playwright test -c playwright.resize.config.ts",
     "release:bundle": "tauri build --bundles deb,appimage",
     "release:artifacts": "node scripts/release-artifacts.mjs collect",
     "release:verify-artifacts": "node scripts/release-artifacts.mjs verify",
@@ -62,7 +63,6 @@
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-resizable-panels": "^4.12.2",
     "tailwind-merge": "^2.5.5"
   },
   "devDependencies": {

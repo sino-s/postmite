@@ -60,6 +60,17 @@ if (!globalThis.ResizeObserver) {
   } as typeof ResizeObserver;
 }
 
+if (!globalThis.PointerEvent) {
+  globalThis.PointerEvent = class extends MouseEvent {
+    pointerId: number;
+
+    constructor(type: string, eventInitDict: PointerEventInit = {}) {
+      super(type, eventInitDict);
+      this.pointerId = eventInitDict.pointerId ?? 0;
+    }
+  } as typeof PointerEvent;
+}
+
 if (!globalThis.matchMedia) {
   globalThis.matchMedia = ((query: string) => ({
     addEventListener: () => undefined,

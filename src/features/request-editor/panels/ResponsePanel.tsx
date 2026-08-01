@@ -467,9 +467,16 @@ function ResponseBodyContent({
     );
   }
 
+  const displayText = mode === "raw" && hasDistinctRaw
+    ? rawText
+    : prettyText || t("response.noBody");
+
   return (
-    <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-muted/30 p-3 text-xs leading-5">
-      {highlightText(mode === "raw" && hasDistinctRaw ? rawText : prettyText || t("response.noBody"), search)}
+    <pre
+      className="min-h-0 flex-1 overflow-auto whitespace-pre rounded border border-border bg-muted/30 p-3 text-xs leading-5 [contain:strict] [contain-intrinsic-size:0_320px]"
+      data-resize-cost={displayText.length >= 256 * 1024 ? "large-text" : undefined}
+    >
+      {highlightText(displayText, search)}
     </pre>
   );
 }
