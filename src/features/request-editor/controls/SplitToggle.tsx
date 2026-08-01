@@ -34,7 +34,7 @@ export function SplitToggle({
               type="button"
               variant="ghost"
             >
-              <SquareSplitHorizontal aria-hidden="true" size={16} />
+              <SquareSplitVertical aria-hidden="true" size={16} />
             </Button>
           </TooltipTrigger>
           <TooltipContent>Stack request options above response</TooltipContent>
@@ -50,7 +50,7 @@ export function SplitToggle({
               type="button"
               variant="ghost"
             >
-              <SquareSplitVertical aria-hidden="true" size={16} />
+              <SquareSplitHorizontal aria-hidden="true" size={16} />
             </Button>
           </TooltipTrigger>
           <TooltipContent>Place request options beside response</TooltipContent>
