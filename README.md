@@ -109,6 +109,23 @@ pnpm ci:rust
 pnpm ci:frontend
 ```
 
+### Release performance
+
+`pnpm perf:release`は、Tauri release binaryの起動時間、実行ファイルサイズ、WebKitGTKプロセスツリーのメモリを測定します。
+Linuxのメモリ判定には、共有ページを重複計上しにくいPSSを使用し、RSSは診断値として残します。
+PSSを取得できない環境では、同じシナリオのRSSを代替値として明示します。
+
+one-tabとten-tabはそれぞれ3回測定し、起動順の偏りを抑えるため交互に実行して、各指標の中央値を採用します。
+JSONには全raw sampleと中央値を含めます。
+2026-07-31のGitHub-hosted Ubuntu 24.04におけるmainの5実行（Actions run 30646691463、30647728120、30650635334、30657751393、30658653032）では、one-tab PSSが259.15〜276.85 MiB、ten-tab PSSが162.72〜267.20 MiBでした。
+両シナリオの予算は、観測最大値に約8〜12%のheadroomを加えた300 MiBです。
+
+通常の`pnpm perf:release`は予算超過を報告しますが終了コードを失敗にしません。
+`pnpm perf:release:strict`は、one-tab PSS、ten-tab PSS、起動時間、実行ファイルサイズのいずれかが予算を超えると失敗します。
+CIのrelease performance jobはmain、手動実行、tagでのみ動作し、計測の安定性を確認する間は非strictです。
+headless Linuxでは`dbus-run-session -- xvfb-run -a pnpm perf:release`を使用します。
+出力のhost sessionと、測定対象へ実際に渡した`GDK_BACKEND`および`WEBKIT_DISABLE_DMABUF_RENDERER`は別々に記録されます。
+
 実装はGitHub Issueを起点に、1 Issue、1 Plan、1 Commit、1 Pull Requestで進めます。
 ContributorとAI Agentは、作業前に[Agent Workflow](./AGENTS.md)と[Domain Language](./CONTEXT.md)を確認してください。
 リリース担当者は[Release procedure](./release/RELEASING.md)に従ってください。
