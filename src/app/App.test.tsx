@@ -111,6 +111,7 @@ vi.mock("../features/request-editor/editors/CodeMirrorBodyEditor", () => ({
 
 describe("App request editor", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     window.localStorage.clear();
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
@@ -1064,6 +1065,29 @@ describe("App request editor", () => {
     ).toHaveAttribute("aria-pressed", "true");
     expect(document.getElementById("request-response-vertical")).toBeInTheDocument();
     expect(document.getElementById("request")).toHaveStyle({ flexGrow: "43" });
+  });
+
+  it("restores the saved stacked orientation and selects its matching control", async () => {
+    const defaultMatchMedia = window.matchMedia;
+    vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+      ...defaultMatchMedia(query),
+      matches: query.includes("min-width"),
+    }));
+    window.localStorage.setItem("postmite.requestResponseSplit", "horizontal");
+    window.localStorage.setItem(
+      "postmite.requestResponseLayout.horizontal",
+      JSON.stringify({ request: 61, response: 39 }),
+    );
+
+    renderApp(requestSnapshot({ content: requestContent(), isDirty: true }));
+
+    expect(
+      await screen.findByRole("button", { name: "Stack request options above response" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Place request options beside response" }))
+      .toHaveAttribute("aria-pressed", "false");
+    expect(document.getElementById("request-response-horizontal")).toBeInTheDocument();
+    expect(document.getElementById("request")).toHaveStyle({ flexGrow: "61" });
   });
 
   it("pins disables and opens execution history without mutating saved requests", async () => {
