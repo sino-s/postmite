@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +12,7 @@ import {
   displayMetadata,
   evaluate,
   failedChecks,
+  MIB,
   measurementEnvironment,
   median,
   samplingPlan,
@@ -31,6 +32,11 @@ describe("release performance budgets", () => {
     expect(DEFAULT_SAMPLE_COUNT).toBe(3);
   });
 
+  it("keeps the release compiler pin explicit", () => {
+    const toolchain = readFileSync("rust-toolchain.toml", "utf8");
+    expect(toolchain).toContain('channel = "1.88.0"');
+  });
+
   it("passes metrics at or below deterministic budgets", () => {
     const checks = evaluate(
       {
@@ -39,12 +45,14 @@ describe("release performance budgets", () => {
         singleTabPssMiB: 300,
         tenTabRssMiB: 360,
         tenTabPssMiB: 299,
+        packageSizeBytes: 30 * MIB,
         packageSizeMiB: 30,
       },
       {
         coldStartMs: 2_000,
         singleTabPssMiB: 300,
         tenTabPssMiB: 300,
+        packageSizeBytes: 30 * MIB,
         packageSizeMiB: 30,
       },
     );
@@ -69,9 +77,9 @@ describe("release performance budgets", () => {
         pass: true,
       },
       {
-        name: "packageSizeMiB",
-        actual: 30,
-        budget: 30,
+        name: "packageSizeBytes",
+        actual: 30 * MIB,
+        budget: 30 * MIB,
         pass: true,
       },
     ]);
@@ -85,6 +93,7 @@ describe("release performance budgets", () => {
         singleTabPssMiB: 300.01,
         tenTabRssMiB: 360,
         tenTabPssMiB: 301,
+        packageSizeBytes: 30 * MIB + 1,
         packageSizeMiB: 30.01,
       },
       {
@@ -124,6 +133,34 @@ describe("release performance budgets", () => {
         pass: false,
       },
     ]);
+  });
+
+  it("fails exactly one byte above the package-size boundary", () => {
+    const atBoundary = evaluate({
+      coldStartMs: 200,
+      singleTabRssMiB: 1,
+      singleTabPssMiB: 1,
+      tenTabRssMiB: 1,
+      tenTabPssMiB: 1,
+      packageSizeBytes: 30 * MIB,
+      packageSizeMiB: 30,
+    });
+    const aboveBoundary = evaluate({
+      coldStartMs: 200,
+      singleTabRssMiB: 1,
+      singleTabPssMiB: 1,
+      tenTabRssMiB: 1,
+      tenTabPssMiB: 1,
+      packageSizeBytes: 30 * MIB + 1,
+      packageSizeMiB: 30,
+    });
+
+    expect(atBoundary.at(-1)?.pass).toBe(true);
+    expect(aboveBoundary.at(-1)).toMatchObject({
+      actual: 30 * MIB + 1,
+      budget: 30 * MIB,
+      pass: false,
+    });
   });
 
   it("rounds bytes to MiB for stable output", () => {

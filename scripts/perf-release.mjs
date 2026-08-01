@@ -12,6 +12,7 @@ export const DEFAULT_BUDGETS = Object.freeze({
 });
 
 export const DEFAULT_SAMPLE_COUNT = 3;
+export const MIB = 1024 * 1024;
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const binaryPath = join(repoRoot, "src-tauri", "target", "release", "postmite");
@@ -32,7 +33,8 @@ export async function main() {
   }
   const singleTab = aggregateSamples(samples.singleTab);
   const tenTab = aggregateSamples(samples.tenTab);
-  const packageSizeMiB = bytesToMiB(statSync(binaryPath).size);
+  const packageSizeBytes = statSync(binaryPath).size;
+  const packageSizeMiB = bytesToMiB(packageSizeBytes);
 
   const metrics = {
     coldStartMs: singleTab.readyMs,
@@ -40,6 +42,7 @@ export async function main() {
     singleTabPssMiB: singleTab.pssMiB,
     tenTabRssMiB: tenTab.rssMiB,
     tenTabPssMiB: tenTab.pssMiB,
+    packageSizeBytes,
     packageSizeMiB,
   };
   const result = {
@@ -89,12 +92,21 @@ export function evaluate(metrics, budgets = DEFAULT_BUDGETS) {
     memoryCheck(metrics, budgets, "singleTab"),
     memoryCheck(metrics, budgets, "tenTab"),
     {
-      name: "packageSizeMiB",
-      actual: metrics.packageSizeMiB,
-      budget: budgets.packageSizeMiB,
-      pass: metrics.packageSizeMiB <= budgets.packageSizeMiB,
+      name: "packageSizeBytes",
+      actual: packageSizeBytesForEvaluation(metrics),
+      budget: budgets.packageSizeMiB * MIB,
+      pass: packageSizeWithinBudget(metrics, budgets.packageSizeMiB),
     },
   ];
+}
+
+export function packageSizeWithinBudget(metrics, budgetMiB) {
+  return packageSizeBytesForEvaluation(metrics) <= budgetMiB * MIB;
+}
+
+function packageSizeBytesForEvaluation(metrics) {
+  return metrics.packageSizeBytes
+    ?? Math.round(metrics.packageSizeMiB * MIB);
 }
 
 function memoryCheck(metrics, budgets, scenario) {
