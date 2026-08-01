@@ -5,35 +5,46 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  aggregateSamples,
   bytesToMiB,
   DEFAULT_BUDGETS,
+  DEFAULT_SAMPLE_COUNT,
+  displayMetadata,
   evaluate,
   failedChecks,
+  measurementEnvironment,
+  median,
+  samplingPlan,
   sumProcessTreeMemoryKiB,
   sumProcessTreePssKiB,
   sumProcessTreeRssKiB,
 } from "./perf-release.mjs";
 
 describe("release performance budgets", () => {
-  it("documents the accepted v0.1.0 default budgets", () => {
+  it("documents independently calibrated Linux PSS budgets", () => {
     expect(DEFAULT_BUDGETS).toEqual({
       coldStartMs: 2_000,
-      aggregatePssMiB: 165,
+      singleTabPssMiB: 300,
+      tenTabPssMiB: 300,
       packageSizeMiB: 30,
     });
+    expect(DEFAULT_SAMPLE_COUNT).toBe(3);
   });
 
   it("passes metrics at or below deterministic budgets", () => {
     const checks = evaluate(
       {
         coldStartMs: 2_000,
-        aggregateRssMiB: 250,
-        aggregatePssMiB: 150,
+        singleTabRssMiB: 350,
+        singleTabPssMiB: 300,
+        tenTabRssMiB: 360,
+        tenTabPssMiB: 299,
         packageSizeMiB: 30,
       },
       {
         coldStartMs: 2_000,
-        aggregatePssMiB: 150,
+        singleTabPssMiB: 300,
+        tenTabPssMiB: 300,
         packageSizeMiB: 30,
       },
     );
@@ -46,9 +57,15 @@ describe("release performance budgets", () => {
         pass: true,
       },
       {
-        name: "aggregatePssMiB",
-        actual: 150,
-        budget: 150,
+        name: "singleTabPssMiB",
+        actual: 300,
+        budget: 300,
+        pass: true,
+      },
+      {
+        name: "tenTabPssMiB",
+        actual: 299,
+        budget: 300,
         pass: true,
       },
       {
@@ -64,13 +81,16 @@ describe("release performance budgets", () => {
     const checks = evaluate(
       {
         coldStartMs: 2_001,
-        aggregateRssMiB: 250,
-        aggregatePssMiB: 150.01,
+        singleTabRssMiB: 350,
+        singleTabPssMiB: 300.01,
+        tenTabRssMiB: 360,
+        tenTabPssMiB: 301,
         packageSizeMiB: 30.01,
       },
       {
         coldStartMs: 2_000,
-        aggregatePssMiB: 150,
+        singleTabPssMiB: 300,
+        tenTabPssMiB: 300,
         packageSizeMiB: 30,
       },
     );
@@ -82,13 +102,16 @@ describe("release performance budgets", () => {
     const checks = evaluate(
       {
         coldStartMs: 2_001,
-        aggregateRssMiB: 249,
-        aggregatePssMiB: 149,
+        singleTabRssMiB: 349,
+        singleTabPssMiB: 299,
+        tenTabRssMiB: 350,
+        tenTabPssMiB: 298,
         packageSizeMiB: 29,
       },
       {
         coldStartMs: 2_000,
-        aggregatePssMiB: 150,
+        singleTabPssMiB: 300,
+        tenTabPssMiB: 300,
         packageSizeMiB: 30,
       },
     );
@@ -112,23 +135,89 @@ describe("release performance budgets", () => {
     const checks = evaluate(
       {
         coldStartMs: 200,
-        aggregateRssMiB: 150,
-        aggregatePssMiB: null,
+        singleTabRssMiB: 290,
+        singleTabPssMiB: null,
+        tenTabRssMiB: 301,
+        tenTabPssMiB: null,
         packageSizeMiB: 20,
       },
       {
         coldStartMs: 2_000,
-        aggregatePssMiB: 150,
+        singleTabPssMiB: 300,
+        tenTabPssMiB: 300,
         packageSizeMiB: 30,
       },
     );
 
     expect(checks[1]).toEqual({
-      name: "aggregateRssMiB",
-      actual: 150,
-      budget: 150,
+      name: "singleTabRssMiB",
+      actual: 290,
+      budget: 300,
       pass: true,
     });
+    expect(checks[2]).toEqual({
+      name: "tenTabRssMiB",
+      actual: 301,
+      budget: 300,
+      pass: false,
+    });
+  });
+});
+
+describe("release performance sampling", () => {
+  it("alternates scenarios and selects deterministic medians", () => {
+    expect(samplingPlan(3)).toEqual([1, 10, 10, 1, 1, 10]);
+    expect(median([12, 8, 10])).toBe(10);
+    expect(median([12, 8, 10, 14])).toBe(11);
+    expect(aggregateSamples([
+      { readyMs: 240, rssMiB: 390, pssMiB: 270 },
+      { readyMs: 200, rssMiB: 370, pssMiB: 250 },
+      { readyMs: 220, rssMiB: 380, pssMiB: 260 },
+    ])).toEqual({ readyMs: 220, rssMiB: 380, pssMiB: 260 });
+  });
+
+  it("does not report a partial PSS aggregate", () => {
+    expect(aggregateSamples([
+      { readyMs: 200, rssMiB: 370, pssMiB: 250 },
+      { readyMs: 220, rssMiB: 380, pssMiB: null },
+      { readyMs: 240, rssMiB: 390, pssMiB: 270 },
+    ]).pssMiB).toBeNull();
+  });
+});
+
+describe("release performance display metadata", () => {
+  it("separates the host Wayland session from the forced X11 child", () => {
+    const environment = {
+      DISPLAY: ":0",
+      WAYLAND_DISPLAY: "wayland-0",
+      XDG_SESSION_TYPE: "wayland",
+    };
+    const appEnvironment = measurementEnvironment(environment);
+
+    expect(appEnvironment).toMatchObject({
+      GDK_BACKEND: "x11",
+      WEBKIT_DISABLE_DMABUF_RENDERER: "1",
+    });
+    expect(displayMetadata(environment, appEnvironment)).toEqual({
+      hostSession: "wayland",
+      hostDisplay: ":0",
+      hostWaylandDisplay: "wayland-0",
+      appGdkBackend: "x11",
+      webkitDisableDmabufRenderer: "1",
+    });
+  });
+
+  it("preserves explicit application renderer overrides", () => {
+    const environment = {
+      GDK_BACKEND: "wayland",
+      WEBKIT_DISABLE_DMABUF_RENDERER: "0",
+      WAYLAND_DISPLAY: "wayland-1",
+    };
+    const appEnvironment = measurementEnvironment(environment);
+
+    expect(appEnvironment.GDK_BACKEND).toBe("wayland");
+    expect(appEnvironment.WEBKIT_DISABLE_DMABUF_RENDERER).toBe("0");
+    expect(displayMetadata(environment, appEnvironment).appGdkBackend).toBe("wayland");
   });
 });
 

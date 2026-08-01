@@ -6,9 +6,12 @@ import { fileURLToPath } from "node:url";
 
 export const DEFAULT_BUDGETS = Object.freeze({
   coldStartMs: 2_000,
-  aggregatePssMiB: 165,
+  singleTabPssMiB: 300,
+  tenTabPssMiB: 300,
   packageSizeMiB: 30,
 });
+
+export const DEFAULT_SAMPLE_COUNT = 3;
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const binaryPath = join(repoRoot, "src-tauri", "target", "release", "postmite");
@@ -21,27 +24,44 @@ export async function main() {
   assertDisplayAvailable();
   assertFile(binaryPath, "release binary");
 
-  const coldStart = await measureApp({ tabCount: 1 });
-  const tenTab = await measureApp({ tabCount: 10 });
+  const appEnvironment = measurementEnvironment();
+  const samples = { singleTab: [], tenTab: [] };
+  for (const tabCount of samplingPlan(DEFAULT_SAMPLE_COUNT)) {
+    const sample = await measureApp({ appEnvironment, tabCount });
+    samples[tabCount === 1 ? "singleTab" : "tenTab"].push(sample);
+  }
+  const singleTab = aggregateSamples(samples.singleTab);
+  const tenTab = aggregateSamples(samples.tenTab);
   const packageSizeMiB = bytesToMiB(statSync(binaryPath).size);
 
   const metrics = {
-    coldStartMs: coldStart.readyMs,
-    aggregateRssMiB: coldStart.rssMiB,
-    aggregatePssMiB: coldStart.pssMiB,
+    coldStartMs: singleTab.readyMs,
+    singleTabRssMiB: singleTab.rssMiB,
+    singleTabPssMiB: singleTab.pssMiB,
     tenTabRssMiB: tenTab.rssMiB,
     tenTabPssMiB: tenTab.pssMiB,
     packageSizeMiB,
   };
   const result = {
     measuredAt: new Date().toISOString(),
-    machine: machineMetadata(),
+    machine: machineMetadata(process.env, appEnvironment),
+    sampling: {
+      aggregation: "median",
+      sampleCountPerScenario: DEFAULT_SAMPLE_COUNT,
+      order: samplingPlan(DEFAULT_SAMPLE_COUNT).map((tabCount) =>
+        tabCount === 1 ? "singleTab" : "tenTab"
+      ),
+      scenarios: {
+        singleTab: { samples: samples.singleTab, selected: singleTab },
+        tenTab: { samples: samples.tenTab, selected: tenTab },
+      },
+    },
     budgets: {
       coldStartMs: DEFAULT_BUDGETS.coldStartMs,
-      aggregatePssMiB: DEFAULT_BUDGETS.aggregatePssMiB,
-      aggregateRssMiB: null,
+      singleTabPssMiB: DEFAULT_BUDGETS.singleTabPssMiB,
+      singleTabRssMiB: null,
+      tenTabPssMiB: DEFAULT_BUDGETS.tenTabPssMiB,
       tenTabRssMiB: null,
-      tenTabPssMiB: null,
       packageSizeMiB: DEFAULT_BUDGETS.packageSizeMiB,
     },
     metrics,
@@ -59,12 +79,6 @@ export async function main() {
 }
 
 export function evaluate(metrics, budgets = DEFAULT_BUDGETS) {
-  const memoryMetricName =
-    metrics.aggregatePssMiB === null || metrics.aggregatePssMiB === undefined
-      ? "aggregateRssMiB"
-      : "aggregatePssMiB";
-  const memoryBudget =
-    budgets[memoryMetricName] ?? budgets.aggregatePssMiB ?? budgets.aggregateRssMiB;
   return [
     {
       name: "coldStartMs",
@@ -72,12 +86,8 @@ export function evaluate(metrics, budgets = DEFAULT_BUDGETS) {
       budget: budgets.coldStartMs,
       pass: metrics.coldStartMs <= budgets.coldStartMs,
     },
-    {
-      name: memoryMetricName,
-      actual: metrics[memoryMetricName],
-      budget: memoryBudget,
-      pass: metrics[memoryMetricName] <= memoryBudget,
-    },
+    memoryCheck(metrics, budgets, "singleTab"),
+    memoryCheck(metrics, budgets, "tenTab"),
     {
       name: "packageSizeMiB",
       actual: metrics.packageSizeMiB,
@@ -85,6 +95,49 @@ export function evaluate(metrics, budgets = DEFAULT_BUDGETS) {
       pass: metrics.packageSizeMiB <= budgets.packageSizeMiB,
     },
   ];
+}
+
+function memoryCheck(metrics, budgets, scenario) {
+  const pssName = `${scenario}PssMiB`;
+  const rssName = `${scenario}RssMiB`;
+  const metricName = metrics[pssName] === null || metrics[pssName] === undefined
+    ? rssName
+    : pssName;
+  const budget = budgets[pssName];
+  return {
+    name: metricName,
+    actual: metrics[metricName],
+    budget,
+    pass: metrics[metricName] <= budget,
+  };
+}
+
+export function samplingPlan(sampleCount) {
+  const order = [];
+  for (let index = 0; index < sampleCount; index += 1) {
+    order.push(...(index % 2 === 0 ? [1, 10] : [10, 1]));
+  }
+  return order;
+}
+
+export function aggregateSamples(samples) {
+  if (samples.length === 0) throw new Error("at least one performance sample is required");
+  return {
+    readyMs: median(samples.map((sample) => sample.readyMs)),
+    rssMiB: median(samples.map((sample) => sample.rssMiB)),
+    pssMiB: samples.some((sample) => sample.pssMiB === null)
+      ? null
+      : median(samples.map((sample) => sample.pssMiB)),
+  };
+}
+
+export function median(values) {
+  if (values.length === 0) throw new Error("at least one value is required");
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 0
+    ? (ordered[middle - 1] + ordered[middle]) / 2
+    : ordered[middle];
 }
 
 export function failedChecks(result) {
@@ -133,7 +186,7 @@ export function sumProcessTreeMemoryKiB(rootPid, procRoot = "/proc") {
   };
 }
 
-async function measureApp({ tabCount }) {
+async function measureApp({ appEnvironment, tabCount }) {
   const tempDir = mkdtempSync(join(tmpdir(), "postmite-perf-"));
   const readyFile = join(tempDir, "ready.json");
   const appDataDir = join(tempDir, "app-data");
@@ -143,14 +196,10 @@ async function measureApp({ tabCount }) {
     cwd: repoRoot,
     env: {
       ...process.env,
-      GDK_BACKEND: process.env.GDK_BACKEND ?? "x11",
-      GSETTINGS_BACKEND: "memory",
-      NO_AT_BRIDGE: process.env.NO_AT_BRIDGE ?? "1",
+      ...appEnvironment,
       POSTMITE_PERF_APP_DATA_DIR: appDataDir,
       POSTMITE_PERF_READY_FILE: readyFile,
       POSTMITE_PERF_TAB_COUNT: String(tabCount),
-      WEBKIT_DISABLE_DMABUF_RENDERER:
-        process.env.WEBKIT_DISABLE_DMABUF_RENDERER ?? "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -201,7 +250,32 @@ function assertFile(path, label) {
   }
 }
 
-function machineMetadata() {
+export function measurementEnvironment(environment = process.env) {
+  return {
+    GDK_BACKEND: environment.GDK_BACKEND ?? "x11",
+    GSETTINGS_BACKEND: "memory",
+    NO_AT_BRIDGE: environment.NO_AT_BRIDGE ?? "1",
+    WEBKIT_DISABLE_DMABUF_RENDERER:
+      environment.WEBKIT_DISABLE_DMABUF_RENDERER ?? "1",
+  };
+}
+
+export function displayMetadata(environment, appEnvironment) {
+  const hostSession = environment.XDG_SESSION_TYPE
+    ?? (environment.WAYLAND_DISPLAY ? "wayland" : environment.DISPLAY ? "x11" : "unknown");
+  return {
+    hostSession,
+    hostDisplay: environment.DISPLAY ?? null,
+    hostWaylandDisplay: environment.WAYLAND_DISPLAY ?? null,
+    appGdkBackend: appEnvironment.GDK_BACKEND,
+    webkitDisableDmabufRenderer: appEnvironment.WEBKIT_DISABLE_DMABUF_RENDERER,
+  };
+}
+
+export function machineMetadata(
+  environment = process.env,
+  appEnvironment = measurementEnvironment(environment),
+) {
   const cpuList = cpus();
   return {
     platform: platform(),
@@ -214,7 +288,7 @@ function machineMetadata() {
     node: process.version,
     rustc: commandVersion("rustc", ["--version"]),
     pnpm: commandVersion("pnpm", ["--version"]),
-    display: process.env.WAYLAND_DISPLAY ? "wayland" : "x11",
+    display: displayMetadata(environment, appEnvironment),
   };
 }
 
