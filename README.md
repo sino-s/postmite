@@ -92,7 +92,7 @@ v0.1.1に自動更新機能はありません。
 
 ## Development
 
-開発環境はUbuntu 24.04 LTS x86_64、Node.js 22、pnpm 11.1.1、stable Rustを基準とします。
+開発環境はUbuntu 24.04 LTS x86_64、Node.js 22、pnpm 11.1.1、Rust 1.88.0を基準とします。
 Tauriのビルドには`libayatana-appindicator3-dev`、`librsvg2-dev`、`libwebkit2gtk-4.1-dev`が必要です。
 
 ```bash
@@ -114,6 +114,8 @@ pnpm ci:frontend
 `pnpm perf:release`は、Tauri release binaryの起動時間、実行ファイルサイズ、WebKitGTKプロセスツリーのメモリを測定します。
 Linuxのメモリ判定には、共有ページを重複計上しにくいPSSを使用し、RSSは診断値として残します。
 PSSを取得できない環境では、同じシナリオのRSSを代替値として明示します。
+実行ファイルサイズは、`src-tauri/target/release/postmite`のstrip前のELFファイルを1024の累乗でMiBへ換算した値です。
+Rust compilerの更新はcodegen結果とサイズを変えるため、repositoryのRust 1.88.0 pinを維持し、更新時はpackage-size baselineを再計測します。
 
 one-tabとten-tabはそれぞれ3回測定し、起動順の偏りを抑えるため交互に実行して、各指標の中央値を採用します。
 JSONには全raw sampleと中央値を含めます。
