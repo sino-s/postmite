@@ -122,6 +122,10 @@ body {
   overflow: hidden;
 }
 
+[data-group][data-resizing="true"] [data-resize-cost="large-text"] {
+  content-visibility: hidden;
+}
+
 :focus-visible {
   outline: 3px solid #0284c7 !important;
   outline-offset: 2px;

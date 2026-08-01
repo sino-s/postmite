@@ -101,7 +101,6 @@ export const CodeMirrorBodyEditor = forwardRef<
           history(),
           keymap.of(historyKeymap),
           placeholder(t("body.rawPlaceholder")),
-          EditorView.lineWrapping,
           EditorView.contentAttributes.of({
             "aria-label": t("body.rawEditor"),
           }),

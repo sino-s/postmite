@@ -76,6 +76,24 @@ describe("ResponsePanel", () => {
     expect(screen.queryByRole("button", { name: "Raw" })).not.toBeInTheDocument();
   });
 
+  it("isolates a large non-wrapping text preview while a split is resizing", () => {
+    const { container } = render(
+      <ResponsePanel
+        execution={execution({
+          headers: [{ name: "content-type", value: "text/plain" }],
+          bodyPreview: "x".repeat(256 * 1024),
+          decodedBytes: BigInt(256 * 1024),
+        })}
+      />,
+    );
+
+    const preview = container.querySelector("pre");
+    expect(preview).not.toBeNull();
+    expect(preview).toHaveAttribute("data-resize-cost", "large-text");
+    expect(preview).toHaveClass("whitespace-pre");
+    expect(preview).not.toHaveClass("whitespace-pre-wrap", "break-words");
+  });
+
   it("uses a scriptless sandbox for HTML previews", async () => {
     render(
       <ResponsePanel
