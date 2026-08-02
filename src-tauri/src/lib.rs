@@ -10,24 +10,47 @@ use std::{
     time::{Instant, SystemTime},
 };
 
+#[cfg(target_os = "linux")]
+use application::secrets::FallbackSecretStore;
 use application::{
     backup::NativeBackupService,
     execution::ExecutionCoordinator,
     oauth::{OAuthCoordinator, SystemBrowserLauncher},
     postman_import::PostmanImportService,
     request::RequestService,
-    secrets::{FallbackSecretStore, SecretStore, SessionSecretStore},
+    secrets::{SecretStore, SessionSecretStore},
     workspace::WorkspaceService,
 };
+#[cfg(target_os = "linux")]
+use infrastructure::secrets::LinuxSecretServiceStore;
 use infrastructure::{
     http::{cleanup_all_response_temp_files, cleanup_expired_response_temp_files},
-    secrets::LinuxSecretServiceStore,
     sqlite::{DatabaseRecoveryMode, DatabaseRecoveryState, SqliteWorkspaceRepository},
 };
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 
 const SESSION_ONLY_SECRETS_ENV: &str = "POSTMITE_SESSION_ONLY_SECRETS";
+
+fn create_secret_store(force_session_only: bool) -> Arc<dyn SecretStore> {
+    let session = Arc::new(SessionSecretStore::new());
+    if force_session_only {
+        return session;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Arc::new(FallbackSecretStore::new(
+            LinuxSecretServiceStore::new(),
+            session,
+        ))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        session
+    }
+}
 
 pub struct AppState {
     pub database_recovery: DatabaseRecoveryState,
@@ -127,14 +150,7 @@ pub fn run() {
             let request_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let postman_import_repository = SqliteWorkspaceRepository::open(&database_path)?;
             let native_backup_repository = SqliteWorkspaceRepository::open(&database_path)?;
-            let secrets: Arc<dyn SecretStore> = if env::var_os(SESSION_ONLY_SECRETS_ENV).is_some() {
-                Arc::new(SessionSecretStore::new())
-            } else {
-                Arc::new(FallbackSecretStore::new(
-                    LinuxSecretServiceStore::new(),
-                    Arc::new(SessionSecretStore::new()),
-                ))
-            };
+            let secrets = create_secret_store(env::var_os(SESSION_ONLY_SECRETS_ENV).is_some());
             let mut workspaces = WorkspaceService::new(workspace_repository, Arc::clone(&secrets));
             let workspace_snapshot = if database_recovery.mode == DatabaseRecoveryMode::Normal {
                 Some(workspaces.initialize()?)
@@ -200,4 +216,27 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("failed to run Postmite");
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+mod tests {
+    use super::*;
+    use crate::{
+        application::secrets::{SecretClass, SecretPersistence},
+        domain::workspace::WorkspaceId,
+    };
+
+    #[test]
+    fn non_linux_default_secret_store_is_session_only() {
+        let owner = application::secrets::SecretOwner::new(
+            WorkspaceId::new(),
+            SecretClass::ProtectedVariable,
+            "cross-platform",
+        );
+        let write = create_secret_store(false)
+            .put(&owner, "")
+            .expect("non-Linux secret store is available for the session");
+
+        assert_eq!(write.persistence, SecretPersistence::SessionOnly);
+    }
 }

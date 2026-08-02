@@ -7,18 +7,19 @@ mod tests {
     };
 
     use rcgen::{
-        BasicConstraints, CertificateParams, CertifiedKey, ExtendedKeyUsagePurpose, IsCa, KeyPair,
-        KeyUsagePurpose,
+        BasicConstraints, CertificateParams, CertifiedKey, DistinguishedName, DnType,
+        ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PKCS_RSA_SHA256,
     };
     use tokio::{
         io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
-        sync::{mpsc, oneshot},
+        sync::{mpsc, oneshot, Mutex as AsyncMutex},
     };
     use tokio_rustls::{
         rustls::{
             pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
             server::WebPkiClientVerifier,
+            version::TLS12,
             RootCertStore, ServerConfig,
         },
         TlsAcceptor,
@@ -32,6 +33,8 @@ mod tests {
             RequestBody, RequestContent, RequestDraftId, TimeoutPolicy, TlsPolicy, TransportPolicy,
         },
     };
+
+    static TLS_TEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
     #[tokio::test]
     async fn get_reaches_local_fixture_with_ordered_query_and_headers() {
@@ -145,6 +148,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_certificate_fails_by_default() {
+        let _tls_test_lock = TLS_TEST_LOCK.lock().await;
         let fixture = TlsFixture::new(false).await;
         let events = run_fixture_request(RequestContent {
             method: "GET".to_owned(),
@@ -161,6 +165,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_ca_fixture_succeeds_when_configured() {
+        let _tls_test_lock = TLS_TEST_LOCK.lock().await;
         let fixture = TlsFixture::new(false).await;
         let events = run_fixture_request(RequestContent {
             method: "GET".to_owned(),
@@ -178,6 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn mtls_fixture_succeeds_with_client_certificate_reference() {
+        let _tls_test_lock = TLS_TEST_LOCK.lock().await;
         let fixture = TlsFixture::new(true).await;
         let events = run_fixture_request(RequestContent {
             method: "GET".to_owned(),
@@ -295,7 +301,7 @@ mod tests {
                 timeouts: TimeoutPolicy {
                     connect_ms: 0,
                     overall_ms: 0,
-                    idle_ms: 50,
+                    idle_ms: 250,
                 },
                 ..TransportPolicy::default()
             },
@@ -1003,11 +1009,15 @@ mod tests {
                 .iter()
                 .filter(|event| event.kind.is_terminal())
                 .count(),
-            1
+            1,
+            "expected one terminal event, got: {events:#?}"
         );
-        assert!(events
-            .iter()
-            .any(|event| matches!(event.kind, ExecutionEventKind::Completed { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.kind, ExecutionEventKind::Completed { .. })),
+            "expected completed event, got: {events:#?}"
+        );
     }
 
     fn assert_one_cancelled_terminal(events: &[ExecutionEvent]) {
@@ -1068,7 +1078,8 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("bind tls fixture");
-            let address = listener.local_addr().expect("tls address").to_string();
+            let port = listener.local_addr().expect("tls address").port();
+            let address = format!("localhost:{port}");
             let server_config = certificates.server_config(require_client_cert);
             let acceptor = TlsAcceptor::from(Arc::new(server_config));
             let (ready_tx, mut ready_rx) = mpsc::channel(1);
@@ -1082,7 +1093,11 @@ mod tests {
                 let Ok(mut stream) = acceptor.accept(stream).await else {
                     return;
                 };
-                let _ = read_http_request(&mut stream).await;
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(250),
+                    read_http_request(&mut stream),
+                )
+                .await;
                 let _ = stream
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
                     .await;
@@ -1123,14 +1138,14 @@ mod tests {
 
     impl TestCertificates {
         fn new() -> Self {
-            let ca_key_pair = KeyPair::generate().expect("ca key");
+            let ca_key_pair = KeyPair::generate_for(&PKCS_RSA_SHA256).expect("ca key");
             let mut ca_params =
-                CertificateParams::new(vec!["Postmite Test CA".to_owned()]).expect("ca params");
-            ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-            ca_params.key_usages = vec![
-                KeyUsagePurpose::KeyCertSign,
-                KeyUsagePurpose::DigitalSignature,
-                KeyUsagePurpose::CrlSign,
+                CertificateParams::new(vec!["my.ca".to_owned()]).expect("ca params");
+            ca_params.distinguished_name = distinguished_name("my.ca");
+            ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+            ca_params.extended_key_usages = vec![
+                ExtendedKeyUsagePurpose::ServerAuth,
+                ExtendedKeyUsagePurpose::ClientAuth,
             ];
             let ca_cert = ca_params.self_signed(&ca_key_pair).expect("ca cert");
             let ca = CertifiedKey {
@@ -1140,12 +1155,14 @@ mod tests {
 
             let server = signed_certificate(
                 &ca,
-                vec!["127.0.0.1".to_owned(), "localhost".to_owned()],
+                vec!["localhost".to_owned()],
+                "localhost",
                 ExtendedKeyUsagePurpose::ServerAuth,
             );
             let client = signed_certificate(
                 &ca,
                 vec!["postmite-client".to_owned()],
+                "postmite-client",
                 ExtendedKeyUsagePurpose::ClientAuth,
             );
 
@@ -1169,8 +1186,8 @@ mod tests {
             let private_key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(
                 self.server.key_pair.serialize_der(),
             ));
-            let builder = ServerConfig::builder();
-            if require_client_cert {
+            let builder = ServerConfig::builder_with_protocol_versions(&[&TLS12]);
+            let mut config = if require_client_cert {
                 let mut roots = RootCertStore::empty();
                 roots
                     .add(CertificateDer::from(self.ca.cert.der().to_vec()))
@@ -1187,22 +1204,37 @@ mod tests {
                     .with_no_client_auth()
                     .with_single_cert(certificate_chain, private_key)
                     .expect("tls server config")
-            }
+            };
+            config.alpn_protocols = vec![b"http/1.1".to_vec()];
+            config
         }
     }
 
     fn signed_certificate(
         issuer: &CertifiedKey,
         subject_alt_names: Vec<String>,
+        common_name: &str,
         usage: ExtendedKeyUsagePurpose,
     ) -> CertifiedKey {
-        let key_pair = KeyPair::generate().expect("certificate key");
+        let key_pair = KeyPair::generate_for(&PKCS_RSA_SHA256).expect("certificate key");
         let mut params = CertificateParams::new(subject_alt_names).expect("certificate params");
+        params.distinguished_name = distinguished_name(common_name);
+        params.is_ca = IsCa::ExplicitNoCa;
+        params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyEncipherment,
+        ];
         params.extended_key_usages = vec![usage];
         let cert = params
             .signed_by(&key_pair, &issuer.cert, &issuer.key_pair)
             .expect("signed certificate");
         CertifiedKey { cert, key_pair }
+    }
+
+    fn distinguished_name(common_name: &str) -> DistinguishedName {
+        let mut distinguished_name = DistinguishedName::new();
+        distinguished_name.push(DnType::CommonName, common_name);
+        distinguished_name
     }
 
     struct FixtureServer {
@@ -1476,11 +1508,13 @@ mod tests {
             }
         }
 
-        let header_end = buffer
+        let Some(header_end) = buffer
             .windows(4)
             .position(|window| window == b"\r\n\r\n")
             .map(|index| index + 4)
-            .expect("header terminator");
+        else {
+            return String::from_utf8_lossy(&buffer).into_owned();
+        };
         let headers = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
         let content_length = headers
             .lines()

@@ -3,6 +3,6 @@
     "beforeBuildCommand": "true"
   },
   "bundle": {
-    "targets": ["deb", "appimage"]
+    "targets": ["dmg"]
   }
 }

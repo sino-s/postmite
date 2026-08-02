@@ -66,16 +66,26 @@ fn build_client(
         .no_deflate()
         .redirect(reqwest::redirect::Policy::none())
         .danger_accept_invalid_certs(!content.tls.verify);
+    builder = builder.tls_backend_rustls();
     builder = apply_timeouts(builder, &content.transport.timeouts);
     builder = apply_proxy(builder, content)?;
 
+    #[cfg(target_os = "windows")]
+    let mut use_native_tls = false;
     if let Some(reference) = content.tls.custom_ca_reference.as_deref() {
         if !reference.trim().is_empty() {
             let bytes = std::fs::read(resolve_reference_path(reference, base_directory)?)
                 .map_err(|_| HttpExecutionError::Certificate)?;
             let certificate = reqwest::Certificate::from_pem(&bytes)
                 .map_err(|_| HttpExecutionError::Certificate)?;
-            builder = builder.add_root_certificate(certificate);
+            #[cfg(target_os = "windows")]
+            {
+                // Keep Windows' SChannel trust stores and policy active while
+                // adding the user-provided private root for this client.
+                builder = builder.tls_backend_native().http1_only();
+                use_native_tls = true;
+            }
+            builder = builder.tls_certs_merge([certificate]);
         }
     }
 
@@ -86,14 +96,24 @@ fn build_client(
         (Some(certificate_reference), Some(key_reference))
             if !certificate_reference.trim().is_empty() && !key_reference.trim().is_empty() =>
         {
-            let mut pem = std::fs::read(resolve_reference_path(
+            let certificate_pem = std::fs::read(resolve_reference_path(
                 certificate_reference,
                 base_directory,
             )?)
             .map_err(|_| HttpExecutionError::Certificate)?;
-            let mut key = std::fs::read(resolve_reference_path(key_reference, base_directory)?)
+            let key = std::fs::read(resolve_reference_path(key_reference, base_directory)?)
                 .map_err(|_| HttpExecutionError::Certificate)?;
-            pem.append(&mut key);
+            let mut pem = certificate_pem.clone();
+            pem.extend_from_slice(&key);
+            #[cfg(target_os = "windows")]
+            let identity = if use_native_tls {
+                reqwest::Identity::from_pkcs8_pem(&certificate_pem, &key)
+                    .map_err(|_| HttpExecutionError::Certificate)?
+            } else {
+                reqwest::Identity::from_pem(&pem)
+                    .map_err(|_| HttpExecutionError::Certificate)?
+            };
+            #[cfg(not(target_os = "windows"))]
             let identity =
                 reqwest::Identity::from_pem(&pem).map_err(|_| HttpExecutionError::Certificate)?;
             builder = builder.identity(identity);
