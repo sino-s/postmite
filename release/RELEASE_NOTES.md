@@ -26,3 +26,17 @@ Postmite does not poll for updates. A release lookup is sent only after the user
 ## Package identity and publisher
 
 Postmite uses the `io.github.sino-s.postmite` package identifier. The publisher is `sino-s`, the owner of the `sino-s/postmite` source repository. `release/TRADEMARK_GATE.md` records the project-name decision; it does not assert a registered trademark.
+
+## Cross-platform v0.2.0 release pipeline
+
+The v0.2.0 release pipeline covers Ubuntu x86_64 `.deb` and AppImage packages,
+Windows x64 (`x86_64-pc-windows-msvc`) `.msi` packages, and Apple Silicon macOS
+(`aarch64-apple-darwin`) `.dmg` packages. Each platform and architecture has a
+separate artifact directory, target metadata record, SHA-256 checksum, dependency
+license record, third-party notice, and release-candidate evidence.
+
+Windows and macOS packages are unsigned in this release slice. Protected values
+are session-only and remain memory-only on Windows and macOS until separate native
+Credential Manager and Keychain security Issues are completed. No protected value
+is written to SQLite, release metadata, logs, diagnostics, snapshots, fixtures,
+screenshots, IPC errors, or uploaded artifacts.

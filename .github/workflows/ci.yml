@@ -218,9 +218,12 @@ jobs:
         run: node -p '"value=" + require("./package.json").version' >> "$GITHUB_OUTPUT"
 
       - name: Build and verify Ubuntu packages
+        env:
+          POSTMITE_RELEASE_TARGET: linux-x86_64
         run: |
           pnpm release:verify
-          pnpm release:bundle
+          pnpm build:web
+          pnpm release:bundle:linux
           pnpm release:artifacts
           pnpm release:verify-artifacts
           pnpm release:verify-candidate
@@ -231,6 +234,229 @@ jobs:
           name: postmite-ubuntu-x86_64
           path: artifacts/release/v${{ steps.release-version.outputs.value }}/linux-x86_64
           if-no-files-found: error
+
+  cross-platform-release:
+    name: ${{ matrix.name }}
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64 release
+            platform: windows
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            release-target: windows-x86_64
+            bundle-command: release:bundle:windows
+            artifact-name: postmite-windows-x86_64
+            artifact-directory: windows-x86_64
+          - name: Apple Silicon macOS release
+            platform: macos
+            runner: macos-14
+            target: aarch64-apple-darwin
+            release-target: macos-aarch64
+            bundle-command: release:bundle:macos
+            artifact-name: postmite-macos-aarch64
+            artifact-directory: macos-aarch64
+    runs-on: ${{ matrix.runner }}
+    env:
+      POSTMITE_RELEASE_TARGET: ${{ matrix.release-target }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify Windows x64 runner
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") { throw "Expected an x86_64 Windows runner." }
+
+      - name: Verify Apple Silicon runner
+        if: matrix.platform == 'macos'
+        run: test "$(uname -m)" = "arm64"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          cache-on-failure: true
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.1
+          run_install: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve release version
+        id: release-version
+        shell: bash
+        run: node -p '"value=" + require("./package.json").version' >> "$GITHUB_OUTPUT"
+
+      - name: Rust format
+        run: pnpm ci:rust:fmt
+
+      - name: Rust target check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked --target ${{ matrix.target }}
+
+      - name: Rust lint
+        run: pnpm ci:rust:clippy
+
+      - name: Rust tests
+        run: pnpm ci:rust:test
+
+      - name: Production web build
+        run: pnpm build:web
+
+      - name: Verify release source
+        run: pnpm release:verify
+
+      - name: Build target package
+        run: pnpm ${{ matrix.bundle-command }}
+
+      - name: Collect and verify target artifact
+        run: |
+          pnpm release:artifacts
+          pnpm release:verify-artifacts
+          pnpm release:verify-candidate
+
+      - name: Upload target artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: artifacts/release/v${{ steps.release-version.outputs.value }}/${{ matrix.artifact-directory }}
+          if-no-files-found: error
+
+  release-artifact-audit:
+    name: Download and audit all release artifacts
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    needs: [release-artifacts, cross-platform-release]
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download Ubuntu x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: postmite-ubuntu-x86_64
+          path: release-audit/linux-x86_64
+
+      - name: Download Windows x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: postmite-windows-x86_64
+          path: release-audit/windows-x86_64
+
+      - name: Download Apple Silicon macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: postmite-macos-aarch64
+          path: release-audit/macos-aarch64
+
+      - name: Verify downloaded platform artifacts
+        run: |
+          set -euo pipefail
+          verify_common() {
+            directory="$1"
+            key="$2"
+            platform="$3"
+            platform_label="$4"
+            architecture="$5"
+            rust_target="$6"
+            bundles="$7"
+            package_extensions="$8"
+            package_globs="$9"
+            architecture_tokens="${10}"
+            test -s "$directory/RELEASE_TARGET.json"
+            test -s "$directory/RELEASE_CANDIDATE.json"
+            test -s "$directory/DEPENDENCY_LICENSES.json"
+            test -s "$directory/THIRD_PARTY_NOTICES.md"
+            test -s "$directory/RELEASE_NOTES.md"
+            test -s "$directory/SHA256SUMS"
+            jq -e \
+              '(.version | type == "string" and length > 0) and
+               .productName == "Postmite" and
+               .packageIdentifier == "io.github.sino-s.postmite" and
+               .publisher == "sino-s" and
+               .githubRelease == "not published automatically" and
+               .nativeCapabilityBoundary == "main window: event listen/unlisten and clipboard text write only" and
+               (.nativeCapabilities | type == "array" and length == 3)' \
+              "$directory/RELEASE_CANDIDATE.json"
+            for extension in $package_globs; do
+              package_path=$(find "$directory" -maxdepth 1 -type f -name "*$extension" -print -quit)
+              test -n "$package_path"
+              test -s "$package_path"
+              package_name="${package_path##*/}"
+              package_matches=false
+              for token in $architecture_tokens; do
+                case "$package_name" in
+                  *"$token"*) package_matches=true ;;
+                esac
+              done
+              test "$package_matches" = true
+            done
+            test "$(wc -l < "$directory/SHA256SUMS")" -eq "$(echo "$package_globs" | wc -w)"
+            jq -e \
+              --arg key "$key" \
+              --arg platform "$platform" \
+              --arg platform_label "$platform_label" \
+              --arg architecture "$architecture" \
+              --arg rust_target "$rust_target" \
+              --argjson bundles "$bundles" \
+              --argjson package_extensions "$package_extensions" \
+              '.key == $key and
+               .platform == $platform and
+               .platformLabel == $platform_label and
+               .architecture == $architecture and
+               .rustTarget == $rust_target and
+               .bundles == $bundles and
+               .packageExtensions == $package_extensions' \
+              "$directory/RELEASE_TARGET.json"
+            jq -e \
+              --arg key "$key" \
+              --arg platform "$platform" \
+              --arg platform_label "$platform_label" \
+              --arg architecture "$architecture" \
+              --arg rust_target "$rust_target" \
+              --argjson bundles "$bundles" \
+              --argjson package_extensions "$package_extensions" \
+              '.artifactTarget.key == $key and
+               .artifactTarget.platform == $platform and
+               .artifactTarget.platformLabel == $platform_label and
+               .artifactTarget.architecture == $architecture and
+               .artifactTarget.rustTarget == $rust_target and
+               .artifactTarget.bundles == $bundles and
+               .artifactTarget.packageExtensions == $package_extensions' \
+              "$directory/RELEASE_CANDIDATE.json"
+            (cd "$directory" && sha256sum --check SHA256SUMS)
+          }
+          verify_common release-audit/linux-x86_64 linux-x86_64 linux "Ubuntu 24.04" x86_64 x86_64-unknown-linux-gnu '["deb","appimage"]' '[".deb",".AppImage"]' ".deb .AppImage" 'amd64 x86_64'
+          verify_common release-audit/windows-x86_64 windows-x86_64 windows Windows x86_64 x86_64-pc-windows-msvc '["msi"]' '[".msi"]' ".msi" 'x64 x86_64'
+          verify_common release-audit/macos-aarch64 macos-aarch64 macos "Apple Silicon macOS" aarch64 aarch64-apple-darwin '["dmg"]' '[".dmg"]' ".dmg" 'arm64 aarch64'
+          test "$(find release-audit/linux-x86_64 -maxdepth 1 -type f -name '*.deb' | wc -l)" -eq 1
+          test "$(find release-audit/linux-x86_64 -maxdepth 1 -type f -name '*.AppImage' | wc -l)" -eq 1
+          test "$(find release-audit/windows-x86_64 -maxdepth 1 -type f -name '*.msi' | wc -l)" -eq 1
+          test "$(find release-audit/macos-aarch64 -maxdepth 1 -type f -name '*.dmg' | wc -l)" -eq 1
+          test -s "$(find release-audit/linux-x86_64 -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -s "$(find release-audit/linux-x86_64 -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -s "$(find release-audit/windows-x86_64 -maxdepth 1 -type f -name '*.msi' -print -quit)"
+          test -s "$(find release-audit/macos-aarch64 -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -s release-audit/linux-x86_64/APPIMAGE_BUDGET.json
 
   release-smoke:
     name: Ubuntu release smoke

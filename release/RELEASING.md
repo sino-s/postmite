@@ -5,8 +5,11 @@ End-user installation and initial-use instructions live in the
 [repository README](../README.md).
 
 Postmite v0.1.1 ships an unsigned Debian package and an unsigned AppImage.
-Windows, macOS, package signing, automatic publication, and automatic updates
-are not part of this procedure.
+The v0.2.0 release pipeline additionally verifies an unsigned Windows x64 MSI and
+an unsigned Apple Silicon macOS DMG. Native protected-value persistence on those
+platforms is not part of this procedure: values are session-only and memory-only.
+Package signing, automatic publication, and automatic updates are not part of
+this procedure.
 
 The public v0.1.0 tag, Release, notes, and assets are immutable. v0.1.1
 supersedes that release and must be published as a new tag with new artifacts;
@@ -43,6 +46,19 @@ gh repo view sino-s/postmite --json nameWithOwner,defaultBranchRef
 Do not set `POSTMITE_SESSION_ONLY_SECRETS` during the final desktop acceptance
 test. That test must exercise the Linux Secret Service integration.
 
+Cross-platform CI jobs use these explicit target directories and artifacts:
+
+- `linux-x86_64`: one `.deb` and one `.AppImage`, plus `APPIMAGE_BUDGET.json`.
+- `windows-x86_64`: one `.msi` from `x86_64-pc-windows-msvc`.
+- `macos-aarch64`: one `.dmg` from `aarch64-apple-darwin`.
+- `*.msi` is the Windows x64 package evidence in `windows-x86_64`.
+- `*.dmg` is the Apple Silicon package evidence in `macos-aarch64`.
+
+Every directory also contains `SHA256SUMS`, `DEPENDENCY_LICENSES.json`,
+`THIRD_PARTY_NOTICES.md`, `RELEASE_NOTES.md`, `RELEASE_CANDIDATE.json`, and
+`RELEASE_TARGET.json`. Download all three CI artifacts and run
+`sha256sum --check SHA256SUMS` in each directory before any publication step.
+
 ## Prepare the release commit
 
 Start from a clean, current `main`. These synchronization commands change only
@@ -78,7 +94,7 @@ test "$RELEASE_VERSION" = "$TAURI_VERSION"
 
 test "$RELEASE_TAG" = "v0.1.1"
 test "$(node -p "require('./src-tauri/tauri.conf.json').identifier")" = "io.github.sino-s.postmite"
-test "$(node -p "require('./src-tauri/tauri.conf.json').bundle.targets.join(',')")" = "deb,appimage"
+test "$(node -p "require('./src-tauri/tauri.conf.json').bundle.targets.join(',')")" = "deb,appimage,msi,dmg"
 ```
 
 First verify that the prior public release remains present and immutable. The
@@ -148,6 +164,9 @@ The exact-commit run must show `success` for all of these jobs:
 - `Release performance`
 - `Ubuntu release artifacts`
 - `Ubuntu release smoke`
+- `Windows x64 release`
+- `Apple Silicon macOS release`
+- `Download and audit all release artifacts`
 
 Stop if the run is absent, uses another commit, is incomplete, skips one of
 these release jobs, or has any non-success conclusion.
@@ -195,13 +214,114 @@ gh run view "$TAG_RUN_ID" --json jobs \
   --jq '.jobs[] | [.name, .status, .conclusion] | @tsv'
 ```
 
-Require the same five successful jobs listed for the `main` run. Do not use
+Require the same eight successful jobs listed for the `main` run. Do not use
 artifacts from a pull request, another commit, another tag, or a local bundle.
+
+## Audit v0.2.0 cross-platform CI artifacts
+
+The v0.2.0 release pipeline is not published automatically. Before any future
+publisher-specific publication procedure, download and verify all three
+platform-specific CI artifacts from the exact successful run:
+
+```bash
+set -euo pipefail
+
+CROSS_PLATFORM_STAGE=$(mktemp -d)
+gh run download "$TAG_RUN_ID" --name postmite-ubuntu-x86_64 \
+  --dir "$CROSS_PLATFORM_STAGE/linux-x86_64"
+gh run download "$TAG_RUN_ID" --name postmite-windows-x86_64 \
+  --dir "$CROSS_PLATFORM_STAGE/windows-x86_64"
+gh run download "$TAG_RUN_ID" --name postmite-macos-aarch64 \
+  --dir "$CROSS_PLATFORM_STAGE/macos-aarch64"
+
+verify_cross_platform_target() {
+  directory="$1"
+  key="$2"
+  platform="$3"
+  platform_label="$4"
+  architecture="$5"
+  rust_target="$6"
+  bundles="$7"
+  package_extensions="$8"
+  package_globs="$9"
+  architecture_tokens="${10}"
+
+  for evidence in SHA256SUMS DEPENDENCY_LICENSES.json THIRD_PARTY_NOTICES.md \
+    RELEASE_NOTES.md RELEASE_CANDIDATE.json RELEASE_TARGET.json; do
+    test -s "$directory/$evidence"
+  done
+  jq -e \
+    '(.version | type == "string" and length > 0) and
+     .productName == "Postmite" and
+     .packageIdentifier == "io.github.sino-s.postmite" and
+     .publisher == "sino-s" and
+     .githubRelease == "not published automatically" and
+     .nativeCapabilityBoundary == "main window: event listen/unlisten and clipboard text write only" and
+     (.nativeCapabilities | type == "array" and length == 3)' \
+    "$directory/RELEASE_CANDIDATE.json"
+  for extension in $package_globs; do
+    package_path=$(find "$directory" -maxdepth 1 -type f -name "*$extension" -print -quit)
+    test -n "$package_path"
+    test -s "$package_path"
+    package_name="${package_path##*/}"
+    package_matches=false
+    for token in $architecture_tokens; do
+      case "$package_name" in
+        *"$token"*) package_matches=true ;;
+      esac
+    done
+    test "$package_matches" = true
+  done
+  test "$(wc -l < "$directory/SHA256SUMS")" -eq "$(echo "$package_globs" | wc -w)"
+  jq -e \
+    --arg key "$key" \
+    --arg platform "$platform" \
+    --arg platform_label "$platform_label" \
+    --arg architecture "$architecture" \
+    --arg rust_target "$rust_target" \
+    --argjson bundles "$bundles" \
+    --argjson package_extensions "$package_extensions" \
+    '.key == $key and .platform == $platform and
+     .platformLabel == $platform_label and .architecture == $architecture and
+     .rustTarget == $rust_target and .bundles == $bundles and
+     .packageExtensions == $package_extensions' \
+    "$directory/RELEASE_TARGET.json"
+  jq -e \
+    --arg key "$key" \
+    --arg platform "$platform" \
+    --arg platform_label "$platform_label" \
+    --arg architecture "$architecture" \
+    --arg rust_target "$rust_target" \
+    --argjson bundles "$bundles" \
+    --argjson package_extensions "$package_extensions" \
+    '.artifactTarget.key == $key and .artifactTarget.platform == $platform and
+     .artifactTarget.platformLabel == $platform_label and
+     .artifactTarget.architecture == $architecture and
+     .artifactTarget.rustTarget == $rust_target and
+     .artifactTarget.bundles == $bundles and
+     .artifactTarget.packageExtensions == $package_extensions' \
+    "$directory/RELEASE_CANDIDATE.json"
+  (cd "$directory" && sha256sum --check SHA256SUMS)
+}
+
+verify_cross_platform_target \
+  "$CROSS_PLATFORM_STAGE/linux-x86_64" linux-x86_64 linux "Ubuntu 24.04" \
+  x86_64 x86_64-unknown-linux-gnu '["deb","appimage"]' '[".deb",".AppImage"]' ".deb .AppImage" "amd64 x86_64"
+verify_cross_platform_target \
+  "$CROSS_PLATFORM_STAGE/windows-x86_64" windows-x86_64 windows Windows \
+  x86_64 x86_64-pc-windows-msvc '["msi"]' '[".msi"]' ".msi" "x64 x86_64"
+verify_cross_platform_target \
+  "$CROSS_PLATFORM_STAGE/macos-aarch64" macos-aarch64 macos "Apple Silicon macOS" \
+  aarch64 aarch64-apple-darwin '["dmg"]' '[".dmg"]' ".dmg" "arm64 aarch64"
+test -s "$CROSS_PLATFORM_STAGE/linux-x86_64/APPIMAGE_BUDGET.json"
+```
 
 ## Stage and verify the workflow artifacts
 
-Download the single platform artifact from the successful tag run into a new
-temporary directory:
+The v0.1.1 corrective publication below is intentionally Ubuntu-only. Download
+its single platform artifact from the successful tag run into a new temporary
+directory; the v0.2.0 cross-platform artifacts are audited above and are not
+published by this procedure.
 
 ```bash
 RELEASE_STAGE=$(mktemp -d)
@@ -211,7 +331,7 @@ gh run download "$TAG_RUN_ID" \
 find "$RELEASE_STAGE" -maxdepth 1 -type f -printf '%f\n' | sort
 ```
 
-Exactly these eight files must be present. The package filenames may contain
+Exactly these nine files must be present. The package filenames may contain
 the version and architecture, but there must be exactly one `.deb` and one
 `.AppImage`:
 
@@ -222,6 +342,7 @@ the version and architecture, but there must be exactly one `.deb` and one
 - `THIRD_PARTY_NOTICES.md`
 - `APPIMAGE_BUDGET.json`
 - `RELEASE_CANDIDATE.json`
+- `RELEASE_TARGET.json`
 - `RELEASE_NOTES.md`
 
 Verify the downloaded evidence before creating a GitHub Release:
@@ -229,13 +350,14 @@ Verify the downloaded evidence before creating a GitHub Release:
 ```bash
 test "$(find "$RELEASE_STAGE" -maxdepth 1 -type f -name '*.deb' | wc -l)" -eq 1
 test "$(find "$RELEASE_STAGE" -maxdepth 1 -type f -name '*.AppImage' | wc -l)" -eq 1
-test "$(find "$RELEASE_STAGE" -maxdepth 1 -type f | wc -l)" -eq 8
+test "$(find "$RELEASE_STAGE" -maxdepth 1 -type f | wc -l)" -eq 9
 for EVIDENCE_FILE in \
   SHA256SUMS \
   DEPENDENCY_LICENSES.json \
   THIRD_PARTY_NOTICES.md \
   APPIMAGE_BUDGET.json \
   RELEASE_CANDIDATE.json \
+  RELEASE_TARGET.json \
   RELEASE_NOTES.md; do
   test -s "$RELEASE_STAGE/$EVIDENCE_FILE"
 done
@@ -245,7 +367,8 @@ jq -e \
   '.version == "0.1.1" and
    .packageIdentifier == "io.github.sino-s.postmite" and
    .publisher == "sino-s" and
-   .platforms == ["Ubuntu 24.04 x86_64"]' \
+   .platforms == ["Ubuntu 24.04 x86_64", "Windows x86_64", "Apple Silicon macOS aarch64"] and
+   .artifactTarget.key == "linux-x86_64"' \
   "$RELEASE_STAGE/RELEASE_CANDIDATE.json"
 ```
 
@@ -264,12 +387,14 @@ gh release view "$RELEASE_TAG" \
   --json tagName,targetCommitish,isDraft,isPrerelease,assets,url
 ```
 
-Require the tag name, `isDraft: true`, `isPrerelease: false`, and the same eight
+Require the tag name, `isDraft: true`, `isPrerelease: false`, and the same nine
 non-empty assets. The peeled remote tag check above, rather than
 `targetCommitish`, is the authority for the exact release commit. Review the
-rendered notes and unsigned Ubuntu-only boundary in the GitHub web UI. A draft
-may be discarded by the publisher if it has never been public, but its pushed
-tag remains immutable.
+rendered notes and the unsigned Ubuntu-only boundary of the v0.1.1 corrective
+publication in the GitHub web UI. The v0.2.0 Windows/macOS artifacts remain
+unsigned CI artifacts here; their publication requires a separate authorized
+procedure. A draft may be discarded by the publisher if it has never been
+public, but its pushed tag remains immutable.
 
 ## Publish and verify public assets
 
@@ -291,7 +416,7 @@ Download the public assets again. Do not reuse `RELEASE_STAGE` for this check:
 ```bash
 PUBLIC_STAGE=$(mktemp -d)
 gh release download "$RELEASE_TAG" --dir "$PUBLIC_STAGE"
-test "$(find "$PUBLIC_STAGE" -maxdepth 1 -type f | wc -l)" -eq 8
+test "$(find "$PUBLIC_STAGE" -maxdepth 1 -type f | wc -l)" -eq 9
 (cd "$PUBLIC_STAGE" && sha256sum --check SHA256SUMS)
 test "$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | cut -f1)" = "$RELEASE_COMMIT"
 test "$(git ls-remote origin "refs/tags/$PREVIOUS_RELEASE_TAG^{}" | cut -f1)" = "$PREVIOUS_RELEASE_COMMIT"

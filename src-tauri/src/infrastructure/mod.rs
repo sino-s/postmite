@@ -2,5 +2,6 @@
 
 pub mod http;
 pub mod oauth;
+#[cfg(target_os = "linux")]
 pub mod secrets;
 pub mod sqlite;
