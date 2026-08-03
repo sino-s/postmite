@@ -20,20 +20,25 @@ const workspaceDomain = readFileSync(join(repoRoot, "src-tauri/src/domain/worksp
 
 test("README describes the supported release artifacts and commands", () => {
   const releaseVersion = packageJson.version.replaceAll(".", "\\.");
-  assert.equal(packageJson.version, "0.1.1");
+  assert.equal(packageJson.version, "0.2.0");
   assert.doesNotMatch(readme, /実装開始前/);
   assert.match(readme, /Ubuntu 24\.04 LTS x86_64/);
   assert.match(readme, new RegExp(`Postmite_${releaseVersion}_amd64\\.deb`));
   assert.match(readme, new RegExp(`Postmite_${releaseVersion}_amd64\\.AppImage`));
-  assert.match(readme, /sha256sum --check SHA256SUMS/);
+  for (const checksum of ["linux-x86_64-SHA256SUMS", "windows-x86_64-SHA256SUMS", "macos-aarch64-SHA256SUMS"]) {
+    assert.match(readme, new RegExp(`sha256sum --check ${checksum}`));
+  }
+  assert.match(readme, /WindowsとmacOSのProtected valuesはsession-only・memory-only/);
   assert.match(readme, new RegExp(`sudo apt install \\./Postmite_${releaseVersion}_amd64\\.deb`));
   assert.match(readme, new RegExp(`chmod \\+x \\./Postmite_${releaseVersion}_amd64\\.AppImage`));
+  assert.match(readme, /Postmite_0\.2\.0_x64_en-US\.msi/);
+  assert.match(readme, /Postmite_0\.2\.0_aarch64\.dmg/);
   assert.match(releaseNotes, new RegExp(`Postmite_${releaseVersion}_amd64\\.deb`));
   assert.match(releaseNotes, new RegExp(`Postmite_${releaseVersion}_amd64\\.AppImage`));
-  assert.match(readme, /v0\.1\.1は、公開済みのv0\.1\.0を変更せず/);
-  assert.match(releaseNotes, /supersedes v0\.1\.0 without moving its tag/);
+  assert.match(readme, /v0\.2\.0は、公開済みのv0\.1\.1を変更せず/);
+  assert.match(releaseNotes, /supersedes v0\.1\.1 without moving its tag/);
   assert.doesNotMatch(readme, /Postmite_0\.1\.0_amd64/);
-  assert.deepEqual(tauriConfig.bundle.targets, ["deb", "appimage"]);
+  assert.deepEqual(tauriConfig.bundle.targets, ["deb", "appimage", "msi", "dmg"]);
 });
 
 test("README records the local persistence and Secret boundaries", () => {
