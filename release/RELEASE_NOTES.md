@@ -1,23 +1,22 @@
-# Postmite 0.1.1
+# Postmite 0.2.0
 
-v0.1.1 is a corrective release that supersedes v0.1.0 without moving its tag
-or replacing its published assets. It adds shipped UI flows to create, select,
-rename, and delete local workspaces and to create, select, edit, order, and
-delete Environment variables.
+v0.2.0 is a cross-platform preview release that supersedes v0.1.1 without moving its tag or replacing its published assets. It keeps the local-first workspace and Environment model while adding downloadable Windows x64 and Apple Silicon macOS packages to the verified Ubuntu release path.
 
-Plain Environment values persist in the local workspace database. Secret
-values remain references to the Linux Secret Service, with an explicitly
-reported session-only fallback when protected storage is unavailable. An
-unavailable Secret reference is rejected before network execution and is never
-silently sent as a placeholder.
+## Downloads
 
-## Ubuntu 24.04 x86_64
+- `Postmite_0.2.0_amd64.deb` and `Postmite_0.2.0_amd64.AppImage` target Ubuntu 24.04 x86_64.
+- `Postmite_0.2.0_x64_en-US.msi` targets Windows x64.
+- `Postmite_0.2.0_aarch64.dmg` targets Apple Silicon macOS.
+- Verify Ubuntu with `sha256sum --check linux-x86_64-SHA256SUMS`, Windows with `sha256sum --check windows-x86_64-SHA256SUMS`, or macOS with `sha256sum --check macos-aarch64-SHA256SUMS` before installation or execution.
+- `SHA256SUMS` is also included as a complete all-package checksum for release auditing.
 
-- `Postmite_0.1.1_amd64.deb` installs the package.
-- `Postmite_0.1.1_amd64.AppImage` runs without installation after it is made executable.
-- These Ubuntu preview packages are unsigned; package signing is not included in v0.1.1.
-- Verify the SHA-256 checksum before installing or running either artifact.
-- The AppImage contains Ubuntu's WebKit runtime closure under `usr/lib`; `APPIMAGE_BUDGET.json` records that excluded runtime size and the compressed Postmite payload used for the 30-MiB budget.
+These cross-platform preview packages are unsigned; package signing is not included in v0.2.0.
+
+## Platform and Secret boundaries
+
+Linux uses the Secret Service when it is available. Protected values on Windows and macOS are session-only and remain memory-only until separate native Credential Manager and Keychain security Issues are completed.
+
+Secret values are not written to SQLite, release metadata, logs, diagnostics, snapshots, fixtures, screenshots, IPC errors, or uploaded artifacts.
 
 ## Update checks
 
@@ -26,17 +25,3 @@ Postmite does not poll for updates. A release lookup is sent only after the user
 ## Package identity and publisher
 
 Postmite uses the `io.github.sino-s.postmite` package identifier. The publisher is `sino-s`, the owner of the `sino-s/postmite` source repository. `release/TRADEMARK_GATE.md` records the project-name decision; it does not assert a registered trademark.
-
-## Cross-platform v0.2.0 release pipeline
-
-The v0.2.0 release pipeline covers Ubuntu x86_64 `.deb` and AppImage packages,
-Windows x64 (`x86_64-pc-windows-msvc`) `.msi` packages, and Apple Silicon macOS
-(`aarch64-apple-darwin`) `.dmg` packages. Each platform and architecture has a
-separate artifact directory, target metadata record, SHA-256 checksum, dependency
-license record, third-party notice, and release-candidate evidence.
-
-Windows and macOS packages are unsigned in this release slice. Protected values
-are session-only and remain memory-only on Windows and macOS until separate native
-Credential Manager and Keychain security Issues are completed. No protected value
-is written to SQLite, release metadata, logs, diagnostics, snapshots, fixtures,
-screenshots, IPC errors, or uploaded artifacts.

@@ -2,9 +2,9 @@
 
 Postmiteは、個人のAPI開発作業を端末内で完結させる、Tauri製のデスクトップAPIクライアントです。
 
-v0.1.1はUbuntu 24.04 LTS x86_64向けのプレビューです。
+v0.2.0はUbuntu 24.04 LTS x86_64、Windows x64、Apple Silicon macOS向けのプレビューです。
 ローカルワークスペースを中心に、HTTPリクエストの作成と実行、Collection、Environment、実行記録を一つのアプリで扱えます。
-v0.1.1は、公開済みのv0.1.0を変更せず、ワークスペースとEnvironmentの管理機能を追加した修正版です。
+v0.2.0は、公開済みのv0.1.1を変更せず、Windows x64とApple Silicon macOSの配布対象を追加したリリースです。
 
 ## 主な機能
 
@@ -16,30 +16,31 @@ v0.1.1は、公開済みのv0.1.0を変更せず、ワークスペースとEnvir
 - Postman Collection v2.1とcURLのImport、Postman形式のExport、ネイティブバックアップと復元
 - 診断BundleのExport、SQLite破損時の復旧支援、日本語と英語の表示
 
-アカウント、クラウド同期、チーム共有、GraphQL、WebSocket、pre-request script、test script、OpenAPIはv0.1.1の対象外です。
-WindowsとmacOSもv0.1.1のサポート対象ではありません。
+アカウント、クラウド同期、チーム共有、GraphQL、WebSocket、pre-request script、test script、OpenAPIはv0.2.0の対象外です。
 
 ## インストール
 
-[GitHub Releases](https://github.com/sino-s/postmite/releases)から、次の3ファイルを同じディレクトリへダウンロードしてください。
+[GitHub Releases](https://github.com/sino-s/postmite/releases)から、対象プラットフォームのパッケージと`SHA256SUMS`を同じディレクトリへダウンロードしてください。
 
-- `Postmite_0.1.1_amd64.deb`
-- `Postmite_0.1.1_amd64.AppImage`
-- `SHA256SUMS`
+- `Postmite_0.2.0_amd64.deb`または`Postmite_0.2.0_amd64.AppImage`と`linux-x86_64-SHA256SUMS`（Ubuntu）
+- `Postmite_0.2.0_x64_en-US.msi`と`windows-x86_64-SHA256SUMS`（Windows x64）
+- `Postmite_0.2.0_aarch64.dmg`と`macos-aarch64-SHA256SUMS`（Apple Silicon macOS）
 
-配布する`.deb`とAppImageには署名がありません。
-インストールまたは実行の前に、両方のSHA-256を検証してください。
+配布パッケージには署名がありません。
+インストールまたは実行の前に、使用するパッケージのSHA-256を検証してください。
 
 ```bash
-sha256sum --check SHA256SUMS
+sha256sum --check linux-x86_64-SHA256SUMS  # Ubuntu
+sha256sum --check windows-x86_64-SHA256SUMS  # Windows x64
+sha256sum --check macos-aarch64-SHA256SUMS  # Apple Silicon macOS
 ```
 
-両方のファイルが`OK`になったことを確認してから、いずれか一方を使用します。
+使用するパッケージが`OK`になったことを確認してから実行します。
 
 ### Debian package
 
 ```bash
-sudo apt install ./Postmite_0.1.1_amd64.deb
+sudo apt install ./Postmite_0.2.0_amd64.deb
 postmite
 ```
 
@@ -48,11 +49,19 @@ postmite
 ### AppImage
 
 ```bash
-chmod +x ./Postmite_0.1.1_amd64.AppImage
-./Postmite_0.1.1_amd64.AppImage
+chmod +x ./Postmite_0.2.0_amd64.AppImage
+./Postmite_0.2.0_amd64.AppImage
 ```
 
 AppImageはシステムへインストールせずに実行できます。
+
+### Windows x64
+
+ダウンロードした`Postmite_0.2.0_x64_en-US.msi`を実行してインストールします。Windowsパッケージは署名されていません。
+
+### Apple Silicon macOS
+
+ダウンロードした`Postmite_0.2.0_aarch64.dmg`を開き、表示されたアプリケーションを使用します。macOSパッケージは署名されていません。
 
 ## 最初のリクエスト
 
@@ -80,12 +89,13 @@ Secret値を除き、Postmiteがファイルを作成する場所は、以上の
 Secret値はSQLite、診断ログ、Export、バックアップへ平文で保存しません。
 UbuntuではOSのSecret ServiceへSecret値を保存します。
 Secret Serviceが利用できない場合やロックされている場合、その起動中だけ有効なセッションストレージへ切り替わり、アプリ終了後には復元できません。
+WindowsとmacOSのProtected valuesはsession-only・memory-onlyで、ネイティブのCredential ManagerやKeychainへ永続化しません。
 
 ## 更新
 
 Postmiteはバックグラウンドで更新を確認しません。
 ユーザーが画面上の**Check for updates**を選んだときだけGitHub Releaseを確認します。
-v0.1.1に自動更新機能はありません。
+v0.2.0に自動更新機能はありません。
 
 変更内容は[Release notes](./release/RELEASE_NOTES.md)で確認できます。
 不具合や要望は[GitHub Issues](https://github.com/sino-s/postmite/issues)へ報告してください。
