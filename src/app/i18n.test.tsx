@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   detectLocale,
@@ -33,6 +33,8 @@ function ErrorFixture() {
 }
 
 describe("i18n", () => {
+  beforeEach(() => window.localStorage.clear());
+
   it("keeps Japanese and English catalogs in parity", () => {
     expect(translationKeyParity()).toBe(true);
   });
@@ -54,10 +56,31 @@ describe("i18n", () => {
 
     await user.selectOptions(screen.getByLabelText("language"), "ja");
 
+    expect(window.localStorage.getItem("postmite.locale")).toBe("ja");
     expect(screen.getByText("送信")).toBeInTheDocument();
     expect(screen.getByText("JSON を整形")).toBeInTheDocument();
     expect(screen.getByText("JSON が正しくありません（3 行、7 列）。")).toBeInTheDocument();
     expect(screen.getByText("アプリケーションの状態を利用できません。再試行してください。")).toBeInTheDocument();
     expect(screen.getByLabelText("draft")).toHaveValue("unsaved request");
+  });
+
+  it("restores a saved language after the provider remounts", async () => {
+    const user = userEvent.setup();
+    const firstRender = render(<I18nProvider><LocaleFixture /></I18nProvider>);
+
+    await user.selectOptions(screen.getByLabelText("language"), "ja");
+    firstRender.unmount();
+    render(<I18nProvider><LocaleFixture /></I18nProvider>);
+
+    expect(screen.getByLabelText("language")).toHaveValue("ja");
+    expect(screen.getByText("送信")).toBeInTheDocument();
+  });
+
+  it("falls back to operating-system detection for an invalid saved language", () => {
+    window.localStorage.setItem("postmite.locale", "fr");
+
+    render(<I18nProvider><LocaleFixture /></I18nProvider>);
+
+    expect(screen.getByLabelText("language")).toHaveValue(detectLocale());
   });
 });
