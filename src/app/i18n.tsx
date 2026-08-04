@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 export const supportedLocales = ["en", "ja"] as const;
 export type AppLocale = (typeof supportedLocales)[number];
@@ -333,6 +333,14 @@ export function detectLocale(language = typeof navigator === "undefined" ? "en" 
   return language.toLowerCase().startsWith("ja") ? "ja" : "en";
 }
 
+const localeStorageKey = "postmite.locale";
+
+function storedLocale(): AppLocale {
+  if (typeof window === "undefined") return detectLocale();
+  const value = window.localStorage.getItem(localeStorageKey);
+  return value === "en" || value === "ja" ? value : detectLocale();
+}
+
 function interpolate(message: string, values?: TranslationValues) {
   return message.replace(/\{(\w+)\}/g, (_, key: string) => String(values?.[key] ?? `{${key}}`));
 }
@@ -360,7 +368,10 @@ const fallbackI18n: I18n = {
 };
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocale] = useState<AppLocale>(detectLocale);
+  const [locale, setLocale] = useState<AppLocale>(storedLocale);
+  useEffect(() => {
+    window.localStorage.setItem(localeStorageKey, locale);
+  }, [locale]);
   const value = useMemo<I18n>(() => ({
     locale,
     setLocale,
