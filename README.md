@@ -2,9 +2,9 @@
 
 Postmiteは、個人のAPI開発作業を端末内で完結させる、Tauri製のデスクトップAPIクライアントです。
 
-v0.2.0はUbuntu 24.04 LTS x86_64、Windows x64、Apple Silicon macOS向けのプレビューです。
+v0.2.0はUbuntu 24.04 LTS x86_64、Windows x64、Apple Silicon macOS向けの歴史的なプレビューです。
 ローカルワークスペースを中心に、HTTPリクエストの作成と実行、Collection、Environment、実行記録を一つのアプリで扱えます。
-v0.2.0は、公開済みのv0.1.1を変更せず、Windows x64とApple Silicon macOSの配布対象を追加したリリースです。
+v0.2.0は、公開済みのv0.1.1を変更せず、Windows x64とApple Silicon macOSの配布対象を追加したリリースです。次回以降の公開Releaseでは、macOS成果物を配布せず、Apple Silicon Mac上でのソースビルドを案内します。
 
 ## 主な機能
 
@@ -24,7 +24,6 @@ v0.2.0は、公開済みのv0.1.1を変更せず、Windows x64とApple Silicon m
 
 - `Postmite_0.2.0_amd64.deb`または`Postmite_0.2.0_amd64.AppImage`と`linux-x86_64-SHA256SUMS`（Ubuntu）
 - `Postmite_0.2.0_x64_en-US.msi`と`windows-x86_64-SHA256SUMS`（Windows x64）
-- `Postmite_0.2.0_aarch64.dmg`と`macos-aarch64-SHA256SUMS`（Apple Silicon macOS）
 
 配布パッケージには署名がありません。
 インストールまたは実行の前に、使用するパッケージのSHA-256を検証してください。
@@ -32,7 +31,6 @@ v0.2.0は、公開済みのv0.1.1を変更せず、Windows x64とApple Silicon m
 ```bash
 sha256sum --check linux-x86_64-SHA256SUMS  # Ubuntu
 sha256sum --check windows-x86_64-SHA256SUMS  # Windows x64
-sha256sum --check macos-aarch64-SHA256SUMS  # Apple Silicon macOS
 ```
 
 使用するパッケージが`OK`になったことを確認してから実行します。
@@ -59,9 +57,21 @@ AppImageはシステムへインストールせずに実行できます。
 
 ダウンロードした`Postmite_0.2.0_x64_en-US.msi`を実行してインストールします。Windowsパッケージは署名されていません。
 
-### Apple Silicon macOS
+### Apple Silicon macOS source build
 
-ダウンロードした`Postmite_0.2.0_aarch64.dmg`を開き、表示されたアプリケーションを使用します。macOSパッケージは署名されていません。
+v0.2.0の公開Releaseには、歴史的な未署名の`Postmite_0.2.0_aarch64.dmg`が含まれています。このassetとv0.2.0のRelease notesはimmutableな履歴として残します。次回以降の公開ReleaseではmacOSのDMGを配布しません。
+
+Apple Silicon Macで使う場合は、Xcode Command Line Tools、Node.js 22、pnpm 11.1.1、Rust 1.88.0を用意して、リポジトリをcloneし、ローカルで起動します。
+
+```bash
+xcode-select --install
+git clone https://github.com/sino-s/postmite.git
+cd postmite
+pnpm install --frozen-lockfile
+pnpm tauri
+```
+
+`pnpm tauri`は開発用のTauriアプリを起動します。ローカルでDMGを作成する場合は`pnpm release:bundle:macos`を使用できますが、Apple Developer署名のないDMGです。
 
 ## 最初のリクエスト
 
@@ -102,7 +112,7 @@ v0.2.0に自動更新機能はありません。
 
 ## Development
 
-開発環境はUbuntu 24.04 LTS x86_64、Node.js 22、pnpm 11.1.1、Rust 1.88.0を基準とします。
+開発環境はUbuntu 24.04 LTS x86_64またはApple Silicon macOS、Node.js 22、pnpm 11.1.1、Rust 1.88.0を基準とします。
 Tauriのビルドには`libayatana-appindicator3-dev`、`librsvg2-dev`、`libwebkit2gtk-4.1-dev`が必要です。
 
 ```bash

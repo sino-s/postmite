@@ -52,6 +52,7 @@ export function inspectReleaseCandidate({
   const manifest = read("src-tauri/Cargo.toml");
   const trademarkGate = read("release/TRADEMARK_GATE.md");
   const workflow = read(".github/workflows/ci.yml");
+  const readme = read("README.md");
   const updateTest = read("src-tauri/src/application/update.rs");
   const releaseNotes = read("release/RELEASE_NOTES.md");
 
@@ -63,9 +64,10 @@ export function inspectReleaseCandidate({
   if (/gh\s+release\s+create|actions\/create-release|softprops\/action-gh-release/i.test(workflow)) fail("CI must not publish a GitHub release.");
   if (!/sends_no_network_request_before_the_manual_check_then_requests_once/.test(updateTest)) fail("Manual update network behavior must have a regression test.");
   if (!releaseNotes.includes("does not poll") || !releaseNotes.includes("`io.github.sino-s.postmite`") || !releaseNotes.includes("publisher is `sino-s`")) fail("Release notes must describe opt-in updates, package identity, and publisher.");
-  if (!releaseNotes.includes("Windows x64") || !releaseNotes.includes("Apple Silicon macOS") || !releaseNotes.includes("session-only")) fail("Release notes must describe cross-platform targets and session-only protected values.");
+  if (!releaseNotes.includes("Windows x64") || !releaseNotes.includes("Apple Silicon macOS") || !releaseNotes.includes("session-only")) fail("Release notes must describe the historical cross-platform targets and session-only protected values.");
+  if (!readme.includes("Apple Silicon macOS") || !readme.includes("pnpm install --frozen-lockfile") || !readme.includes("pnpm tauri")) fail("README must document the Apple Silicon macOS source-build path.");
   if (!manifest.includes('[target.\'cfg(target_os = "linux")\'.dependencies]') || !manifest.includes('secret-service = { version = "5.1.0"')) fail("Linux Secret Service must be target-gated in the Cargo manifest.");
-  if (!workflow.includes("windows-x86_64") || !workflow.includes("macos-aarch64")) fail("Release workflow must expose explicit Windows and macOS target jobs.");
+  if (!workflow.includes("windows-x86_64") || /macos-aarch64|aarch64-apple-darwin|postmite-macos-aarch64/.test(workflow)) fail("Release workflow must publish Windows without a macOS artifact job.");
   if (!trademarkGate.includes("approved for distribution by `sino-s`") || !trademarkGate.includes("does not claim that `Postmite` is a registered trademark")) fail("Release candidate must record a bounded project-name gate.");
 
   return {

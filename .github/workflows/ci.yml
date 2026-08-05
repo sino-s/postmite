@@ -251,14 +251,6 @@ jobs:
             bundle-command: release:bundle:windows
             artifact-name: postmite-windows-x86_64
             artifact-directory: windows-x86_64
-          - name: Apple Silicon macOS release
-            platform: macos
-            runner: macos-14
-            target: aarch64-apple-darwin
-            release-target: macos-aarch64
-            bundle-command: release:bundle:macos
-            artifact-name: postmite-macos-aarch64
-            artifact-directory: macos-aarch64
     runs-on: ${{ matrix.runner }}
     env:
       POSTMITE_RELEASE_TARGET: ${{ matrix.release-target }}
@@ -272,10 +264,6 @@ jobs:
         shell: pwsh
         run: |
           if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") { throw "Expected an x86_64 Windows runner." }
-
-      - name: Verify Apple Silicon runner
-        if: matrix.platform == 'macos'
-        run: test "$(uname -m)" = "arm64"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -362,12 +350,6 @@ jobs:
           name: postmite-windows-x86_64
           path: release-audit/windows-x86_64
 
-      - name: Download Apple Silicon macOS artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: postmite-macos-aarch64
-          path: release-audit/macos-aarch64
-
       - name: Verify downloaded platform artifacts
         run: |
           set -euo pipefail
@@ -447,15 +429,12 @@ jobs:
           }
           verify_common release-audit/linux-x86_64 linux-x86_64 linux "Ubuntu 24.04" x86_64 x86_64-unknown-linux-gnu '["deb","appimage"]' '[".deb",".AppImage"]' ".deb .AppImage" 'amd64 x86_64'
           verify_common release-audit/windows-x86_64 windows-x86_64 windows Windows x86_64 x86_64-pc-windows-msvc '["msi"]' '[".msi"]' ".msi" 'x64 x86_64'
-          verify_common release-audit/macos-aarch64 macos-aarch64 macos "Apple Silicon macOS" aarch64 aarch64-apple-darwin '["dmg"]' '[".dmg"]' ".dmg" 'arm64 aarch64'
           test "$(find release-audit/linux-x86_64 -maxdepth 1 -type f -name '*.deb' | wc -l)" -eq 1
           test "$(find release-audit/linux-x86_64 -maxdepth 1 -type f -name '*.AppImage' | wc -l)" -eq 1
           test "$(find release-audit/windows-x86_64 -maxdepth 1 -type f -name '*.msi' | wc -l)" -eq 1
-          test "$(find release-audit/macos-aarch64 -maxdepth 1 -type f -name '*.dmg' | wc -l)" -eq 1
           test -s "$(find release-audit/linux-x86_64 -maxdepth 1 -type f -name '*.deb' -print -quit)"
           test -s "$(find release-audit/linux-x86_64 -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           test -s "$(find release-audit/windows-x86_64 -maxdepth 1 -type f -name '*.msi' -print -quit)"
-          test -s "$(find release-audit/macos-aarch64 -maxdepth 1 -type f -name '*.dmg' -print -quit)"
           test -s release-audit/linux-x86_64/APPIMAGE_BUDGET.json
 
   release-smoke:

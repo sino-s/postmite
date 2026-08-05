@@ -11,16 +11,13 @@ describe("release target contract", () => {
     expect(Object.keys(RELEASE_TARGETS)).toEqual([
       "linux-x86_64",
       "windows-x86_64",
-      "macos-aarch64",
     ]);
     expect(RELEASE_TARGETS["windows-x86_64"].rustTarget).toBe("x86_64-pc-windows-msvc");
-    expect(RELEASE_TARGETS["macos-aarch64"].rustTarget).toBe("aarch64-apple-darwin");
   });
 
   it("keeps package extensions and architecture tokens coupled to each target", () => {
     expect(RELEASE_TARGETS["linux-x86_64"].packageExtensions).toEqual([".deb", ".AppImage"]);
     expect(RELEASE_TARGETS["windows-x86_64"].packageExtensions).toEqual([".msi"]);
-    expect(RELEASE_TARGETS["macos-aarch64"].packageExtensions).toEqual([".dmg"]);
     for (const target of Object.values(RELEASE_TARGETS)) {
       expect(target.architectureTokens.length).toBeGreaterThan(0);
       expect(releaseTargetMetadata(target)).toMatchObject({
