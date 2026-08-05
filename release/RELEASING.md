@@ -9,6 +9,24 @@ values are session-only and memory-only on Windows and macOS.
 Ubuntu publishes an unsigned Debian package and an unsigned AppImage. The
 `POSTMITE_SESSION_ONLY_SECRETS` override is not used for the final Linux check.
 
+The v0.2.0 procedure and its macOS asset are historical and immutable. Do not
+reuse the macOS publication commands below for a future release. Future public
+releases publish Ubuntu and Windows packages only; Apple Silicon macOS is
+source-build only.
+
+## Future release artifact policy
+
+For releases after v0.2.0:
+
+- CI must not build, upload, audit, checksum, or publish a macOS DMG.
+- Public release artifacts are limited to Ubuntu x86_64 and Windows x64.
+- Apple Silicon users clone the repository, run `pnpm install --frozen-lockfile`,
+  and start the app with `pnpm tauri` on their Mac.
+- `pnpm release:bundle:macos` remains available for a local unsigned DMG when
+  a local bundle is needed; it is not a public release artifact.
+- The v0.2.0 tag, Release notes, and already-published assets are never deleted
+  or replaced.
+
 The public v0.1.1 tag, Release, notes, and assets are immutable. v0.2.0
 supersedes that release and must be published as a new immutable tag; this
 procedure never moves, deletes, or replaces v0.1.1.
@@ -111,7 +129,6 @@ The exact-commit run must show success for all of these jobs:
 - `Ubuntu release artifacts`
 - `Ubuntu release smoke`
 - `Windows x64 release`
-- `Apple Silicon macOS release`
 - `Download and audit all release artifacts`
 
 Confirm the reviewed release notes and project-name gate before tagging:
@@ -156,22 +173,22 @@ gh run view "$TAG_RUN_ID" --json jobs \
   --jq '.jobs[] | [.name, .status, .conclusion] | @tsv'
 ```
 
-Require the same eight successful jobs listed above. Do not use artifacts from
+Require the same seven successful jobs listed above. Do not use artifacts from
 a pull request, another commit, another tag, or a local bundle.
 
-## Audit v0.2.0 cross-platform CI artifacts
+## Audit Linux and Windows CI artifacts
 
-Download all three platform artifacts from the exact successful tag run and
-verify every package, checksum, target, and redacted release-candidate record:
+Download the Linux and Windows artifacts from the exact successful tag run and
+verify every package, checksum, target, and redacted release-candidate record.
 
-For publication, the v0.2.0 cross-platform artifacts are audited above before publication.
+The already-published v0.2.0 macOS asset is historical and is not staged or
+verified by future release procedures.
 
 The audited evidence includes:
 
 - `*.deb`
 - `*.AppImage`
 - `*.msi`
-- `*.dmg`
 - `SHA256SUMS`
 - `DEPENDENCY_LICENSES.json`
 - `THIRD_PARTY_NOTICES.md`
@@ -185,7 +202,6 @@ set -euo pipefail
 CROSS_PLATFORM_STAGE=$(mktemp -d)
 gh run download "$TAG_RUN_ID" --name postmite-ubuntu-x86_64 --dir "$CROSS_PLATFORM_STAGE/linux-x86_64"
 gh run download "$TAG_RUN_ID" --name postmite-windows-x86_64 --dir "$CROSS_PLATFORM_STAGE/windows-x86_64"
-gh run download "$TAG_RUN_ID" --name postmite-macos-aarch64 --dir "$CROSS_PLATFORM_STAGE/macos-aarch64"
 
 verify_cross_platform_target() {
   directory="$1"
@@ -199,10 +215,8 @@ verify_cross_platform_target() {
   package_globs="$9"
   if [ "$key" = "linux-x86_64" ]; then
     architecture_tokens="amd64 x86_64"
-  elif [ "$key" = "windows-x86_64" ]; then
-    architecture_tokens="x64 x86_64"
   else
-    architecture_tokens="arm64 aarch64"
+    architecture_tokens="x64 x86_64"
   fi
 
   for evidence in SHA256SUMS DEPENDENCY_LICENSES.json THIRD_PARTY_NOTICES.md \
@@ -251,8 +265,6 @@ verify_cross_platform_target "$CROSS_PLATFORM_STAGE/linux-x86_64" linux-x86_64 l
   x86_64 x86_64-unknown-linux-gnu '["deb","appimage"]' '[".deb",".AppImage"]' ".deb .AppImage"
 verify_cross_platform_target "$CROSS_PLATFORM_STAGE/windows-x86_64" windows-x86_64 windows Windows \
   x86_64 x86_64-pc-windows-msvc '["msi"]' '[".msi"]' ".msi"
-verify_cross_platform_target "$CROSS_PLATFORM_STAGE/macos-aarch64" macos-aarch64 macos "Apple Silicon macOS" \
-  aarch64 aarch64-apple-darwin '["dmg"]' '[".dmg"]' ".dmg"
 test -s "$CROSS_PLATFORM_STAGE/linux-x86_64/APPIMAGE_BUDGET.json"
 ```
 
@@ -263,9 +275,9 @@ target while keeping packages and the single release notes file at the root:
 
 ```bash
 PUBLIC_STAGE=$(mktemp -d)
-for target in linux-x86_64 windows-x86_64 macos-aarch64; do
+for target in linux-x86_64 windows-x86_64; do
   directory="$CROSS_PLATFORM_STAGE/$target"
-  find "$directory" -maxdepth 1 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.dmg' \) \
+  find "$directory" -maxdepth 1 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' \) \
     -exec cp {} "$PUBLIC_STAGE/" \;
   cp "$directory/SHA256SUMS" "$PUBLIC_STAGE/$target-SHA256SUMS"
   for evidence in DEPENDENCY_LICENSES.json THIRD_PARTY_NOTICES.md RELEASE_CANDIDATE.json RELEASE_TARGET.json; do
@@ -306,10 +318,8 @@ gh release download "$RELEASE_TAG" --dir "$PUBLIC_DOWNLOAD"
 test -s "$PUBLIC_DOWNLOAD/Postmite_0.2.0_amd64.deb"
 test -s "$PUBLIC_DOWNLOAD/Postmite_0.2.0_amd64.AppImage"
 test -s "$PUBLIC_DOWNLOAD/Postmite_0.2.0_x64_en-US.msi"
-test -s "$PUBLIC_DOWNLOAD/Postmite_0.2.0_aarch64.dmg"
 (cd "$PUBLIC_DOWNLOAD" && sha256sum --check linux-x86_64-SHA256SUMS)
 (cd "$PUBLIC_DOWNLOAD" && sha256sum --check windows-x86_64-SHA256SUMS)
-(cd "$PUBLIC_DOWNLOAD" && sha256sum --check macos-aarch64-SHA256SUMS)
 (cd "$PUBLIC_DOWNLOAD" && sha256sum --check SHA256SUMS)
 test "$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | cut -f1)" = "$RELEASE_COMMIT"
 test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = "false"
@@ -322,9 +332,9 @@ or local paths containing personal information.
 
 ## Boundaries and rollback
 
-Windows and macOS packages remain unsigned. Native Credential Manager and
-Keychain persistence, signing, notarization, automatic publishing, and
-automatic updates are not part of v0.2.0. Never silently replace public assets,
+Windows packages remain unsigned. The v0.2.0 macOS package was also unsigned;
+native Credential Manager and Keychain persistence, signing, notarization,
+automatic publishing, and automatic updates are not part of v0.2.0. Never silently replace public assets,
 rewrite notes to hide a defect, delete and recreate the tag, or move the tag.
 A correction requires a new Issue, PR, version, and immutable tag.
 A failed release must never silently replace assets.

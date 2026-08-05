@@ -23,17 +23,6 @@ const targets = {
     architectureTokens: ["x64", "x86_64"],
     appImageBudget: false,
   },
-  "macos-aarch64": {
-    key: "macos-aarch64",
-    platform: "macos",
-    platformLabel: "Apple Silicon macOS",
-    architecture: "aarch64",
-    rustTarget: "aarch64-apple-darwin",
-    bundles: ["dmg"],
-    packageExtensions: [".dmg"],
-    architectureTokens: ["aarch64", "arm64"],
-    appImageBudget: false,
-  },
 };
 
 export const RELEASE_TARGETS = Object.freeze(

@@ -51,7 +51,6 @@ describe("tracked release procedure", () => {
       "Ubuntu release artifacts",
       "Ubuntu release smoke",
       "Windows x64 release",
-      "Apple Silicon macOS release",
       "Download and audit all release artifacts",
     ]) {
       expect(procedure).toContain(`- \`${job}\``);
@@ -63,7 +62,6 @@ describe("tracked release procedure", () => {
       "*.deb",
       "*.AppImage",
       "*.msi",
-      "*.dmg",
       "SHA256SUMS",
       "DEPENDENCY_LICENSES.json",
       "THIRD_PARTY_NOTICES.md",
@@ -77,7 +75,7 @@ describe("tracked release procedure", () => {
     expect(procedure).toContain('gh run download "$TAG_RUN_ID"');
     expect(procedure).toContain('gh release download "$RELEASE_TAG"');
     expect(procedure).toContain("sha256sum --check SHA256SUMS");
-    expect(procedure).toContain("Audit v0.2.0 cross-platform CI artifacts");
+    expect(procedure).toContain("Audit Linux and Windows CI artifacts");
     expect(procedure).toContain("verify_cross_platform_target");
     expect(procedure).toContain("set -euo pipefail");
     expect(procedure).toContain("architecture_tokens");
@@ -87,9 +85,9 @@ describe("tracked release procedure", () => {
     expect(ciWorkflow).toContain('id: release-version');
     expect(ciWorkflow).toContain('artifacts/release/v${{ steps.release-version.outputs.value }}/linux-x86_64');
     expect(ciWorkflow).toContain("x86_64-pc-windows-msvc");
-    expect(ciWorkflow).toContain("aarch64-apple-darwin");
     expect(ciWorkflow).toContain("postmite-windows-x86_64");
-    expect(ciWorkflow).toContain("postmite-macos-aarch64");
+    expect(ciWorkflow).not.toContain("aarch64-apple-darwin");
+    expect(ciWorkflow).not.toContain("postmite-macos-aarch64");
     expect(ciWorkflow).not.toContain("artifacts/release/v0.1.0/linux-x86_64");
   });
 
@@ -101,8 +99,9 @@ describe("tracked release procedure", () => {
     expect(releaseNotes).toContain("supersedes v0.1.1");
     expect(procedure).toContain("Ubuntu 24.04 x86_64");
     expect(procedure).toContain("windows-x86_64");
-    expect(procedure).toContain("macos-aarch64");
-    expect(procedure).toContain("the v0.2.0 cross-platform artifacts are audited above before publication");
+    expect(procedure).toContain("The already-published v0.2.0 macOS asset is historical");
+    expect(procedure).not.toContain("macos-aarch64");
+    expect(procedure).not.toContain("*.dmg");
     expect(releaseNotes).toContain("Windows x64");
     expect(releaseNotes).toContain("Apple Silicon macOS");
     expect(releaseNotes).toContain("session-only");
@@ -110,6 +109,9 @@ describe("tracked release procedure", () => {
     expect(procedure).toContain("Check for updates");
     expect(procedure).toContain("Milestone v0.2.0");
     expect(procedure).toContain("never silently replace assets");
+    expect(procedure).toContain("Future public\nreleases publish Ubuntu and Windows packages only");
+    expect(procedure).toContain("Apple Silicon macOS is\nsource-build only");
+    expect(procedure).toContain("pnpm release:bundle:macos");
     expect(existsSync(resolve(process.cwd(), "README.md"))).toBe(true);
     expect(procedure).toContain("[repository README](../README.md)");
   });

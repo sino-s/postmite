@@ -25,7 +25,7 @@ test("README describes the supported release artifacts and commands", () => {
   assert.match(readme, /Ubuntu 24\.04 LTS x86_64/);
   assert.match(readme, new RegExp(`Postmite_${releaseVersion}_amd64\\.deb`));
   assert.match(readme, new RegExp(`Postmite_${releaseVersion}_amd64\\.AppImage`));
-  for (const checksum of ["linux-x86_64-SHA256SUMS", "windows-x86_64-SHA256SUMS", "macos-aarch64-SHA256SUMS"]) {
+  for (const checksum of ["linux-x86_64-SHA256SUMS", "windows-x86_64-SHA256SUMS"]) {
     assert.match(readme, new RegExp(`sha256sum --check ${checksum}`));
   }
   assert.match(readme, /WindowsとmacOSのProtected valuesはsession-only・memory-only/);
@@ -33,6 +33,10 @@ test("README describes the supported release artifacts and commands", () => {
   assert.match(readme, new RegExp(`chmod \\+x \\./Postmite_${releaseVersion}_amd64\\.AppImage`));
   assert.match(readme, /Postmite_0\.2\.0_x64_en-US\.msi/);
   assert.match(readme, /Postmite_0\.2\.0_aarch64\.dmg/);
+  assert.match(readme, /次回以降の公開Releaseでは、macOS成果物を配布せず/);
+  assert.match(readme, /git clone https:\/\/github\.com\/sino-s\/postmite\.git/);
+  assert.match(readme, /pnpm install --frozen-lockfile/);
+  assert.match(readme, /pnpm release:bundle:macos/);
   assert.match(releaseNotes, new RegExp(`Postmite_${releaseVersion}_amd64\\.deb`));
   assert.match(releaseNotes, new RegExp(`Postmite_${releaseVersion}_amd64\\.AppImage`));
   assert.match(readme, /v0\.2\.0は、公開済みのv0\.1\.1を変更せず/);
