@@ -43,7 +43,7 @@ function inspectWithPermissions(t, permissions) {
 test("release candidate remains unpublished with bounded native capabilities across explicit targets", (t) => {
   const evidence = inspectWithPermissions(t, canonicalPermissions);
   assert.deepEqual(inspectReleaseCandidate({ targetKey: "linux-x86_64" }), {
-    version: "0.2.0",
+    version: "0.3.0",
     productName: "Postmite",
     packageIdentifier: "io.github.sino-s.postmite",
     publisher: "sino-s",

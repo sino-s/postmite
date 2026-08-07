@@ -1,6 +1,6 @@
 [package]
 name = "postmite"
-version = "0.2.0"
+version = "0.3.0"
 description = "A lightweight, local-first desktop API client."
 authors = ["sino-s"]
 edition = "2021"

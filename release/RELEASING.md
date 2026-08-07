@@ -1,22 +1,21 @@
-# Publishing Postmite v0.2.0
+# Publishing Postmite v0.3.0
 
 End-user installation and initial-use instructions live in the [repository README](../README.md).
 
-This procedure publishes the reviewed Postmite v0.2.0 cross-platform preview.
-It exposes Ubuntu 24.04 x86_64 `.deb` and AppImage packages, a Windows x64
-`.msi`, and an Apple Silicon macOS `.dmg`. All packages are unsigned. Protected
-values are session-only and memory-only on Windows and macOS.
+This procedure publishes the reviewed Postmite v0.3.0 preview.
+It exposes Ubuntu 24.04 x86_64 `.deb` and AppImage packages plus a Windows x64
+`.msi`. All packages are unsigned. Apple Silicon macOS is source-build only.
+Protected values are session-only and memory-only on Windows and macOS.
 Ubuntu publishes an unsigned Debian package and an unsigned AppImage. The
 `POSTMITE_SESSION_ONLY_SECRETS` override is not used for the final Linux check.
 
-The v0.2.0 procedure and its macOS asset are historical and immutable. Do not
-reuse the macOS publication commands below for a future release. Future public
-releases publish Ubuntu and Windows packages only; Apple Silicon macOS is
-source-build only.
+The v0.2.0 tag, Release notes, and assets are historical and immutable. The
+v0.3.0 Release publishes Ubuntu and Windows packages only; Apple Silicon macOS
+is source-build only.
 
-## Future release artifact policy
+## Release artifact policy
 
-For releases after v0.2.0:
+For v0.3.0 and later releases:
 
 - CI must not build, upload, audit, checksum, or publish a macOS DMG.
 - Public release artifacts are limited to Ubuntu x86_64 and Windows x64.
@@ -27,10 +26,10 @@ For releases after v0.2.0:
 - The v0.2.0 tag, Release notes, and already-published assets are never deleted
   or replaced.
 
-The public v0.1.1 tag, Release, notes, and assets are immutable. v0.2.0
+The public v0.2.0 tag, Release, notes, and assets are immutable. v0.3.0
 supersedes that release and must be published as a new immutable tag; this
-procedure never moves, deletes, or replaces v0.1.1.
-In all publication stages, this procedure never moves, deletes, or replaces v0.1.1.
+procedure never moves, deletes, or replaces v0.2.0.
+In all publication stages, this procedure never moves, deletes, or replaces v0.2.0.
 
 ## Authority and stop rule
 
@@ -40,7 +39,7 @@ review the release-preparation pull request before publication starts.
 
 Stop at any failed check. Do not skip a check, publish a workspace-built
 package, move an existing tag, or repair the release outside the Issue and pull
-request workflow. This procedure never moves, deletes, or replaces v0.1.1.
+request workflow. This procedure never moves, deletes, or replaces v0.2.0.
 
 ## Prepare the release commit
 
@@ -58,11 +57,11 @@ Set release-specific variables:
 RELEASE_VERSION=$(node -p "require('./package.json').version")
 RELEASE_TAG="v$RELEASE_VERSION"
 RELEASE_COMMIT=$(git rev-parse origin/main)
-PREVIOUS_RELEASE_TAG="v0.1.1"
+PREVIOUS_RELEASE_TAG="v0.2.0"
 test "$(git branch --show-current)" = "main"
 test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
 test -z "$(git status --porcelain)"
-test "$RELEASE_TAG" = "v0.2.0"
+test "$RELEASE_TAG" = "v0.3.0"
 ```
 
 Require matching package versions and the approved target bundle set:
@@ -98,6 +97,9 @@ Run the source-controlled release gates:
 pnpm install --frozen-lockfile
 pnpm test:release-procedure
 pnpm test:readme
+pnpm test -- scripts/release-targets.test.mjs scripts/release-candidate.node.mjs
+pnpm typecheck
+pnpm lint
 pnpm release:verify
 pnpm release:inspect-candidate
 ```
@@ -236,7 +238,7 @@ verify_cross_platform_target() {
     test "$package_matches" = true
   done
   jq -e \
-    '.version == "0.2.0" and .productName == "Postmite" and
+    '.version == "0.3.0" and .productName == "Postmite" and
      .packageIdentifier == "io.github.sino-s.postmite" and
      .publisher == "sino-s" and
      .githubRelease == "not published automatically" and
@@ -315,9 +317,9 @@ Download the public assets into a new directory. Do not reuse the staging area:
 ```bash
 PUBLIC_DOWNLOAD=$(mktemp -d)
 gh release download "$RELEASE_TAG" --dir "$PUBLIC_DOWNLOAD"
-test -s "$PUBLIC_DOWNLOAD/Postmite_0.2.0_amd64.deb"
-test -s "$PUBLIC_DOWNLOAD/Postmite_0.2.0_amd64.AppImage"
-test -s "$PUBLIC_DOWNLOAD/Postmite_0.2.0_x64_en-US.msi"
+test -s "$PUBLIC_DOWNLOAD/Postmite_0.3.0_amd64.deb"
+test -s "$PUBLIC_DOWNLOAD/Postmite_0.3.0_amd64.AppImage"
+test -s "$PUBLIC_DOWNLOAD/Postmite_0.3.0_x64_en-US.msi"
 (cd "$PUBLIC_DOWNLOAD" && sha256sum --check linux-x86_64-SHA256SUMS)
 (cd "$PUBLIC_DOWNLOAD" && sha256sum --check windows-x86_64-SHA256SUMS)
 (cd "$PUBLIC_DOWNLOAD" && sha256sum --check SHA256SUMS)
@@ -327,14 +329,14 @@ test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" 
 ```
 
 Record the release commit, tag, main and tag run IDs, Release URL, asset names,
-and checksum results on Issue #142. Never record Secret values, request headers,
+and checksum results on Issue #151. Never record Secret values, request headers,
 or local paths containing personal information.
 
 ## Boundaries and rollback
 
-Windows packages remain unsigned. The v0.2.0 macOS package was also unsigned;
+Windows packages remain unsigned. The historical v0.2.0 macOS package was also unsigned;
 native Credential Manager and Keychain persistence, signing, notarization,
-automatic publishing, and automatic updates are not part of v0.2.0. Never silently replace public assets,
+automatic publishing, and automatic updates are not part of v0.3.0. Never silently replace public assets,
 rewrite notes to hide a defect, delete and recreate the tag, or move the tag.
 A correction requires a new Issue, PR, version, and immutable tag.
 A failed release must never silently replace assets.
@@ -343,7 +345,7 @@ A failed release must never silently replace assets.
 
 Only after the public download and checksum checks pass:
 
-1. Add the complete, redacted evidence comment to Issue #142.
-2. Check the child Issue and acceptance criteria in Epic #141.
-3. Close Issue #142 and Epic #141 as completed.
-4. Close Milestone v0.2.0 only when it has no open Issues.
+1. Add the complete, redacted evidence comment to Issue #151.
+2. Check the child Issue and acceptance criteria in Epic #150.
+3. Close Issue #151 and Epic #150 as completed.
+4. Close Milestone v0.3.0 only when it has no open Issues.
