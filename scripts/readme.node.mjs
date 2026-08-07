@@ -20,7 +20,7 @@ const workspaceDomain = readFileSync(join(repoRoot, "src-tauri/src/domain/worksp
 
 test("README describes the supported release artifacts and commands", () => {
   const releaseVersion = packageJson.version.replaceAll(".", "\\.");
-  assert.equal(packageJson.version, "0.2.0");
+  assert.equal(packageJson.version, "0.3.0");
   assert.doesNotMatch(readme, /実装開始前/);
   assert.match(readme, /Ubuntu 24\.04 LTS x86_64/);
   assert.match(readme, new RegExp(`Postmite_${releaseVersion}_amd64\\.deb`));
@@ -31,16 +31,19 @@ test("README describes the supported release artifacts and commands", () => {
   assert.match(readme, /WindowsとmacOSのProtected valuesはsession-only・memory-only/);
   assert.match(readme, new RegExp(`sudo apt install \\./Postmite_${releaseVersion}_amd64\\.deb`));
   assert.match(readme, new RegExp(`chmod \\+x \\./Postmite_${releaseVersion}_amd64\\.AppImage`));
-  assert.match(readme, /Postmite_0\.2\.0_x64_en-US\.msi/);
+  assert.match(readme, new RegExp(`Postmite_${releaseVersion}_x64_en-US\\.msi`));
   assert.match(readme, /Postmite_0\.2\.0_aarch64\.dmg/);
-  assert.match(readme, /次回以降の公開Releaseでは、macOS成果物を配布せず/);
+  assert.doesNotMatch(readme, /Postmite_0\.3\.0_aarch64\.dmg/);
+  assert.match(readme, /v0\.3\.0以降の公開ReleaseではmacOSのDMGを配布しません/);
   assert.match(readme, /git clone https:\/\/github\.com\/sino-s\/postmite\.git/);
   assert.match(readme, /pnpm install --frozen-lockfile/);
   assert.match(readme, /pnpm release:bundle:macos/);
   assert.match(releaseNotes, new RegExp(`Postmite_${releaseVersion}_amd64\\.deb`));
   assert.match(releaseNotes, new RegExp(`Postmite_${releaseVersion}_amd64\\.AppImage`));
-  assert.match(readme, /v0\.2\.0は、公開済みのv0\.1\.1を変更せず/);
-  assert.match(releaseNotes, /supersedes v0\.1\.1 without moving its tag/);
+  assert.match(readme, /v0\.3\.0では、選択した日本語または英語の表示言語をアプリの再起動後も復元します/);
+  assert.match(releaseNotes, /supersedes v0\.2\.0 without moving its tag/);
+  assert.match(releaseNotes, /selected English or Japanese display language is restored/);
+  assert.doesNotMatch(releaseNotes, /Postmite_0\.3\.0_aarch64\.dmg/);
   assert.doesNotMatch(readme, /Postmite_0\.1\.0_amd64/);
   assert.deepEqual(tauriConfig.bundle.targets, ["deb", "appimage", "msi", "dmg"]);
 });

@@ -1,20 +1,26 @@
-# Postmite 0.2.0
+# Postmite 0.3.0
 
-v0.2.0 is a cross-platform preview release that supersedes v0.1.1 without moving its tag or replacing its published assets. It keeps the local-first workspace and Environment model while adding downloadable Windows x64 and Apple Silicon macOS packages to the verified Ubuntu release path.
+v0.3.0 supersedes v0.2.0 without moving its tag, replacing its Release notes, or changing any published asset. It keeps the local-first workspace and Environment model while making the selected display language durable across application launches and changing future macOS distribution to source-build only.
+
+## Changes since v0.2.0
+
+- The selected English or Japanese display language is restored after Postmite exits and starts again.
+- Public Releases now provide Ubuntu 24.04 x86_64 and Windows x64 packages only.
+- Apple Silicon macOS remains supported as a local source build. Clone the repository, install the pinned toolchain and dependencies, and run `pnpm tauri`; `pnpm release:bundle:macos` remains available for an unsigned local DMG.
+- The already-published v0.2.0 macOS DMG remains immutable historical release evidence and is not included in v0.3.0.
 
 ## Downloads
 
-- `Postmite_0.2.0_amd64.deb` and `Postmite_0.2.0_amd64.AppImage` target Ubuntu 24.04 x86_64.
-- `Postmite_0.2.0_x64_en-US.msi` targets Windows x64.
-- `Postmite_0.2.0_aarch64.dmg` targets Apple Silicon macOS.
-- Verify Ubuntu with `sha256sum --check linux-x86_64-SHA256SUMS`, Windows with `sha256sum --check windows-x86_64-SHA256SUMS`, or macOS with `sha256sum --check macos-aarch64-SHA256SUMS` before installation or execution.
-- `SHA256SUMS` is also included as a complete all-package checksum for release auditing.
+- `Postmite_0.3.0_amd64.deb` and `Postmite_0.3.0_amd64.AppImage` target Ubuntu 24.04 x86_64.
+- `Postmite_0.3.0_x64_en-US.msi` targets Windows x64.
+- Verify Ubuntu with `sha256sum --check linux-x86_64-SHA256SUMS` or Windows with `sha256sum --check windows-x86_64-SHA256SUMS` before installation or execution.
+- `SHA256SUMS` is included as a complete checksum for all v0.3.0 packages.
 
-These cross-platform preview packages are unsigned; package signing is not included in v0.2.0.
+These preview packages are unsigned; package signing is not included in v0.3.0. There is no public v0.3.0 macOS package.
 
 ## Platform and Secret boundaries
 
-Linux uses the Secret Service when it is available. Protected values on Windows and macOS are session-only and remain memory-only until separate native Credential Manager and Keychain security Issues are completed.
+Linux uses the Secret Service when it is available. Protected values on Windows and Apple Silicon macOS are session-only and remain memory-only until separate native Credential Manager and Keychain security Issues are completed.
 
 Secret values are not written to SQLite, release metadata, logs, diagnostics, snapshots, fixtures, screenshots, IPC errors, or uploaded artifacts.
 

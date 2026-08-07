@@ -16,6 +16,10 @@ const cargoManifest = readFileSync(
   resolve(process.cwd(), "src-tauri/Cargo.toml"),
   "utf8",
 );
+const cargoLock = readFileSync(
+  resolve(process.cwd(), "src-tauri/Cargo.lock"),
+  "utf8",
+);
 const releaseNotes = readFileSync(
   resolve(process.cwd(), "release/RELEASE_NOTES.md"),
   "utf8",
@@ -27,21 +31,24 @@ const ciWorkflow = readFileSync(
 
 describe("tracked release procedure", () => {
   it("binds publication to the exact reviewed commit and immutable tag", () => {
-    expect(packageManifest.version).toBe("0.2.0");
+    expect(packageManifest.version).toBe("0.3.0");
     expect(procedure).toContain("RELEASE_COMMIT=$(git rev-parse origin/main)");
     expect(procedure).toContain('--commit "$RELEASE_COMMIT"');
     expect(procedure).toContain('git tag --annotate "$RELEASE_TAG" "$RELEASE_COMMIT"');
     expect(procedure).toContain('git push origin "refs/tags/$RELEASE_TAG"');
     expect(procedure).toContain("Treat a pushed release tag as immutable.");
-    expect(procedure).toContain('PREVIOUS_RELEASE_TAG="v0.1.1"');
-    expect(procedure).toContain('test "$RELEASE_TAG" = "v0.2.0"');
+    expect(procedure).toContain('PREVIOUS_RELEASE_TAG="v0.2.0"');
+    expect(procedure).toContain('test "$RELEASE_TAG" = "v0.3.0"');
     expect(procedure).toContain('gh release view "$PREVIOUS_RELEASE_TAG"');
     expect(procedure).toContain('! gh release view "$RELEASE_TAG"');
-    expect(procedure).toContain("this procedure never moves, deletes, or replaces v0.1.1");
+    expect(procedure).toContain("this procedure never moves, deletes, or replaces v0.2.0");
     expect(procedure).toContain("--verify-tag");
     expect(tauriConfig.version).toBe(packageManifest.version);
     expect(cargoManifest).toMatch(
       new RegExp(`^version = "${packageManifest.version.replaceAll(".", "\\.")}"$`, "m"),
+    );
+    expect(cargoLock).toMatch(
+      new RegExp(`\\[\\[package\\]\\]\\nname = "postmite"\\nversion = "${packageManifest.version.replaceAll(".", "\\.")}"`),
     );
 
     for (const job of [
@@ -81,7 +88,7 @@ describe("tracked release procedure", () => {
     expect(procedure).toContain("architecture_tokens");
     expect(procedure).toContain(".artifactTarget.platformLabel == $platform_label");
     expect(procedure).toContain(".artifactTarget.packageExtensions == $package_extensions");
-    expect(procedure).toContain('.version == "0.2.0"');
+    expect(procedure).toContain('.version == "0.3.0"');
     expect(ciWorkflow).toContain('id: release-version');
     expect(ciWorkflow).toContain('artifacts/release/v${{ steps.release-version.outputs.value }}/linux-x86_64');
     expect(ciWorkflow).toContain("x86_64-pc-windows-msvc");
@@ -91,12 +98,12 @@ describe("tracked release procedure", () => {
     expect(ciWorkflow).not.toContain("artifacts/release/v0.1.0/linux-x86_64");
   });
 
-  it("keeps publication explicit and bounded to the Ubuntu preview", () => {
+  it("keeps publication explicit and bounded to the Linux and Windows preview", () => {
     expect(procedure).toContain("Only `sino-s`");
     expect(procedure).toContain("unsigned Debian package and an unsigned AppImage");
-    expect(releaseNotes).toContain("These cross-platform preview packages are unsigned");
-    expect(releaseNotes).toContain("package signing is not included in v0.2.0");
-    expect(releaseNotes).toContain("supersedes v0.1.1");
+    expect(releaseNotes).toContain("These preview packages are unsigned");
+    expect(releaseNotes).toContain("package signing is not included in v0.3.0");
+    expect(releaseNotes).toContain("supersedes v0.2.0");
     expect(procedure).toContain("Ubuntu 24.04 x86_64");
     expect(procedure).toContain("windows-x86_64");
     expect(procedure).toContain("The already-published v0.2.0 macOS asset is historical");
@@ -107,10 +114,12 @@ describe("tracked release procedure", () => {
     expect(releaseNotes).toContain("session-only");
     expect(procedure).toContain("POSTMITE_SESSION_ONLY_SECRETS");
     expect(procedure).toContain("Check for updates");
-    expect(procedure).toContain("Milestone v0.2.0");
+    expect(procedure).toContain("Issue #151");
+    expect(procedure).toContain("Epic #150");
+    expect(procedure).toContain("Milestone v0.3.0");
     expect(procedure).toContain("never silently replace assets");
-    expect(procedure).toContain("Future public\nreleases publish Ubuntu and Windows packages only");
-    expect(procedure).toContain("Apple Silicon macOS is\nsource-build only");
+    expect(procedure).toContain("v0.3.0 Release publishes Ubuntu and Windows packages only");
+    expect(procedure).toContain("Apple Silicon macOS\nis source-build only");
     expect(procedure).toContain("pnpm release:bundle:macos");
     expect(existsSync(resolve(process.cwd(), "README.md"))).toBe(true);
     expect(procedure).toContain("[repository README](../README.md)");
